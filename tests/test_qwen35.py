@@ -335,6 +335,25 @@ class Qwen35Tests(unittest.TestCase):
         self.assertTrue(calls[0]["director_mtp"])
         self.assertFalse(calls[1]["director_mtp"])
 
+    def test_empty_chunk_json_gets_one_corrected_retry(self):
+        failure = {"ok": False, "error_type": "Qwen35ObservationError",
+                   "message": "Qwen response contains no usable H3 prompt text; returned keys: none",
+                   "raw_json": "{}"}
+        success = {"ok": True, "chunk_prompt": {
+            "confidence": "high", "analysis": "ok", "detailed_description": "[Shot 1] Continue.",
+            "raw_json": "{}", "timing_plan": "", "end_state": "", "last_seen_character_state": [],
+            "system_prompt": "system", "observation_prompt": "prompt", "validation_warnings": []}}
+        calls = []
+        def worker(payload):
+            calls.append(payload.copy())
+            return types.SimpleNamespace(returncode=0), failure if len(calls) == 1 else success
+        with patch.object(qwen35, "_run_worker_once", side_effect=worker):
+            result = qwen35._run_worker({"director_mtp": False}, False)
+        self.assertEqual(result.detailed_description, "[Shot 1] Continue.")
+        self.assertFalse(calls[0].get("empty_response_repair", False))
+        self.assertTrue(calls[1]["empty_response_repair"])
+        self.assertEqual(len(calls), 2)
+
     def test_validation_failure_does_not_repeat_timing_without_mtp(self):
         failure = {"ok": False, "error_type": "Qwen35ObservationError", "message": "bad JSON", "raw_json": "bad"}
         with patch.object(qwen35, "_run_worker_once", return_value=(types.SimpleNamespace(returncode=1), failure)) as worker:

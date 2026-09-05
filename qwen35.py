@@ -236,7 +236,11 @@ def _chunk_messages(request: dict[str, Any]) -> tuple[str, str]:
         "previous_state": request.get("previous_gemma_end_state", request.get("previous_end_state", "none")) or "none",
         "previous_characters": json.dumps(request.get("previous_last_seen_character_state", ()), ensure_ascii=False),
     }
-    return templates["CHUNK_SYSTEM"], _render(templates["CHUNK_USER"], values)
+    prompt = _render(templates["CHUNK_USER"], values)
+    if request.get("empty_response_repair"):
+        prompt += ("\n\nYour previous response was an empty JSON object. Return the required JSON object now, "
+                   "with a non-empty detailed_description that covers the target shots. Do not return {}.")
+    return templates["CHUNK_SYSTEM"], prompt
 
 
 def _extract_json(text: str) -> tuple[dict[str, Any], str]:
@@ -760,6 +764,12 @@ def _run_worker(request: dict[str, Any], timing: bool):
         process, value = _run_worker_once(payload)
     if value is None:
         raise DirectorWorkerError(f"Qwen worker exited with status {process.returncode} without a result", returncode=process.returncode)
+    if (not timing and not value.get("ok")
+            and value.get("error_type") == "Qwen35ObservationError"
+            and "returned keys: none" in str(value.get("message", ""))
+            and str(value.get("raw_json", "")).strip() == "{}"):
+        payload["empty_response_repair"] = True
+        process, value = _run_worker_once(payload)
     if not value.get("ok"):
         raise Qwen35ObservationError(str(value.get("message", "Qwen worker failed")), raw_json=str(value.get("raw_json", "")))
     generation = value.get("generation") if isinstance(value.get("generation"), dict) else {}
