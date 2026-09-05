@@ -238,8 +238,12 @@ def _chunk_messages(request: dict[str, Any]) -> tuple[str, str]:
     }
     prompt = _render(templates["CHUNK_USER"], values)
     if request.get("empty_response_repair"):
-        prompt += ("\n\nYour previous response was an empty JSON object. Return the required JSON object now, "
-                   "with a non-empty detailed_description that covers the target shots. Do not return {}.")
+        prompt += ("\n\nCORRECTION: Your previous response was {}. Return exactly one non-empty JSON object "
+                   "using this schema: {\"confidence\":\"high|medium|low\",\"analysis\":\"brief factual check\","
+                   "\"detailed_description\":\"complete H3 shot text with every required marker\","
+                   "\"timing_plan\":\"brief timing summary\",\"end_state\":\"visible final state\","
+                   "\"last_seen_character_state\":[]}. detailed_description must not be empty. "
+                   "Do not return {}, markdown, or prose outside the JSON object.")
     return templates["CHUNK_SYSTEM"], prompt
 
 
@@ -764,11 +768,15 @@ def _run_worker(request: dict[str, Any], timing: bool):
         process, value = _run_worker_once(payload)
     if value is None:
         raise DirectorWorkerError(f"Qwen worker exited with status {process.returncode} without a result", returncode=process.returncode)
-    if (not timing and not value.get("ok")
-            and value.get("error_type") == "Qwen35ObservationError"
-            and "returned keys: none" in str(value.get("message", ""))
-            and str(value.get("raw_json", "")).strip() == "{}"):
-        payload["empty_response_repair"] = True
+    repair_attempts = 0
+    while (not timing and not value.get("ok")
+           and value.get("error_type") == "Qwen35ObservationError"
+           and "returned keys: none" in str(value.get("message", ""))
+           and str(value.get("raw_json", "")).strip() == "{}"
+           and repair_attempts < 2):
+        repair_attempts += 1
+        payload["empty_response_repair"] = repair_attempts
+        logging.warning("HR Endless Sampler Qwen returned an empty chunk response; correction attempt %d/2.", repair_attempts)
         process, value = _run_worker_once(payload)
     if not value.get("ok"):
         raise Qwen35ObservationError(str(value.get("message", "Qwen worker failed")), raw_json=str(value.get("raw_json", "")))
