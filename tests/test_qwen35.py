@@ -335,10 +335,10 @@ class Qwen35Tests(unittest.TestCase):
         self.assertTrue(calls[0]["director_mtp"])
         self.assertFalse(calls[1]["director_mtp"])
 
-    def test_empty_chunk_json_gets_bounded_corrected_retries(self):
+    def test_missing_chunk_prompt_gets_bounded_corrected_retries(self):
         failure = {"ok": False, "error_type": "Qwen35ObservationError",
-                   "message": "Qwen response contains no usable H3 prompt text; returned keys: none",
-                   "raw_json": "{}"}
+                   "message": "Qwen response contains no usable H3 prompt text; returned keys: analysis, confidence",
+                   "raw_json": '{"analysis":"unable","confidence":"low"}'}
         success = {"ok": True, "chunk_prompt": {
             "confidence": "high", "analysis": "ok", "detailed_description": "[Shot 1] Continue.",
             "raw_json": "{}", "timing_plan": "", "end_state": "", "last_seen_character_state": [],
@@ -350,10 +350,25 @@ class Qwen35Tests(unittest.TestCase):
         with patch.object(qwen35, "_run_worker_once", side_effect=worker):
             result = qwen35._run_worker({"director_mtp": False}, False)
         self.assertEqual(result.detailed_description, "[Shot 1] Continue.")
-        self.assertFalse(calls[0].get("empty_response_repair", False))
-        self.assertEqual(calls[1]["empty_response_repair"], 1)
-        self.assertEqual(calls[2]["empty_response_repair"], 2)
+        self.assertFalse(calls[0].get("missing_prompt_repair", False))
+        self.assertEqual(calls[1]["missing_prompt_repair"], 1)
+        self.assertEqual(calls[2]["missing_prompt_repair"], 2)
         self.assertEqual(len(calls), 3)
+
+    def test_empty_description_uses_the_same_repair_path(self):
+        failure = {"ok": False, "error_type": "Qwen35ObservationError",
+                   "message": "Qwen response contains no usable H3 prompt text; returned keys: detailed_description",
+                   "raw_json": '{"detailed_description":""}'}
+        success = {"ok": True, "chunk_prompt": {
+            "confidence": "high", "analysis": "ok", "detailed_description": "[Shot 1] Continue.",
+            "raw_json": "{}", "timing_plan": "", "end_state": "", "last_seen_character_state": [],
+            "system_prompt": "system", "observation_prompt": "prompt", "validation_warnings": []}}
+        with patch.object(qwen35, "_run_worker_once", side_effect=[
+                (types.SimpleNamespace(returncode=0), failure),
+                (types.SimpleNamespace(returncode=0), success)]) as worker:
+            result = qwen35._run_worker({"director_mtp": False}, False)
+        self.assertEqual(result.detailed_description, "[Shot 1] Continue.")
+        self.assertEqual(worker.call_args_list[1].args[0]["missing_prompt_repair"], 1)
 
     def test_validation_failure_does_not_repeat_timing_without_mtp(self):
         failure = {"ok": False, "error_type": "Qwen35ObservationError", "message": "bad JSON", "raw_json": "bad"}

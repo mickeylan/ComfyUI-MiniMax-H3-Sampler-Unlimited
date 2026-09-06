@@ -237,8 +237,8 @@ def _chunk_messages(request: dict[str, Any]) -> tuple[str, str]:
         "previous_characters": json.dumps(request.get("previous_last_seen_character_state", ()), ensure_ascii=False),
     }
     prompt = _render(templates["CHUNK_USER"], values)
-    if request.get("empty_response_repair"):
-        prompt += ("\n\nCORRECTION: Your previous response was {}. Return exactly one non-empty JSON object "
+    if request.get("missing_prompt_repair"):
+        prompt += ("\n\nCORRECTION: Your previous JSON omitted the required H3 prompt text. Return exactly one JSON object "
                    "using this schema: {\"confidence\":\"high|medium|low\",\"analysis\":\"brief factual check\","
                    "\"detailed_description\":\"complete H3 shot text with every required marker\","
                    "\"timing_plan\":\"brief timing summary\",\"end_state\":\"visible final state\","
@@ -771,12 +771,11 @@ def _run_worker(request: dict[str, Any], timing: bool):
     repair_attempts = 0
     while (not timing and not value.get("ok")
            and value.get("error_type") == "Qwen35ObservationError"
-           and "returned keys: none" in str(value.get("message", ""))
-           and str(value.get("raw_json", "")).strip() == "{}"
+           and str(value.get("message", "")).startswith("Qwen response contains no usable H3 prompt text;")
            and repair_attempts < 2):
         repair_attempts += 1
-        payload["empty_response_repair"] = repair_attempts
-        logging.warning("HR Endless Sampler Qwen returned an empty chunk response; correction attempt %d/2.", repair_attempts)
+        payload["missing_prompt_repair"] = repair_attempts
+        logging.warning("HR Endless Sampler Qwen omitted the H3 chunk prompt; correction attempt %d/2.", repair_attempts)
         process, value = _run_worker_once(payload)
     if not value.get("ok"):
         raise Qwen35ObservationError(str(value.get("message", "Qwen worker failed")), raw_json=str(value.get("raw_json", "")))
