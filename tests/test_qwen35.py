@@ -23,6 +23,11 @@ errors = importlib.util.module_from_spec(errors_spec)
 sys.modules[errors_spec.name] = errors
 errors_spec.loader.exec_module(errors)
 
+story_format_spec = importlib.util.spec_from_file_location(PACKAGE + ".story_format", PLUGIN_ROOT / "story_format.py")
+story_format = importlib.util.module_from_spec(story_format_spec)
+sys.modules[story_format_spec.name] = story_format
+story_format_spec.loader.exec_module(story_format)
+
 spec = importlib.util.spec_from_file_location(PACKAGE + ".qwen35", PLUGIN_ROOT / "qwen35.py")
 qwen35 = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = qwen35
@@ -282,6 +287,51 @@ class Qwen35Tests(unittest.TestCase):
         self.assertNotIn("cpu_moe", captured)
         self.assertEqual(captured["n_ctx"], 32768)
 
+    def test_qwen38_storyboard_uses_gpu_vision_with_bounded_tokens(self):
+        handler_kwargs = {}
+
+        class FakeHandler:
+            def __init__(self, **kwargs):
+                handler_kwargs.update(kwargs)
+
+        class FakeLlama:
+            metadata = {"tokenizer.chat_template": "{{ '<|vision_start|><|image_pad|><|vision_end|>' }}"}
+
+            def __init__(self, **kwargs):
+                pass
+
+            def create_chat_completion(self, **kwargs):
+                value = {
+                    "image_subjects": [{"picture": 1, "subject": 1, "name": "hero", "observable_features": "coat"}],
+                    "shots": [{"shot": 1, "start_frame": 0, "end_frame": 124, "pictures": [1], "description": "walk"}],
+                }
+                return {"choices": [{"message": {"content": json.dumps(value)}, "finish_reason": "stop"}], "usage": {}}
+
+            def close(self):
+                pass
+
+        request = {
+            "operation": "storyboard",
+            "director_backend": "qwen3.8",
+            "director_model_path": "qwen3.8-model.gguf",
+            "director_mmproj_path": "mmproj-qwen3.8.gguf",
+            "director_mtp": False,
+            "story": "story",
+            "style": "cinematic",
+            "shot_density": "medium",
+            "fps": 24.0,
+            "total_frames": 124,
+            "duration_seconds": 5.0,
+            "image_count": 1,
+            "image_urls": ["data:image/jpeg;base64,test"],
+        }
+        runtime = (FakeLlama, object, FakeHandler, object, object, object, object)
+        with patch.object(qwen35, "_load_runtime", return_value=runtime):
+            qwen35._complete(request)
+        self.assertTrue(handler_kwargs["use_gpu"])
+        self.assertEqual(handler_kwargs["image_min_tokens"], 256)
+        self.assertEqual(handler_kwargs["image_max_tokens"], 1344)
+
     def test_qwen35_configuration_always_disables_mtp(self):
         director = qwen35.Qwen35ContinuityDirector(
             Path("qwen3.5-model.gguf"), Path("mmproj-qwen3.5.gguf"), mtp_enabled=True, backend="qwen3.5",
@@ -396,6 +446,33 @@ class Qwen35Tests(unittest.TestCase):
             with self.assertRaisesRegex(qwen35.Qwen35ObservationError, "bad JSON"):
                 qwen35._run_worker({"director_mtp": True}, True)
         worker.assert_called_once()
+
+    def test_storyboard_messages_include_target_and_image_inventory(self):
+        system, prompt = qwen35._storyboard_messages({
+            "director_backend": "qwen3.8",
+            "story": "一名女子在雨夜等待朋友。",
+            "style": "cinematic realism",
+            "shot_density": "medium",
+            "fps": 24.0,
+            "total_frames": 124,
+            "duration_seconds": 5.0,
+            "image_count": 2,
+        })
+        self.assertIn("JSON", system)
+        self.assertIn("124", prompt)
+        self.assertIn("<Picture 1>", prompt)
+        self.assertIn("<Picture 2>", prompt)
+        self.assertIn("一名女子", prompt)
+
+    def test_storyboard_result_validates_and_compiles_prompt(self):
+        value = {
+            "image_subjects": [{"picture": 1, "subject": 1, "name": "woman", "observable_features": "black hair"}],
+            "shots": [{"shot": 1, "start_frame": 0, "end_frame": 124, "pictures": [1], "description": "A woman waits in rain."}],
+        }
+        result = qwen35._storyboard_result(value, {"image_count": 1, "total_frames": 124, "fps": 24.0})
+        self.assertIn("[Shot 1] A woman waits", result["prompt"])
+        self.assertEqual(result["story_plan"]["total_frames"], 124)
+        self.assertIn("镜头 1", result["shot_report"])
 
     def test_gguf_mtp_detection_reads_nextn_metadata(self):
         key = b"qwen3.nextn_predict_layers"

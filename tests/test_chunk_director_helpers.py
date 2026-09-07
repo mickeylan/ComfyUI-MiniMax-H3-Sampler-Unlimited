@@ -75,22 +75,15 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             "qwen_full_history",
             "prompt_preview_only",
         } & set(input_ids))
-        self.assertEqual(
-            input_ids[-13:-7],
-            [
-                "cache_gemma_preproduction",
-                "gemma4_mtp",
-                "pytorch_memory_fraction",
-                "debug",
-                "debug_stop_chunk",
-                "debug_start_chunk",
-            ],
-        )
-        self.assertEqual(input_ids[-7:-4], ["director_backend", "director_model", "director_mmproj"])
-        self.assertEqual(
-            input_ids[-4:],
-            ["director_mtp_draft_tokens", "director_reasoning_effort", "director_cpu_moe", "director_n_cpu_moe"],
-        )
+        self.assertEqual(input_ids[input_ids.index("retake_plan") + 1:input_ids.index("director_backend")], [
+            "cache_gemma_preproduction", "gemma4_mtp", "pytorch_memory_fraction",
+            "debug", "debug_stop_chunk", "debug_start_chunk",
+        ])
+        self.assertEqual(input_ids[input_ids.index("director_backend"):input_ids.index("director_mtp_draft_tokens")],
+                         ["director_backend", "director_model", "director_mmproj"])
+        self.assertEqual(input_ids[-6:], ["director_mtp_draft_tokens", "director_reasoning_effort",
+                                          "director_cpu_moe", "director_n_cpu_moe",
+                                          "director_config", "reference_set"])
 
         execute_params = inspect.signature(nodes.HREndlessSampler.execute).parameters
         self.assertNotIn("video_continuation_enable", execute_params)
@@ -103,7 +96,9 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertIn("gemma4_mtp", execute_params)
         parameter_ids = list(execute_params)
         self.assertLess(parameter_ids.index("debug_start_chunk"), parameter_ids.index("director_backend"))
-        self.assertEqual(parameter_ids[-4:-1], ["director_backend", "director_model", "director_mmproj"])
+        self.assertEqual(parameter_ids[parameter_ids.index("director_backend"):parameter_ids.index("director_config")],
+                         ["director_backend", "director_model", "director_mmproj"])
+        self.assertIn("retake_plan", execute_params)
         self.assertIn("pytorch_memory_fraction", execute_params)
         self.assertEqual(execute_params["video_continuation"].default, 22)
         self.assertEqual(
