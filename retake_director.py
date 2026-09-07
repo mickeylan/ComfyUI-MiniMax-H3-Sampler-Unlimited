@@ -4,10 +4,14 @@ import hashlib
 import json
 from pathlib import Path
 
+import torch
+
+import comfy.nested_tensor
 from aiohttp import web
 from comfy_api.latest import io
 
-from .nodes import REPLAY_CACHE_FORMAT, _replay_cache_root
+from .nodes import REPLAY_CACHE_FORMAT, _LastRunReplayCache, _replay_cache_root
+from .video_io import HREndlessTimeline, normalize_timeline
 
 RetakePlan = io.Custom("HR_RETAKE_PLAN")
 RETAKE_MODES = {"video_only", "isolated_av", "continuous_av"}
@@ -54,6 +58,7 @@ def replay_cache_snapshot():
                 "director_description": metadata.get("director_description", ""),
                 "observation_images": images,
                 "active_revision": metadata.get("active_revision", 0),
+                "revisions": metadata.get("revisions", []),
                 "complete": bool(tensor_exists and metadata.get("effective_h3_prompt")),
             })
         except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
@@ -88,6 +93,17 @@ if _PROMPT_SERVER is not None:
     @_PROMPT_SERVER.routes.get("/hr_endless_sampler_retake/cache")
     async def hr_endless_sampler_retake_cache(_request):
         return web.json_response(replay_cache_snapshot(), headers={"Cache-Control": "no-store"})
+
+    @_PROMPT_SERVER.routes.post("/hr_endless_sampler_retake/activate")
+    async def hr_endless_sampler_retake_activate(request):
+        try:
+            payload = await request.json()
+            from .nodes import _LastRunReplayCache
+            _LastRunReplayCache().activate_revision(int(payload["chunk"]), int(payload["revision"]))
+            return web.json_response({"ok": True}, headers={"Cache-Control": "no-store"})
+        except (KeyError, TypeError, ValueError, OSError, RuntimeError, json.JSONDecodeError) as error:
+            return web.json_response({"ok": False, "error": str(error)}, status=400,
+                                     headers={"Cache-Control": "no-store"})
 
     @_PROMPT_SERVER.routes.get("/hr_endless_sampler_retake/asset")
     async def hr_endless_sampler_retake_asset(request):
@@ -131,6 +147,46 @@ def build_retake_plan(retake_state):
         raise ValueError("Select at least one complete chunk for retake")
     chunks.sort(key=lambda item: item["chunk"])
     return {"format": 1, "cache_identity": snapshot["cache_identity"], "mode": mode, "chunks": chunks}
+
+
+class HREndlessRetakeAssemble(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="HREndlessRetakeAssemble",
+            display_name="HR Endless Retake Assemble",
+            category="model/sampling/custom",
+            description="Assemble the active original/retake revision of every cached chunk without sampling.",
+            outputs=[io.Latent.Output(display_name="output"), io.Latent.Output(display_name="denoised_output"),
+                     HREndlessTimeline.Output(display_name="timeline")],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(cls):
+        snapshot = replay_cache_snapshot()
+        if not snapshot.get("available") or not snapshot.get("compatible") or not snapshot.get("chunks"):
+            raise ValueError(snapshot.get("reason") or "No compatible retake cache is available")
+        cache = _LastRunReplayCache()
+        states = [cache.load_active_chunk(chunk["chunk"]) for chunk in snapshot["chunks"]]
+        if not all(chunk.get("complete") for chunk in snapshot["chunks"]):
+            raise ValueError("Every chunk must be complete before assembly")
+        output = dict(states[-1]["output_template"])
+        denoised = dict(states[-1]["denoised_template"])
+        output["samples"] = comfy.nested_tensor.NestedTensor((
+            torch.cat([state["output_video"] for state in states], dim=2),
+            torch.cat([state["output_audio"] for state in states], dim=-1),
+        ))
+        denoised["samples"] = comfy.nested_tensor.NestedTensor((
+            torch.cat([state["denoised_video"] for state in states], dim=2),
+            torch.cat([state["denoised_audio"] for state in states], dim=-1),
+        ))
+        chunks = [{"chunk": chunk["chunk"], "start": chunk["frame_start"] + chunk.get("output_trim_frames", 0),
+                   "end": chunk["frame_end"] - 1, "active_revision": chunk.get("active_revision", 0)}
+                  for chunk in snapshot["chunks"]]
+        timeline = normalize_timeline({"fps": snapshot["fps"], "total_frames": chunks[-1]["end"] + 1,
+                                       "chunks": chunks}, fps=snapshot["fps"], total_frames=chunks[-1]["end"] + 1)
+        return io.NodeOutput(output, denoised, timeline)
 
 
 class HREndlessSegmentRetakeDirector(io.ComfyNode):

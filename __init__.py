@@ -1,6 +1,6 @@
 from .nodes import HREndlessSampler
 from .preview import HREndlessSamplerPreview
-from .retake_director import HREndlessSegmentRetakeDirector
+from .retake_director import HREndlessRetakeAssemble, HREndlessSegmentRetakeDirector
 from .video_io import HREndlessSamplerLoadVideo, HREndlessSamplerSaveVideo
 
 __version__ = "0.9.0"
@@ -12,6 +12,7 @@ NODE_CLASS_MAPPINGS = {
     "HREndlessSamplerSaveVideo": HREndlessSamplerSaveVideo,
     "HREndlessSamplerLoadVideo": HREndlessSamplerLoadVideo,
     "HREndlessSegmentRetakeDirector": HREndlessSegmentRetakeDirector,
+    "HREndlessRetakeAssemble": HREndlessRetakeAssemble,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -20,6 +21,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "HREndlessSamplerSaveVideo": "HR Endless Sampler Save Video",
     "HREndlessSamplerLoadVideo": "HR Endless Sampler Load Video",
     "HREndlessSegmentRetakeDirector": "HR Endless Segment Retake Director",
+    "HREndlessRetakeAssemble": "HR Endless Retake Assemble",
 }
 
 WEB_DIRECTORY = "./web"

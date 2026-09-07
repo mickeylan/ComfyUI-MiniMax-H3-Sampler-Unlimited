@@ -227,6 +227,11 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             metadata = json.loads(cache.chunk_metadata_path(1).read_text(encoding="utf-8"))
             self.assertEqual(metadata["active_revision"], 1)
             self.assertEqual(metadata["revisions"][0]["prompt"], "edited H3")
+            self.assertTrue(torch.equal(cache.load_active_chunk(1)["output_video"], video + 2))
+            cache.activate_revision(1, 0)
+            self.assertTrue(torch.equal(cache.load_active_chunk(1)["output_video"], video))
+            with self.assertRaisesRegex(ValueError, "does not exist"):
+                cache.activate_revision(1, 99)
             self.assertIsNone(cache.load_if_compatible({"different": True})[0])
             cache.truncate_from(1)
             self.assertFalse(cache.has_chunk(1))

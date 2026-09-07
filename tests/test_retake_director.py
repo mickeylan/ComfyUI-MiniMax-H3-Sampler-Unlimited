@@ -4,6 +4,8 @@ import sys
 import tempfile
 import types
 import unittest
+
+import torch
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,6 +79,32 @@ class RetakeDirectorTests(unittest.TestCase):
                 retake.build_retake_plan('{"mode":"wrong","selected":[1]}')
             with self.assertRaisesRegex(ValueError, "not available"):
                 retake.build_retake_plan('{"mode":"video_only","selected":[1]}')
+
+    def test_assemble_uses_active_revisions_without_sampling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "comfyui-hr-endless-sampler" / "last_run_replay"
+            with patch.object(nodes.tempfile, "gettempdir", return_value=directory), \
+                 patch.object(retake, "_replay_cache_root", return_value=root):
+                cache = nodes._LastRunReplayCache()
+                cache.create({"fps": 24.0}, "prompt", {"video": torch.zeros(1)})
+                for number in (1, 2):
+                    video = torch.full((1, 1, 1, 1, 1), float(number))
+                    audio = torch.full((1, 1, 1), float(number))
+                    cache.save_chunk(number, {"sampled_video": video, "sampled_audio": audio,
+                        "previous_frame_count": number, "output_video": video, "output_audio": audio,
+                        "denoised_video": video, "denoised_audio": audio,
+                        "output_template": {}, "denoised_template": {}},
+                        metadata={"frame_start": number - 1, "frame_end": number,
+                                  "effective_h3_prompt": f"prompt {number}"})
+                revision_video = torch.full((1, 1, 1, 1, 1), 9.0)
+                cache.save_revision(1, {"output_video": revision_video, "output_audio": torch.ones((1, 1, 1)),
+                    "denoised_video": revision_video, "denoised_audio": torch.ones((1, 1, 1)),
+                    "output_template": {}, "denoised_template": {}}, mode="video_only", prompt="edited")
+                output, _denoised, timeline = retake.HREndlessRetakeAssemble.execute().result
+        video, audio = output["samples"].unbind()
+        self.assertEqual(video.flatten().tolist(), [9.0, 2.0])
+        self.assertEqual(audio.flatten().tolist(), [1.0, 2.0])
+        self.assertEqual(len(timeline["chunks"]), 2)
 
     def test_node_serializes_state_and_returns_typed_plan(self):
         schema = retake.HREndlessSegmentRetakeDirector.define_schema()
