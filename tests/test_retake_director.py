@@ -57,10 +57,31 @@ class RetakeDirectorTests(unittest.TestCase):
                 with self.assertRaises(retake.web.HTTPNotFound):
                     retake._asset_path("../outside.jpg")
 
-    def test_node_has_no_inputs_and_only_returns_read_only_summary(self):
+    def test_build_plan_validates_selection_and_prompt_override(self):
+        snapshot = {"available": True, "compatible": True, "cache_identity": "abc", "chunks": [
+            {"chunk": 1, "complete": True, "effective_h3_prompt": "original one"},
+            {"chunk": 2, "complete": True, "effective_h3_prompt": "original two"},
+        ]}
+        state = json.dumps({"mode": "video_only", "selected": [2, 1], "overrides": {"2": "edited two"}})
+        with patch.object(retake, "replay_cache_snapshot", return_value=snapshot):
+            plan = retake.build_retake_plan(state)
+        self.assertEqual(plan["cache_identity"], "abc")
+        self.assertEqual([item["chunk"] for item in plan["chunks"]], [1, 2])
+        self.assertEqual(plan["chunks"][1]["prompt_override"], "edited two")
+        self.assertEqual(plan["chunks"][0]["original_h3_prompt"], "original one")
+
+    def test_build_plan_rejects_missing_chunks_and_unknown_modes(self):
+        snapshot = {"available": True, "compatible": True, "cache_identity": "abc", "chunks": []}
+        with patch.object(retake, "replay_cache_snapshot", return_value=snapshot):
+            with self.assertRaisesRegex(ValueError, "Unknown retake mode"):
+                retake.build_retake_plan('{"mode":"wrong","selected":[1]}')
+            with self.assertRaisesRegex(ValueError, "not available"):
+                retake.build_retake_plan('{"mode":"video_only","selected":[1]}')
+
+    def test_node_serializes_state_and_returns_typed_plan(self):
         schema = retake.HREndlessSegmentRetakeDirector.define_schema()
-        self.assertEqual(schema.inputs, [])
-        self.assertEqual(len(schema.outputs), 1)
+        self.assertEqual([item.id for item in schema.inputs], ["retake_state"])
+        self.assertEqual(len(schema.outputs), 2)
 
 
 if __name__ == "__main__":

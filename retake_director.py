@@ -1,5 +1,6 @@
 """Read-only browser view of the last HR Endless Sampler replay cache."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,6 +8,9 @@ from aiohttp import web
 from comfy_api.latest import io
 
 from .nodes import REPLAY_CACHE_FORMAT, _replay_cache_root
+
+RetakePlan = io.Custom("HR_RETAKE_PLAN")
+RETAKE_MODES = {"video_only", "isolated_av", "continuous_av"}
 
 try:
     from server import PromptServer
@@ -54,8 +58,11 @@ def replay_cache_snapshot():
             })
         except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
             chunks.append({"chunk": entry.get("chunk"), "complete": False, "error": str(error), "observation_images": []})
+    identity_payload = {"format": manifest.get("format"), "fingerprint": manifest.get("fingerprint"),
+                        "source_prompt_sha256": manifest.get("source_prompt_sha256"), "created": manifest.get("created")}
     return {
         "available": True,
+        "cache_identity": hashlib.sha256(json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
         "format": manifest.get("format"),
         "supported_format": REPLAY_CACHE_FORMAT,
         "status": manifest.get("status", "unknown"),
@@ -88,6 +95,44 @@ if _PROMPT_SERVER is not None:
                                 headers={"Cache-Control": "no-store"})
 
 
+def build_retake_plan(retake_state):
+    snapshot = replay_cache_snapshot()
+    if not snapshot.get("available") or not snapshot.get("compatible"):
+        raise ValueError(snapshot.get("reason") or "The last-run replay cache is unavailable or incompatible")
+    try:
+        state = json.loads(retake_state or "{}")
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Invalid retake state JSON: {error.msg}") from error
+    if not isinstance(state, dict):
+        raise ValueError("Retake state must be a JSON object")
+    mode = str(state.get("mode", "video_only"))
+    if mode not in RETAKE_MODES:
+        raise ValueError(f"Unknown retake mode: {mode}")
+    available = {int(chunk["chunk"]): chunk for chunk in snapshot["chunks"] if chunk.get("complete")}
+    selected = state.get("selected", [])
+    if not isinstance(selected, list):
+        raise ValueError("Retake selected chunks must be a list")
+    overrides = state.get("overrides", {})
+    if not isinstance(overrides, dict):
+        raise ValueError("Retake prompt overrides must be an object")
+    chunks = []
+    for value in selected:
+        if isinstance(value, bool):
+            raise ValueError("Retake chunk numbers must be integers")
+        number = int(value)
+        if number not in available:
+            raise ValueError(f"Chunk {number} is not available for retake")
+        prompt = overrides.get(str(number), "")
+        if not isinstance(prompt, str):
+            raise ValueError(f"Chunk {number} prompt override must be text")
+        chunks.append({"chunk": number, "prompt_override": prompt.strip(),
+                       "original_h3_prompt": available[number]["effective_h3_prompt"]})
+    if not chunks:
+        raise ValueError("Select at least one complete chunk for retake")
+    chunks.sort(key=lambda item: item["chunk"])
+    return {"format": 1, "cache_identity": snapshot["cache_identity"], "mode": mode, "chunks": chunks}
+
+
 class HREndlessSegmentRetakeDirector(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -95,11 +140,13 @@ class HREndlessSegmentRetakeDirector(io.ComfyNode):
             node_id="HREndlessSegmentRetakeDirector",
             display_name="HR Endless Segment Retake Director",
             category="model/sampling/custom",
-            description="Inspect the last run's chunk images and prompts. Retake execution will be added in a later phase.",
-            outputs=[io.String.Output(display_name="cache summary")],
+            description="Select cached chunks, edit their H3 prompts, and create a validated retake plan.",
+            inputs=[io.String.Input("retake_state", default='{"mode":"video_only","selected":[],"overrides":{}}', multiline=True)],
+            outputs=[RetakePlan.Output(display_name="retake plan"), io.String.Output(display_name="plan JSON")],
             is_experimental=True,
         )
 
     @classmethod
-    def execute(cls):
-        return io.NodeOutput(json.dumps(replay_cache_snapshot(), ensure_ascii=False))
+    def execute(cls, retake_state):
+        plan = build_retake_plan(retake_state)
+        return io.NodeOutput(plan, json.dumps(plan, ensure_ascii=False, indent=2))

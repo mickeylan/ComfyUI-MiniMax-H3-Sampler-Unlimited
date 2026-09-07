@@ -2,105 +2,16 @@ const { app } = window.comfyAPI.app;
 const { api } = window.comfyAPI.api;
 
 const style = `
-.hr-retake {width:100%;height:100%;box-sizing:border-box;padding:10px;overflow:auto;background:#181a1f;color:#ddd;font:12px sans-serif}
-.hr-retake .top {display:flex;gap:8px;align-items:center;margin-bottom:10px;position:sticky;top:0;background:#181a1f;padding:4px 0;z-index:2}
-.hr-retake button {background:#294963;color:#fff;border:1px solid #5683a4;border-radius:5px;padding:6px 10px;cursor:pointer}
-.hr-retake .status {color:#9bb5c8}.hr-retake .grid {display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
-.hr-retake .card {background:#22262d;border:1px solid #404854;border-radius:8px;padding:9px}.hr-retake .bad {border-color:#985a4d}
-.hr-retake .title {font-weight:bold;color:#8fc7e8;margin-bottom:7px}.hr-retake .images {display:flex;gap:5px;overflow:auto;margin-bottom:8px}
-.hr-retake img {height:92px;max-width:160px;object-fit:contain;background:#111;border-radius:4px}.hr-retake details {margin-top:6px}
-.hr-retake pre {white-space:pre-wrap;max-height:190px;overflow:auto;background:#16181c;padding:7px;border-radius:5px;color:#d6d9df}
+.hr-retake{width:100%;height:100%;box-sizing:border-box;padding:10px;overflow:auto;background:#181a1f;color:#ddd;font:12px sans-serif}.hr-retake .top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;position:sticky;top:0;background:#181a1f;padding:4px 0;z-index:2}.hr-retake button,.hr-retake select{background:#294963;color:#fff;border:1px solid #5683a4;border-radius:5px;padding:6px 10px}.hr-retake .status{color:#9bb5c8}.hr-retake .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}.hr-retake .card{background:#22262d;border:1px solid #404854;border-radius:8px;padding:9px}.hr-retake .card.selected{border-color:#55b7ef;box-shadow:0 0 0 1px #55b7ef}.hr-retake .bad{border-color:#985a4d}.hr-retake .title{font-weight:bold;color:#8fc7e8;margin-bottom:7px;display:flex;gap:7px}.hr-retake .images{display:flex;gap:5px;overflow:auto;margin-bottom:8px}.hr-retake img{height:92px;max-width:160px;object-fit:contain;background:#111;border-radius:4px}.hr-retake details{margin-top:6px}.hr-retake pre,.hr-retake textarea{white-space:pre-wrap;width:100%;box-sizing:border-box;background:#16181c;padding:7px;border:1px solid #404854;border-radius:5px;color:#d6d9df}.hr-retake textarea{min-height:120px;resize:vertical}
 `;
-
-function installStyle() {
-    if (document.getElementById("hr-retake-style")) return;
-    const element = document.createElement("style");
-    element.id = "hr-retake-style";
-    element.textContent = style;
-    document.head.appendChild(element);
-}
-
-function formatTime(frame, fps) {
-    const seconds = Number(frame) / (Number(fps) || 24);
-    return Number.isFinite(seconds) ? `${seconds.toFixed(2)}s` : "?";
-}
-
-function promptDetails(label, text) {
-    const details = document.createElement("details");
-    const summary = document.createElement("summary");
-    summary.textContent = label;
-    const pre = document.createElement("pre");
-    pre.textContent = String(text || "（无）");
-    details.append(summary, pre);
-    return details;
-}
-
-function createDirector(node) {
-    installStyle();
-    const root = document.createElement("div");
-    root.className = "hr-retake";
-    const top = document.createElement("div");
-    top.className = "top";
-    const refresh = document.createElement("button");
-    refresh.textContent = "刷新最后运行缓存";
-    const status = document.createElement("span");
-    status.className = "status";
-    top.append(refresh, status);
-    const grid = document.createElement("div");
-    grid.className = "grid";
-    root.append(top, grid);
-
-    async function load() {
-        status.textContent = "读取中…";
-        grid.replaceChildren();
-        try {
-            const response = await api.fetchApi("/hr_endless_sampler_retake/cache");
-            const data = await response.json();
-            if (!data.available) {
-                status.textContent = data.reason || "没有可用缓存";
-                return;
-            }
-            status.textContent = `状态：${data.status} · 已完成 ${data.completed_chunks} 段 · 缓存格式 v${data.format}${data.compatible ? "" : "（不兼容）"}`;
-            const fps = data.fps || 24;
-            for (const chunk of data.chunks || []) {
-                const card = document.createElement("section");
-                card.className = `card${chunk.complete ? "" : " bad"}`;
-                const title = document.createElement("div");
-                title.className = "title";
-                title.textContent = `Chunk ${chunk.chunk} · ${formatTime(chunk.frame_start, fps)}–${formatTime(chunk.frame_end, fps)} · ${chunk.complete ? "缓存完整" : "缓存不完整"}`;
-                const images = document.createElement("div");
-                images.className = "images";
-                for (const path of chunk.observation_images || []) {
-                    const image = document.createElement("img");
-                    image.src = api.apiURL(`/hr_endless_sampler_retake/asset?path=${encodeURIComponent(path)}`);
-                    image.loading = "lazy";
-                    images.appendChild(image);
-                }
-                if (!images.childElementCount) images.textContent = "没有观察图片";
-                card.append(title, images,
-                    promptDetails("最终 H3 提示词", chunk.effective_h3_prompt),
-                    promptDetails("原始完整提示词", chunk.source_prompt));
-                if (chunk.error) card.append(promptDetails("缓存错误", chunk.error));
-                grid.appendChild(card);
-            }
-        } catch (error) {
-            status.textContent = `读取失败：${error.message || error}`;
-        }
-    }
-    refresh.onclick = load;
-    node.addDOMWidget("retake_cache_view", "div", root, {serialize:false});
-    node.setSize([Math.max(node.size[0], 760), Math.max(node.size[1], 520)]);
-    load();
-}
-
-app.registerExtension({
-    name: "hr-endless-sampler.retake-director",
-    async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== "HREndlessSegmentRetakeDirector") return;
-        const original = nodeType.prototype.onNodeCreated;
-        nodeType.prototype.onNodeCreated = function() {
-            original?.apply(this, arguments);
-            createDirector(this);
-        };
-    },
-});
+function installStyle(){if(document.getElementById("hr-retake-style"))return;const e=document.createElement("style");e.id="hr-retake-style";e.textContent=style;document.head.appendChild(e)}
+function hideWidget(w){w.hidden=true;w.computeSize=()=>[0,-4];w.draw=()=>{};if(w.element)w.element.style.display="none"}
+function parseState(w){try{const v=JSON.parse(w?.value||"{}");return{mode:v.mode||"video_only",selected:Array.isArray(v.selected)?v.selected.map(Number):[],overrides:v.overrides&&typeof v.overrides==="object"?v.overrides:{}}}catch{return{mode:"video_only",selected:[],overrides:{}}}}
+function formatTime(frame,fps){const s=Number(frame)/(Number(fps)||24);return Number.isFinite(s)?`${s.toFixed(2)}s`:"?"}
+function details(label,text){const d=document.createElement("details"),s=document.createElement("summary"),p=document.createElement("pre");s.textContent=label;p.textContent=String(text||"（无）");d.append(s,p);return d}
+function createDirector(node){installStyle();const widget=node.widgets?.find(w=>w.name==="retake_state");if(!widget)return;hideWidget(widget);let state=parseState(widget),cache=null;const root=document.createElement("div");root.className="hr-retake";const top=document.createElement("div");top.className="top";const refresh=document.createElement("button");refresh.textContent="刷新缓存";const all=document.createElement("button");all.textContent="全选完整段";const clear=document.createElement("button");clear.textContent="清除选择";const mode=document.createElement("select");for(const [value,label] of [["video_only","仅重拍画面（保留原音频）"],["isolated_av","本段音画一起重拍"],["continuous_av","从最早选中段连续重拍"]]){const o=document.createElement("option");o.value=value;o.textContent=label;mode.append(o)}mode.value=state.mode;const status=document.createElement("span");status.className="status";top.append(refresh,all,clear,mode,status);const grid=document.createElement("div");grid.className="grid";root.append(top,grid);
+function save(){state.selected=[...new Set(state.selected.map(Number))].sort((a,b)=>a-b);widget.value=JSON.stringify(state);widget.callback?.(widget.value);node.setDirtyCanvas?.(true,true)}
+function render(){grid.replaceChildren();if(!cache)return;const fps=cache.fps||24;for(const chunk of cache.chunks||[]){const number=Number(chunk.chunk),card=document.createElement("section");card.className=`card${chunk.complete?"":" bad"}${state.selected.includes(number)?" selected":""}`;const title=document.createElement("label");title.className="title";const box=document.createElement("input");box.type="checkbox";box.disabled=!chunk.complete;box.checked=state.selected.includes(number);box.onchange=()=>{state.selected=box.checked?[...state.selected,number]:state.selected.filter(v=>v!==number);save();render()};title.append(box,document.createTextNode(`Chunk ${number} · ${formatTime(chunk.frame_start,fps)}–${formatTime(chunk.frame_end,fps)} · ${chunk.complete?"缓存完整":"缓存不完整"}`));const images=document.createElement("div");images.className="images";for(const path of chunk.observation_images||[]){const image=document.createElement("img");image.src=api.apiURL(`/hr_endless_sampler_retake/asset?path=${encodeURIComponent(path)}`);image.loading="lazy";images.append(image)}if(!images.childElementCount)images.textContent="没有观察图片";const edit=document.createElement("textarea");edit.placeholder="留空时使用原最终 H3 提示词；可在这里输入本段重拍提示词";edit.value=state.overrides[String(number)]||"";edit.oninput=()=>{if(edit.value)state.overrides[String(number)]=edit.value;else delete state.overrides[String(number)];save()};const restore=document.createElement("button");restore.textContent="恢复原提示词";restore.onclick=()=>{delete state.overrides[String(number)];edit.value="";save()};card.append(title,images,details("原最终 H3 提示词",chunk.effective_h3_prompt),edit,restore,details("原始完整提示词",chunk.source_prompt));if(chunk.error)card.append(details("缓存错误",chunk.error));grid.append(card)}}
+async function load(){status.textContent="读取中…";try{const r=await api.fetchApi("/hr_endless_sampler_retake/cache");cache=await r.json();status.textContent=cache.available?`状态：${cache.status} · 已完成 ${cache.completed_chunks} 段 · 已选 ${state.selected.length} 段`:cache.reason||"没有可用缓存";render()}catch(e){status.textContent=`读取失败：${e.message||e}`}}
+refresh.onclick=load;all.onclick=()=>{state.selected=(cache?.chunks||[]).filter(c=>c.complete).map(c=>Number(c.chunk));save();render()};clear.onclick=()=>{state.selected=[];save();render()};mode.onchange=()=>{state.mode=mode.value;save()};node.addDOMWidget("retake_cache_view","div",root,{serialize:false});node.setSize([Math.max(node.size[0],780),Math.max(node.size[1],600)]);load()}
+app.registerExtension({name:"hr-endless-sampler.retake-director",async beforeRegisterNodeDef(nodeType,nodeData){if(nodeData.name!=="HREndlessSegmentRetakeDirector")return;const original=nodeType.prototype.onNodeCreated;nodeType.prototype.onNodeCreated=function(){original?.apply(this,arguments);createDirector(this)}}});
