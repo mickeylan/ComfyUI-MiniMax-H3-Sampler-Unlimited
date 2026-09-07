@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import json
 import struct
@@ -208,6 +209,25 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(qwen35.QWEN38_CONTEXT_TOKENS, 32768)
         self.assertEqual(qwen35.QWEN38_TIMING_RESPONSE_TOKENS, 8192)
         self.assertEqual(qwen35.QWEN38_CHUNK_RESPONSE_TOKENS, 4096)
+
+    def test_qwen_director_saves_exact_observation_jpeg(self):
+        request = {
+            **self.request(), "chunk_number": 2, "target_shots": self.request()["source_shots"],
+            "observation_frame_numbers": [17],
+        }
+        result = qwen35.QwenChunkPrompt("high", "ok", "[Shot 1] Continue.", "{}")
+        frames = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            director = qwen35.Qwen35ContinuityDirector(
+                Path("qwen3.5-model.gguf"), Path("mmproj-qwen3.5.gguf"),
+                observation_image_directory=directory,
+            )
+            with patch.object(qwen35, "_run_worker", return_value=result) as worker:
+                director.direct(request, frames)
+            image_url = worker.call_args.args[0]["image_urls"][0]
+            expected = base64.b64decode(image_url.partition(",")[2], validate=True)
+            saved = Path(directory, "chunk_002_source_frame_000017.jpg").read_bytes()
+        self.assertEqual(saved, expected)
 
     def test_qwen38_configuration_enables_mtp(self):
         director = qwen35.Qwen35ContinuityDirector(

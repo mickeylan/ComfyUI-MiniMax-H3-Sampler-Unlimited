@@ -73,7 +73,7 @@ GEMMA_PROMPT_LOG_DIRNAME = "comfyui-hr-endless-sampler"
 GEMMA_PROMPT_LOG_FILENAME = "last_gemma_chunk_prompts.txt"
 GEMMA_IMAGE_LOG_DIRNAME = "last_gemma_images"
 REPLAY_CACHE_DIRNAME = "last_run_replay"
-REPLAY_CACHE_FORMAT = 2
+REPLAY_CACHE_FORMAT = 3
 DETAILED_DESCRIPTION_FIELD = re.compile(r"detailed_description\s*:", re.IGNORECASE)
 INTEGRATED_DESCRIPTION_FIELD = re.compile(r"integrated_multimodal_description\s*:", re.IGNORECASE)
 SHOT_MARKER = re.compile(r"\[Shot\s+(\d+)\](?:\s+At\s+(\d+):(\d{2})\.(\d{3}),)?", re.IGNORECASE)
@@ -315,6 +315,23 @@ class _LastRunReplayCache:
     def chunk_path(self, chunk_number):
         return self.root / "chunks" / f"chunk_{int(chunk_number):04d}.pt"
 
+    def chunk_metadata_path(self, chunk_number):
+        return self.root / "prompts" / f"chunk_{int(chunk_number):04d}.json"
+
+    def _archive_observation_images(self, chunk_number, source_directory):
+        if source_directory is None:
+            return []
+        destination = self.root / "observations"
+        destination.mkdir(parents=True, exist_ok=True)
+        archived = []
+        for source in sorted(Path(source_directory).glob(f"chunk_{int(chunk_number):03d}_source_frame_*.jpg")):
+            target = destination / source.name
+            temporary = target.with_name(target.name + ".tmp")
+            temporary.write_bytes(source.read_bytes())
+            temporary.replace(target)
+            archived.append(target.relative_to(self.root).as_posix())
+        return archived
+
     def clear(self):
         _remove_replay_cache()
 
@@ -388,9 +405,24 @@ class _LastRunReplayCache:
                 source_prompt_sha256=hashlib.sha256(source_prompt.encode("utf-8")).hexdigest()
             )
 
-    def save_chunk(self, chunk_number, state):
-        _replay_write_tensor_file(self.chunk_path(chunk_number), state)
-        self._update_manifest(status="recording", completed_chunks=int(chunk_number))
+    def save_chunk(self, chunk_number, state, metadata=None, observation_image_directory=None):
+        number = int(chunk_number)
+        _replay_write_tensor_file(self.chunk_path(number), state)
+        chunk_metadata = dict(metadata or {})
+        chunk_metadata.update({
+            "chunk": number,
+            "tensor_path": self.chunk_path(number).relative_to(self.root).as_posix(),
+            "observation_images": self._archive_observation_images(number, observation_image_directory),
+            "active_revision": 0,
+            "revisions": [],
+        })
+        _replay_write_json(self.chunk_metadata_path(number), chunk_metadata)
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        chunks = [item for item in manifest.get("chunks", []) if int(item.get("chunk", -1)) != number]
+        chunks.append({"chunk": number, "metadata_path": self.chunk_metadata_path(number).relative_to(self.root).as_posix(),
+                       "active_revision": 0})
+        self._update_manifest(status="recording", completed_chunks=number,
+                              chunks=sorted(chunks, key=lambda item: int(item["chunk"])))
 
     def begin_from(self, chunk_number):
         """Mark a restored cache as actively recording its rerun suffix."""
@@ -420,6 +452,12 @@ class _LastRunReplayCache:
                 continue
             if cached_number >= int(chunk_number):
                 path.unlink()
+                metadata_path = self.chunk_metadata_path(cached_number)
+                if metadata_path.is_file():
+                    metadata_path.unlink()
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        retained = [item for item in manifest.get("chunks", []) if int(item.get("chunk", -1)) < int(chunk_number)]
+        self._update_manifest(chunks=retained)
 
 
 def _pixel_frames(latent_t):
@@ -3720,6 +3758,26 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 "prefix_video_noise": prefix_video_noise,
                                 "prefix_audio_noise": prefix_audio_noise,
                             },
+                            metadata={
+                                "frame_start": int(chunk["frame_start"]),
+                                "frame_end": int(chunk["frame_end"]),
+                                "video_start": int(chunk["video_start"]),
+                                "video_end": int(chunk["video_end"]),
+                                "audio_start": int(chunk["audio_start"]),
+                                "audio_end": int(chunk["audio_end"]),
+                                "output_trim_frames": int(chunk.get("output_trim_frames", 0)),
+                                "source_prompt": prompt,
+                                "source_prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                                "effective_h3_prompt": chunk_prompt,
+                                "director_system_prompt": gemma_system_prompt,
+                                "director_observation_prompt": gemma_observation_prompt,
+                                "director_response": gemma_response,
+                                "director_description": previous_gemma_description,
+                                "director_timing_plan": previous_gemma_timing_plan,
+                                "director_end_state": previous_gemma_end_state,
+                                "director_last_seen_character_state": previous_gemma_last_seen_character_state,
+                            },
+                            observation_image_directory=gemma_image_log,
                         )
                     except (OSError, RuntimeError, ValueError) as error:
                         logging.warning(

@@ -183,6 +183,10 @@ class ChunkDirectorHelperTest(unittest.TestCase):
                     "noise_seed": 123,
                 },
             )
+            observation_directory = Path(temp_root) / "last_images"
+            observation_directory.mkdir()
+            observation_bytes = b"exact-jpeg-payload"
+            (observation_directory / "chunk_001_source_frame_000017.jpg").write_bytes(observation_bytes)
             cache.save_chunk(1, {
                 "sampled_video": video,
                 "sampled_audio": audio,
@@ -199,15 +203,25 @@ class ChunkDirectorHelperTest(unittest.TestCase):
                 "debug_prompt": "chunk debug",
                 "prefix_video_noise": None,
                 "prefix_audio_noise": None,
-            })
+            }, metadata={"effective_h3_prompt": "final H3", "source_prompt": "original prompt"},
+               observation_image_directory=observation_directory)
             loaded, reason = cache.load_if_compatible(fingerprint)
             self.assertIsNone(reason)
             self.assertEqual(loaded["initial"]["noise_seed"], 123)
             self.assertEqual(loaded["initial"]["video"].device.type, "cpu")
             self.assertTrue(torch.equal(cache.load_chunk(1)["sampled_video"], video.cpu()))
+            metadata = json.loads(cache.chunk_metadata_path(1).read_text(encoding="utf-8"))
+            self.assertEqual(metadata["effective_h3_prompt"], "final H3")
+            self.assertEqual(metadata["active_revision"], 0)
+            self.assertEqual(metadata["observation_images"], ["observations/chunk_001_source_frame_000017.jpg"])
+            self.assertEqual((cache.root / metadata["observation_images"][0]).read_bytes(), observation_bytes)
+            manifest = json.loads(cache.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["chunks"][0]["metadata_path"], "prompts/chunk_0001.json")
             self.assertIsNone(cache.load_if_compatible({"different": True})[0])
             cache.truncate_from(1)
             self.assertFalse(cache.has_chunk(1))
+            self.assertFalse(cache.chunk_metadata_path(1).exists())
+            self.assertEqual(json.loads(cache.manifest_path.read_text(encoding="utf-8"))["chunks"], [])
 
     def test_replay_cache_lifecycle_selects_only_interrupted_runs_for_automatic_resume(self):
         with tempfile.TemporaryDirectory() as temp_root, \

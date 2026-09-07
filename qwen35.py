@@ -408,6 +408,21 @@ def _image_url(frame: torch.Tensor) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
 
+def _capture_observation_images(destination: Path, chunk_number: int,
+                                frame_numbers: Sequence[int], image_urls: Sequence[str]) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    for frame_number, image_url in zip(frame_numbers, image_urls, strict=True):
+        prefix, separator, encoded = str(image_url).partition(",")
+        if separator != "," or ";base64" not in prefix:
+            raise Qwen35ObservationError("Qwen capture expected a base64 image data URL")
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except ValueError as error:
+            raise Qwen35ObservationError("Qwen capture received malformed base64 image data") from error
+        filename = f"chunk_{chunk_number:03d}_source_frame_{int(frame_number):06d}.jpg"
+        (destination / filename).write_bytes(payload)
+
+
 def _gguf_mtp_layers(model_path: str | Path) -> int | None:
     """Return embedded NextN/MTP layers, zero when absent, or None when unreadable."""
     path = Path(model_path)
@@ -855,6 +870,13 @@ class Qwen35ContinuityDirector:
             if frames.ndim != 4 or frames.shape[0] != len(frame_numbers):
                 raise Qwen35ObservationError("Qwen3.5 observation frames must match the NHWC frame-number batch")
             request["image_urls"] = [_image_url(frame) for frame in frames]
+            if self.observation_image_directory is not None:
+                try:
+                    _capture_observation_images(self.observation_image_directory, int(request["chunk_number"]),
+                                                frame_numbers, request["image_urls"])
+                except (OSError, Qwen35ObservationError, ValueError) as error:
+                    logging.warning("HR Endless Sampler could not save last-run Qwen images to %s: %s",
+                                    self.observation_image_directory, error)
         self._configure_request(request)
         result = _run_worker(request, False)
         self.last_system_prompt = result.system_prompt or self.last_system_prompt
