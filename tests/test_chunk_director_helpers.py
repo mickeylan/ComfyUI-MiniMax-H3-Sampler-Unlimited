@@ -217,6 +217,16 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             self.assertEqual((cache.root / metadata["observation_images"][0]).read_bytes(), observation_bytes)
             manifest = json.loads(cache.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["chunks"][0]["metadata_path"], "prompts/chunk_0001.json")
+            revision = cache.save_revision(1, {
+                "output_video": video + 2,
+                "output_audio": audio,
+            }, mode="video_only", prompt="edited H3")
+            self.assertEqual(revision["revision"], 1)
+            revision_state = nodes._replay_load_tensor_file(cache.root / revision["tensor_path"])
+            self.assertTrue(torch.equal(revision_state["output_audio"], audio))
+            metadata = json.loads(cache.chunk_metadata_path(1).read_text(encoding="utf-8"))
+            self.assertEqual(metadata["active_revision"], 1)
+            self.assertEqual(metadata["revisions"][0]["prompt"], "edited H3")
             self.assertIsNone(cache.load_if_compatible({"different": True})[0])
             cache.truncate_from(1)
             self.assertFalse(cache.has_chunk(1))

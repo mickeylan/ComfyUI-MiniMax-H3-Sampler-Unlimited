@@ -40,6 +40,7 @@ from .qwen35 import Qwen35ContinuityDirector
 from .video_io import HREndlessTimeline, normalize_timeline
 
 
+HREndlessRetakePlan = io.Custom("HR_RETAKE_PLAN")
 AUDIO_LATENT_FPS = 40
 VIDEO_FPS = 24
 MIN_VIDEO_STEPS = 2
@@ -423,6 +424,27 @@ class _LastRunReplayCache:
                        "active_revision": 0})
         self._update_manifest(status="recording", completed_chunks=number,
                               chunks=sorted(chunks, key=lambda item: int(item["chunk"])))
+
+    def save_revision(self, chunk_number, state, *, mode, prompt):
+        number = int(chunk_number)
+        metadata_path = self.chunk_metadata_path(number)
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        revisions = list(metadata.get("revisions", []))
+        revision = max((int(item.get("revision", 0)) for item in revisions), default=0) + 1
+        tensor_path = self.root / "revisions" / f"chunk_{number:04d}" / f"revision_{revision:04d}.pt"
+        _replay_write_tensor_file(tensor_path, state)
+        entry = {"revision": revision, "mode": str(mode), "prompt": str(prompt),
+                 "tensor_path": tensor_path.relative_to(self.root).as_posix(),
+                 "created": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
+        revisions.append(entry)
+        metadata.update(active_revision=revision, revisions=revisions)
+        _replay_write_json(metadata_path, metadata)
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        for item in manifest.get("chunks", []):
+            if int(item.get("chunk", -1)) == number:
+                item["active_revision"] = revision
+        _replay_write_json(self.manifest_path, manifest)
+        return entry
 
     def begin_from(self, chunk_number):
         """Mark a restored cache as actively recording its rerun suffix."""
@@ -2367,6 +2389,8 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 ),
                 io.Vae.Input("vae", optional=True,
                              tooltip="Video VAE required by the current MiniMax H3 continuation and Gemma visual-directing backend."),
+                HREndlessRetakePlan.Input("retake_plan", optional=True,
+                                          tooltip="Optional validated chunk plan from HR Endless Segment Retake Director."),
                 io.Boolean.Input("cache_gemma_preproduction", default=False,
                                  tooltip="Save one clean post-preproduction Gemma KV context in temporary RAM and restore it for each chunk. Avoids re-feeding static source intent and timing plans; needs several GiB of system RAM."),
                 io.Boolean.Input("gemma4_mtp", default=True,
@@ -2412,7 +2436,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
 
     @classmethod
     def execute(cls, noise, guider, sampler, sigmas, latent_image, clip, prompt, fps=24.0, chunk_frames=124, images=None,
-                source_images=None, video_continuation=22, video_continuation_res="full", vae=None,
+                source_images=None, video_continuation=22, video_continuation_res="full", vae=None, retake_plan=None,
                 cache_gemma_preproduction=False, gemma4_mtp=True, director_mtp_draft_tokens=2,
                 director_reasoning_effort="xhigh", director_cpu_moe=False, director_n_cpu_moe=0,
                 pytorch_memory_fraction=DEFAULT_PYTORCH_MEMORY_FRACTION,
@@ -2601,7 +2625,34 @@ class HREndlessSampler(SamplerCustomAdvanced):
         )
         replay_cached_initial = None
         auto_resumed = False
-        if debug_start_chunk == 0:
+        retake_chunks = {}
+        retake_cached_chunks = {}
+        if retake_plan is not None:
+            if not isinstance(retake_plan, dict) or retake_plan.get("mode") != "video_only":
+                raise ValueError("HR Endless Sampler currently supports only video_only retake plans")
+            candidate_cache = _LastRunReplayCache()
+            loaded_cache, cache_reason = candidate_cache.load_if_compatible(replay_fingerprint)
+            if loaded_cache is None:
+                raise ValueError(f"Retake cache is unavailable: {cache_reason}")
+            identity_payload = {"format": loaded_cache["manifest"].get("format"),
+                                "fingerprint": loaded_cache["manifest"].get("fingerprint"),
+                                "source_prompt_sha256": loaded_cache["manifest"].get("source_prompt_sha256"),
+                                "created": loaded_cache["manifest"].get("created")}
+            cache_identity = hashlib.sha256(json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            if retake_plan.get("cache_identity") != cache_identity:
+                raise ValueError("Retake plan does not match the current last-run cache")
+            retake_chunks = {int(item["chunk"]): item for item in retake_plan.get("chunks", ())}
+            if not retake_chunks:
+                raise ValueError("Retake plan contains no chunks")
+            if not all(candidate_cache.has_chunk(number) for number in range(1, len(active_plan) + 1)):
+                raise ValueError("Retake requires a complete cached baseline for every chunk")
+            retake_cached_chunks = {number: candidate_cache.load_chunk(number) for number in range(1, len(active_plan) + 1)}
+            replay_cached_initial = loaded_cache["initial"]
+            replay_cache = candidate_cache
+            gemma_director_needed = False
+            logging.info("HR Endless Sampler video-only retake: sampling chunks %s and preserving cached audio.",
+                         ", ".join(str(number) for number in sorted(retake_chunks)))
+        if retake_plan is None and debug_start_chunk == 0:
             candidate_cache = _LastRunReplayCache()
             loaded_cache, _cache_reason = candidate_cache.load_if_compatible(replay_fingerprint)
             if loaded_cache is not None:
@@ -2622,7 +2673,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     # manifest from before lifecycle tracking is a new render
                     # rather than an automatic continuation candidate.
                     candidate_cache.clear()
-        if debug_start_chunk:
+        if retake_plan is None and debug_start_chunk:
             candidate_cache = _LastRunReplayCache()
             loaded_cache, cache_reason = candidate_cache.load_if_compatible(replay_fingerprint)
             required_prior_numbers = range(1, debug_start_chunk)
@@ -3150,6 +3201,27 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     )
                     raise
             for index, chunk in enumerate(active_plan[replay_start_index:], start=replay_start_index):
+                retake_number = index + 1
+                if retake_chunks and retake_number not in retake_chunks:
+                    state = retake_cached_chunks[retake_number]
+                    output_video.append(state["output_video"])
+                    output_audio.append(state["output_audio"])
+                    denoised_video.append(state["denoised_video"])
+                    denoised_audio.append(state["denoised_audio"])
+                    previous_video = state["sampled_video"].to(device=video.device, dtype=video.dtype)
+                    previous_audio = state["sampled_audio"].to(device=audio.device, dtype=audio.dtype)
+                    previous_frame_count = int(state["previous_frame_count"])
+                    output_template = state.get("output_template")
+                    denoised_template = state.get("denoised_template")
+                    if state.get("debug_prompt"):
+                        debug_prompts.append(str(state["debug_prompt"]))
+                    completed_chunks = retake_number
+                    continue
+                if retake_chunks and index > 0:
+                    predecessor = retake_cached_chunks[index]
+                    previous_video = predecessor["sampled_video"].to(device=video.device, dtype=video.dtype)
+                    previous_audio = predecessor["sampled_audio"].to(device=audio.device, dtype=audio.dtype)
+                    previous_frame_count = int(predecessor["previous_frame_count"])
                 timing.observe_memory()
                 timing.start_chunk(index)
                 gemma_chunk_seconds = 0.0
@@ -3536,6 +3608,10 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     debug_prompt = _debug_chunk_prompt(index, chunk, content_start, chunk_prompt, gemma_report)
                 else:
                     chunk_prompt, debug_prompt = planned_prompts[index]
+                    if retake_chunks:
+                        retake_item = retake_chunks[index + 1]
+                        chunk_prompt = retake_item.get("prompt_override") or retake_item["original_h3_prompt"]
+                        debug_prompt = _debug_chunk_prompt(index, chunk, content_start, chunk_prompt, None)
                     if gemma_report is not None:
                         debug_prompt = _debug_chunk_prompt(index, chunk, content_start, chunk_prompt, gemma_report)
                 if return_prompts:
@@ -3692,6 +3768,10 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 assembled_audio = previous_audio[..., audio_trim:].clone()
                 assembled_denoised_video = denoised_chunk_video[:, :, video_trim:].clone()
                 assembled_denoised_audio = denoised_chunk_audio[..., audio_trim:].clone()
+                if retake_chunks:
+                    original_state = retake_cached_chunks[index + 1]
+                    assembled_audio = original_state["output_audio"]
+                    assembled_denoised_audio = original_state["denoised_audio"]
                 if replay_output_on_cpu:
                     output_video.append(assembled_video.to(device="cpu"))
                     output_audio.append(assembled_audio.to(device="cpu"))
@@ -3731,7 +3811,22 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     previous_gemma_timing_plan = result.timing_plan
                     previous_gemma_end_state = result.end_state
                     previous_gemma_last_seen_character_state = list(result.last_seen_character_state)
-                if replay_cache is not None:
+                if replay_cache is not None and retake_chunks:
+                    try:
+                        replay_cache.save_revision(index + 1, {
+                            "sampled_video": previous_video,
+                            "sampled_audio": original_state["sampled_audio"],
+                            "previous_frame_count": previous_frame_count,
+                            "output_video": assembled_video,
+                            "output_audio": assembled_audio,
+                            "denoised_video": assembled_denoised_video,
+                            "denoised_audio": assembled_denoised_audio,
+                            "output_template": output_template,
+                            "denoised_template": denoised_template,
+                        }, mode="video_only", prompt=chunk_prompt)
+                    except (OSError, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as error:
+                        logging.warning("HR Endless Sampler could not save retake revision for Chunk %d: %s", index + 1, error)
+                if replay_cache is not None and not retake_chunks:
                     try:
                         replay_cache.save_chunk(
                             index + 1,
