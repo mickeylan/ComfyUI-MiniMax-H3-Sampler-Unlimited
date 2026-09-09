@@ -4,6 +4,8 @@ import types
 import unittest
 from pathlib import Path
 
+import torch
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,6 +68,16 @@ class ReferenceSetTests(unittest.TestCase):
         audios = reference_set._indexed({"ref_video_audio_1": second_audio}, "ref_video_audio_", 3)
         self.assertEqual(videos, (first_video, second_video, None))
         self.assertEqual(audios, (None, second_audio, None))
+
+    def test_story_director_image_batch_expands_to_individual_references(self):
+        batch = torch.zeros((4, 32, 32, 3))
+        images = reference_set.reference_images({"version": 1, "images": (batch,)})
+        self.assertEqual(len(images), 4)
+        self.assertTrue(all(tuple(image.shape) == (1, 32, 32, 3) for image in images))
+
+    def test_story_director_image_batch_respects_h3_limit(self):
+        with self.assertRaisesRegex(ValueError, "at most 9"):
+            reference_set.reference_images({"version": 1, "images": (torch.zeros((10, 8, 8, 3)),)})
 
     def test_normalize_accepts_same_index_video_soundtrack(self):
         video = object()

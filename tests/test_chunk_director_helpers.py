@@ -40,6 +40,20 @@ class ChunkDirectorHelperTest(unittest.TestCase):
 
         self.assertEqual(tuple(resized.shape), (2, 64, 32, 3))
 
+    def test_image_reference_blocks_encode_every_story_director_batch_item(self):
+        images = [torch.zeros((1, 32, 32, 3)), torch.ones((1, 32, 32, 3))]
+        class FakeVAE:
+            def __init__(self):
+                self.calls = []
+            def encode(self, image):
+                self.calls.append(image.clone())
+                return torch.zeros((1, 24, 1, 2, 2))
+        vae = FakeVAE()
+        blocks = nodes._image_reference_blocks(vae, images, 64, 64)
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(len(vae.calls), 2)
+        self.assertEqual([block["kind"] for block in blocks], ["image", "image"])
+
     def test_reference_image_uses_one_image_from_extra_leading_dimensions(self):
         image = torch.zeros((2, 1, 64, 32, 3), dtype=torch.float32)
 
@@ -81,9 +95,9 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         ])
         self.assertEqual(input_ids[input_ids.index("director_backend"):input_ids.index("director_mtp_draft_tokens")],
                          ["director_backend", "director_model", "director_mmproj"])
-        self.assertEqual(input_ids[-6:], ["director_mtp_draft_tokens", "director_reasoning_effort",
+        self.assertEqual(input_ids[-7:], ["director_mtp_draft_tokens", "director_reasoning_effort",
                                           "director_cpu_moe", "director_n_cpu_moe",
-                                          "director_config", "reference_set"])
+                                          "director_config", "reference_set", "continuation_plan"])
 
         execute_params = inspect.signature(nodes.HREndlessSampler.execute).parameters
         self.assertNotIn("video_continuation_enable", execute_params)

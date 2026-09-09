@@ -43,6 +43,7 @@ from .video_io import HREndlessTimeline, normalize_timeline
 
 
 HREndlessRetakePlan = io.Custom("HR_RETAKE_PLAN")
+HREndlessContinuationPlan = io.Custom("HR_CONTINUATION_PLAN")
 AUDIO_LATENT_FPS = 40
 VIDEO_FPS = 24
 MIN_VIDEO_STEPS = 2
@@ -1052,6 +1053,15 @@ def _reference_image(image, width, height):
     target_width = max(CANVAS_MULTIPLE, round(source_width * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
     target_height = max(CANVAS_MULTIPLE, round(source_height * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
     return _resize(image, target_width, target_height, "disabled")
+
+
+def _image_reference_blocks(vae, image_list, width, height):
+    blocks = []
+    for image in image_list:
+        resized = _reference_image(image, width, height)
+        latent = vae.encode(resized)
+        blocks.append({"kind": "image", "latent_h": latent.shape[-2], "latent_w": latent.shape[-1], "latent": latent})
+    return blocks
 
 
 def _source_images(images, source_images):
@@ -2465,6 +2475,8 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     tooltip=("Optional shared MiniMax H3 image/video/audio references. Connect the Reference Conditioning "
                              "passthrough output so Planner, conditioning, and Sampler use one media connection."),
                 ),
+                HREndlessContinuationPlan.Input("continuation_plan", optional=True,
+                                                tooltip="Continue from an immutable HR Endless continuation checkpoint."),
             ],
             outputs=[
                 io.Latent.Output(display_name="output"),
@@ -2486,8 +2498,27 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 director_reasoning_effort="xhigh", director_cpu_moe=False, director_n_cpu_moe=0,
                 pytorch_memory_fraction=DEFAULT_PYTORCH_MEMORY_FRACTION,
                 debug=False, debug_stop_chunk=0, debug_start_chunk=0, director_backend="gemma4",
-                director_model="auto", director_mmproj="auto", director_config=None, reference_set=None, **_deprecated_inputs):
+                director_model="auto", director_mmproj="auto", director_config=None, reference_set=None,
+                continuation_plan=None, **_deprecated_inputs):
         _set_pytorch_memory_fraction(DEFAULT_PYTORCH_MEMORY_FRACTION, guider.model_patcher.load_device)
+        if retake_plan is not None and continuation_plan is not None:
+            raise ValueError("retake_plan and continuation_plan cannot be used together")
+        continuation_manifest = continuation_state = None
+        continuation_audio_mode = "continue"
+        if continuation_plan is not None:
+            from .continuation import load_checkpoint
+            continuation_manifest, continuation_state = load_checkpoint({
+                "type": "HR_CONTINUATION_CHECKPOINT", "version": 1,
+                "checkpoint_id": continuation_plan.get("checkpoint_id", ""),
+            })
+            prompt = str(continuation_plan.get("prompt", "")).strip()
+            if not prompt:
+                raise ValueError("Continuation prompt cannot be empty")
+            continuation_audio_mode = str(continuation_plan.get("audio_mode", "continue"))
+            if continuation_plan.get("reference_set") is not None:
+                reference_set = continuation_plan["reference_set"]
+            if continuation_audio_mode not in {"continue", "new_segment", "mute"}:
+                raise ValueError(f"Unknown continuation audio mode: {continuation_audio_mode}")
         if director_config is not None:
             shared = normalize_qwen38_config(director_config)
             director_backend = shared["backend"]
@@ -2587,8 +2618,15 @@ class HREndlessSampler(SamplerCustomAdvanced):
         if debug_start_chunk and debug_stop_chunk and debug_start_chunk > debug_stop_chunk:
             raise ValueError("debug_start_chunk cannot be greater than debug_stop_chunk")
         active_plan = plan if debug_stop_chunk == 0 else plan[:debug_stop_chunk]
+        if continuation_state is not None:
+            if abs(float(continuation_manifest["fps"]) - float(fps)) > 1e-6:
+                raise ValueError("Continuation checkpoint FPS does not match the new segment")
+            active_plan = [dict(chunk) for chunk in active_plan]
+            active_plan[0].update(context_video_t=_video_steps(5), context_audio_t=_audio_steps(5),
+                                  output_trim_frames=0, synthetic_prefix=True)
+            plan = active_plan if debug_stop_chunk == 0 else [*active_plan, *plan[len(active_plan):]]
         _gemma_markers, gemma_shots, _gemma_description_end = _parse_prompt_shots(prompt, plan[-1]["frame_end"], fps)
-        gemma_director_needed = bool(gemma_shots)
+        gemma_director_needed = bool(gemma_shots) and continuation_state is None
 
         original_conds = guider.original_conds
         positive = original_conds.get("positive")
@@ -2599,8 +2637,16 @@ class HREndlessSampler(SamplerCustomAdvanced):
             raise ValueError("Connect reference_set or legacy images/source_images, not both")
         image_list = list(reference_images(reference_set)) if reference_set is not None else _source_images(images, source_images)
         base_reference_items = reference_presentation_items(reference_set, width, height) if reference_set is not None else None
+        if image_list and not ref2va:
+            if vae is None:
+                raise ValueError("Reference images require the MiniMax H3 video VAE")
+            image_refs = _image_reference_blocks(vae, image_list, width, height)
+            positive = [[item[0], {**item[1], "minimax_refs": image_refs}] for item in positive]
+            original_conds = {**original_conds, "positive": positive}
+            ref2va = True
+            logging.info("HR Endless Sampler automatically encoded %d image references from its images input.", len(image_refs))
         if len(active_plan) > 1 and (use_video_continuation or qwen_full_history) and not ref2va:
-            raise ValueError("Experimental video conditioning requires positive conditioning from MiniMax H3 Reference to Video")
+            raise ValueError("Chunk continuation requires reference images or MiniMax H3 Ref2VA conditioning")
         original_refs = positive[0].get("minimax_refs", ())
         video_number = 1 + sum(ref["kind"] in ("video", "video_audio") for ref in original_refs)
         audio_number = 1 + sum(ref["kind"] in ("audio", "video_audio") for ref in original_refs)
@@ -2892,6 +2938,12 @@ class HREndlessSampler(SamplerCustomAdvanced):
         previous_video = None
         previous_audio = None
         previous_frame_count = None
+        if continuation_state is not None:
+            previous_video = continuation_state["sampled_video"].to(device=video.device, dtype=video.dtype)
+            previous_audio = continuation_state["sampled_audio"].to(device=audio.device, dtype=audio.dtype)
+            previous_frame_count = int(continuation_state.get("previous_frame_count", _pixel_frames(previous_video.shape[2])))
+            if continuation_audio_mode != "continue":
+                previous_audio = torch.zeros_like(previous_audio)
         # Only promote this after a stock sampler call succeeds. The next
         # Gemma request can then pair the exact prior directed description with
         # stills from the same rendered chunk, never with an unsampled plan.
@@ -3305,7 +3357,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         "previous chunk": (previous_video, previous_audio),
                     },
                 )
-                continuation = index > 0
+                continuation = index > 0 or continuation_state is not None
                 content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
                 chunk_label = f"Chunk {index + 1}/{len(active_plan)}"
                 if preview_execution is not None:
@@ -3834,11 +3886,14 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 denoised_chunk_video, denoised_chunk_audio = denoised["samples"].unbind()
 
                 video_trim = context_video_t
-                audio_trim = 0 if index == 0 else context_audio_t
+                audio_trim = 0 if index == 0 and continuation_state is None else context_audio_t
                 assembled_video = previous_video[:, :, video_trim:].clone()
                 assembled_audio = previous_audio[..., audio_trim:].clone()
                 assembled_denoised_video = denoised_chunk_video[:, :, video_trim:].clone()
                 assembled_denoised_audio = denoised_chunk_audio[..., audio_trim:].clone()
+                if continuation_state is not None and continuation_audio_mode == "mute":
+                    assembled_audio = torch.zeros_like(assembled_audio)
+                    assembled_denoised_audio = torch.zeros_like(assembled_denoised_audio)
                 if retake_chunks:
                     original_state = retake_cached_chunks[index + 1]
                     if retake_mode == "video_only":

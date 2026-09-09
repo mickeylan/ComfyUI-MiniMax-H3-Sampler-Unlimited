@@ -94,10 +94,12 @@ def normalize_reference_set(value: Any) -> dict[str, Any]:
 def reference_images(value: Any) -> tuple[torch.Tensor, ...]:
     refs = normalize_reference_set(value)
     images = []
-    for image in refs["images"]:
-        if not isinstance(image, torch.Tensor) or image.ndim != 4 or image.shape[0] < 1:
+    for batch in refs["images"]:
+        if not isinstance(batch, torch.Tensor) or batch.ndim != 4 or batch.shape[0] < 1:
             raise ValueError("Every reference image must be a non-empty NHWC IMAGE batch")
-        images.append(image[:1])
+        images.extend(batch[index:index + 1] for index in range(batch.shape[0]))
+    if len(images) > 9:
+        raise ValueError("MiniMax H3 supports at most 9 image references")
     return tuple(images)
 
 

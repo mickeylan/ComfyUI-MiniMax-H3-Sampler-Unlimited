@@ -1,3 +1,4 @@
+from .continuation import HREndlessContinuationAssemble, HREndlessContinuationCheckpoint, HREndlessContinuationPlan
 from .director_config import HRQwen38DirectorConfig
 from .nodes import HREndlessSampler
 from .preview import HREndlessSamplerPreview
@@ -17,6 +18,9 @@ NODE_CLASS_MAPPINGS = {
     "HREndlessSamplerLoadVideo": HREndlessSamplerLoadVideo,
     "HREndlessSegmentRetakeDirector": HREndlessSegmentRetakeDirector,
     "HREndlessRetakeAssemble": HREndlessRetakeAssemble,
+    "HREndlessContinuationCheckpoint": HREndlessContinuationCheckpoint,
+    "HREndlessContinuationPlan": HREndlessContinuationPlan,
+    "HREndlessContinuationAssemble": HREndlessContinuationAssemble,
     "HRMiniMaxH3StoryboardPlanner": HRMiniMaxH3StoryboardPlanner,
     "HRQwen38DirectorConfig": HRQwen38DirectorConfig,
     "HRMiniMaxH3ReferenceSet": HRMiniMaxH3ReferenceSet,
@@ -32,6 +36,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "HREndlessSamplerLoadVideo": "HR Endless Sampler Load Video",
     "HREndlessSegmentRetakeDirector": "HR Endless Segment Retake Director",
     "HREndlessRetakeAssemble": "HR Endless Retake Assemble",
+    "HREndlessContinuationCheckpoint": "HR Endless Continuation Checkpoint",
+    "HREndlessContinuationPlan": "HR Endless Continuation Plan",
+    "HREndlessContinuationAssemble": "HR Endless Continuation Assemble",
     "HRMiniMaxH3StoryboardPlanner": "HR MiniMax H3 Storyboard Planner",
     "HRQwen38DirectorConfig": "HR Qwen Director Config",
     "HRMiniMaxH3ReferenceSet": "HR MiniMax H3 Reference Set",
