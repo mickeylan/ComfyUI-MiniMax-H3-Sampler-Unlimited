@@ -253,6 +253,13 @@ review date, versions/commits checked, and outcome below.
   wheel variants but no newer official release containing a confirmed state
   restore fix. The local Qwen storyboard planner therefore reuses disposable
   workers, and the Gemma operation-local non-MTP fallback remains unchanged.
+- 2026-09-10 (README feature refresh): issue #27439 remains open with the
+  `bug-unconfirmed` label. The issue page mentions PR #27487, but exposes no
+  linked development branch or confirmed merged fix. GitHub's latest-release API
+  still returns `v0.3.35-hip-radeon`, published 2026-08-17 with
+  `target_commitish: main`; that release response does not state a vendored
+  llama.cpp commit. No newer official package with a confirmed fix was found.
+  Preserve disposable workers and the operation-local non-MTP fallback.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at

@@ -1,15 +1,17 @@
 # ComfyUI-MiniMax-H3-Sampler-Unlimited (mickeylan fork)
-## 适用于中文用户和低显存环境的增强版
+## HR Endless Sampler 中文增强与低显存长视频工具集
 
 > ⚠️ **注意**：这是 [hradec/ComfyUI-HR-Endless-Sampler](https://github.com/hradec/ComfyUI-HR-Endless-Sampler) 的中文用户/低显存优化分支。
 
-
+本项目以 **HR Endless Sampler 节点族**为主：在保留 MiniMax H3 低显存 physical chunk 连续采样的基础上，加入多导演、实时预览、Timeline、Save/Load、断点重跑、分块重拍和持久续写。仓库中当前附带的 Storyboard/JZL 节点属于上游 Story Director 方向的实验性集成，不改变本项目以 Sampler 为核心的定位。
 
 https://github.com/user-attachments/assets/5da194ea-4d29-4fd3-9b1c-edd537b88431
 
 - video generated with HR Endless Sampler at 1080p 625 frames on a 16GB GPU
 
-## JZL 多媒体提示词测试工作流
+## Story Director 实验性集成（非本项目主线）
+
+仓库当前保留一套供联调使用的 JZL 多媒体提示词测试工作流。该规划能力后续属于独立 Story Director 项目；HR Endless Sampler 只消费其 H3 prompt、参考媒体和可选导演配置。
 
 加载 `example_workflows/HR-JZL-MVP.json`。将图片、视频帧批次、视频音轨和独立音频接入 `HR MiniMax H3 Reference Set`，再运行 `HR MiniMax H3 JZL Storyboard`：
 
@@ -33,13 +35,18 @@ https://github.com/user-attachments/assets/5da194ea-4d29-4fd3-9b1c-edd537b88431
 | 12GB VRAM 支持 | ❌ Gemma 12B 太大 | ✅ Qwen 27B MoE + UD-IQ2-mtp |
 | 中文提示词 | ⚠️ 需要翻译 | ✅ 原生支持 |
 | MoE CPU Offload | ❌ 不支持 | ✅ 支持 |
+| 分块重拍与 Revision | ❌ 不支持 | ✅ 已实现，待实机验收 |
+| 持久续写 Checkpoint | ❌ 不支持 | ✅ 已实现，待实机验收 |
+| 统一参考媒体输入 | ❌ 分散接线 | ✅ 图片/视频/音轨/独立音频 |
+| Replay/断点重跑 | ⚠️ 基础能力 | ✅ 缓存、重拍和续写共用 |
 
 ### 为什么选择 Qwen3.6/3.8？
 
-- **Qwen3.6/3.8 是 27B MoE 模型**，使用 UD-IQ2-mtp 量化后仅需 ~8-9GB 显存
-- **速度与 9B 模型相当**（MoE 架构，激活参数 ~3-4B）
-- **Gemma 4 12B 在 12GB 显存上根本无法使用**
-- 内置 MTP 推测解码，加速生成
+- **Qwen3.6/3.8 是 27B MoE 模型**，可使用 UD-IQ2-mtp 量化降低显存占用
+- MoE 架构只激活部分参数，适合显存受限环境
+- 本分支用户实测 Qwen3.6/3.8 可在 12GB VRAM 上运行；稳定参数仍取决于 GGUF、CUDA、参考媒体、分辨率和 chunk 大小
+- Gemma 4 12B 在该 12GB 测试环境中不可用，因此保留为旧工作流默认后端，不作为 12GB 推荐方案
+- Qwen3.6/3.8 支持内置 MTP 推测解码和 MoE offload
 
 ### 12GB VRAM 推荐配置
 
@@ -93,18 +100,74 @@ The way to use is pretty straight forward - just replace the normal "Sampler" no
 
 ## Included nodes
 
-The extension installs four nodes:
+### HR Endless Sampler 主节点族
 
 | Node | Purpose |
 | --- | --- |
-| `HR Endless Sampler` | Samples a long latent serially, asks the selected local director to plan the complete production and direct each chunk, and outputs the finished latent, chunk prompts, and timeline metadata. |
-| `HR Endless Sampler Preview` | Patches the model with the live accumulated preview, ordered chunk playback, shot brackets, prompt/timing tooltips, frame stepping, performance graphs, and browser-refresh recovery. |
-| `HR Endless Sampler Save Video` | Saves ordinary video, animated VHS formats, or float EXR sequences while preserving the Endless timeline, prompts, shot/chunk mapping, render timing, and optional audio. |
-| `HR Endless Sampler Load Video` | Browses or uploads finished media, restores its interactive timeline immediately in the browser, and outputs decoded video/images, audio, dimensions, FPS, frame count, filename, and timeline to a queued workflow. |
+| `HR Endless Sampler` | 串行采样长音视频 latent，生成 chunk prompts、成品 latent 和 Timeline，并接收重拍或续写计划。 |
+| `HR Endless Sampler Preview` | 实时累计预览、chunk 播放、Shot 标记、提示词/耗时悬停、逐帧控制、性能图表和刷新恢复。 |
+| `HR Endless Sampler Save Video` | 保存普通视频、VHS 格式或 float EXR 序列，同时保留 Timeline、提示词、渲染耗时和可选音频。 |
+| `HR Endless Sampler Load Video` | 浏览或上传成品媒体，恢复交互式 Timeline，并输出 VIDEO/IMAGE/AUDIO、尺寸、FPS、帧数和文件名。 |
+| `HR Endless Segment Retake Director` | 浏览最近一次完整 replay cache，选择 physical chunks、编辑 H3 prompt 并生成重拍计划。 |
+| `HR Endless Retake Assemble` | 根据每个 chunk 当前选中的原版/重拍 revision，无采样重新拼接 output、denoised output 和 Timeline。 |
+| `HR Endless Continuation Checkpoint` | 将最近一次完整 replay 固化为可跨重启保存的续写 checkpoint。 |
+| `HR Endless Continuation Plan` | 设置新提示词、音频策略以及参考媒体继承/替换/合并策略。 |
+| `HR Endless Continuation Assemble` | 将 checkpoint 中的旧音视频 latent 与本次续写结果拼接。 |
+
+### 当前仓库中的辅助与实验节点
+
+| Node | Purpose |
+| --- | --- |
+| `HR Qwen Director Config` | 为 Sampler 和实验性规划节点共享本地 Qwen model/mmproj/runtime 配置。 |
+| `HR MiniMax H3 Reference Set` | 统一输入最多 9 张图片、3 个视频及对应音轨、3 条独立音频。 |
+| `HR MiniMax H3 Reference Conditioning` | 创建 MiniMax H3 Ref2VA conditioning 和 nested AV latent。 |
+| `HR MiniMax H3 Storyboard Planner` | 实验性全局 Storyboard 规划器；长期归属 Story Director 项目。 |
+| `HR MiniMax H3 JZL Storyboard` | 实验性 JZL 四合一多媒体规划器；长期归属 Story Director 项目。 |
+| `HR MiniMax H3 JZL Segment Dispatcher` | 实验性 JZL 段选择和参考素材重排；长期归属 Story Director 项目。 |
 
 The Save and Load players use the same colored chunk timeline and shot brackets
 as the live Preview node, but omit the live sampling graphs. Hovering a chunk
 shows its H3 prompt and the sampler/Gemma/miscellaneous timing breakdown.
+
+## Chunk retake（分块重拍）
+
+先让 `HR Endless Sampler` 完整生成一次基线，随后在 `HR Endless Segment Retake Director` 中刷新最近一次 replay cache、选择 chunks、修改提示词并选择模式：
+
+- `video_only`：只重拍画面，保留缓存中的原音频；
+- `isolated_av`：只重拍选中 chunks 的画面和音频；
+- `continuous_av`：从最早选中的 chunk 连续重拍到结尾，后续块继承新的前块状态。
+
+将 Director 的 `retake plan` 接入原 `HR Endless Sampler.retake_plan` 后重新运行。每次成功重拍都会创建 revision，不覆盖原版。在 Director 中选择各 chunk 的活动 revision，再运行 `HR Endless Retake Assemble` 即可无采样重新拼接。
+
+> 重拍代码闭环已实现，但尚未完成真实 ComfyUI + H3 + GPU 的完整验收。首次测试请保留基线视频、日志、Timeline 和 replay cache。
+
+详细接线和验收步骤见 [`HR重拍与续写操作手册.md`](HR重拍与续写操作手册.md)。
+
+## Durable continuation（持久续写）
+
+续写建议分三次 Queue：
+
+1. 用 `HR Endless Sampler` 完整生成原片段；
+2. 单独运行 `HR Endless Continuation Checkpoint`，把完整 replay 固化到 `output/hr_endless_sampler/continuations/`；
+3. 用 `HR Endless Continuation Plan` 设置新提示词、音频和参考策略，将其接入新的 `HR Endless Sampler.continuation_plan`，最后用 `HR Endless Continuation Assemble` 拼接旧结果与新结果。
+
+音频策略：
+
+- `continue`：继承旧片末尾 Audio1；
+- `new_segment`：保持视频连续，但不延续旧音频内容；
+- `mute`：将新增片段输出音频静音。
+
+参考媒体策略：
+
+- `inherit`：使用 checkpoint 保存的 Reference Set；
+- `replace`：只使用新连接的 Reference Set；
+- `inherit_plus_replace`：在原参考媒体后追加新参考媒体。
+
+续写 Sampler 的 `latent_image` 只表示新增片段长度，FPS 必须与 checkpoint 相同；`retake_plan` 和 `continuation_plan` 不能同时连接。
+
+> 续写代码闭环已实现，但尚未完成真实 ComfyUI + H3 + GPU 的完整验收。
+
+详细接线、策略说明和测试模板见 [`HR重拍与续写操作手册.md`](HR重拍与续写操作手册.md)。
 
 ## Main settings
 
@@ -435,16 +498,16 @@ The console shows chunk progress, H3 step progress, and Gemma preparation
 progress with live generated tokens/second. The end-of-run report includes H3, Qwen, VAE, and Gemma time,
 plus peak RAM and VRAM use.
 
-## Current limits
+## Current limits and verification status
 
-- The released backend currently supports MiniMax H3 only.
+- The released sampling backend currently supports MiniMax H3 only; LTX 2.5 is still planned.
 - Multi-chunk H3 rendering needs the H3 video VAE.
 - Chunked denoise masks are not supported.
-- The sampler can reconstruct image and audio Ref2VA inputs. It cannot turn an
-  image input back into an original video Ref2VA source.
-- Gemma observes generated video frames, not generated audio. It preserves
-  dialogue and sound instructions from the source prompt, but does not judge
-  the resulting soundtrack.
+- Gemma/Qwen observes generated video frames, not generated audio. It preserves dialogue and sound instructions from the source prompt, but does not judge the resulting soundtrack.
+- 重拍和持久续写已经完成代码、缓存协议及模拟测试，但尚未完成真实 ComfyUI + H3 + GPU 的端到端验收。
+- Reference Set/JZL 的真实视频、同步音轨、独立音频和本地 faster-whisper 路径仍需实机联调。
+- 12GB VRAM 可用性来自本分支用户对特定 Qwen3.6/3.8 UD-IQ2-mtp 配置的实测，不代表所有模型、分辨率和参考媒体组合都能稳定运行。
+- 上游 llama.cpp issue #27439 截至 2026-09-10 仍为 open；必须保留 disposable worker 和 operation-local non-MTP fallback。
 
 ## TIPS TO RENDER 1080p with 16GB of VRAM:  
  - These tips are from my workflow using ref2va with 5 images at 720p resolution as reference. 
