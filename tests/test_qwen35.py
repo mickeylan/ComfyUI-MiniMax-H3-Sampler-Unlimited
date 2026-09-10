@@ -405,6 +405,26 @@ class Qwen35Tests(unittest.TestCase):
         self.assertTrue(calls[0]["director_mtp"])
         self.assertFalse(calls[1]["director_mtp"])
 
+    def test_invalid_timing_plan_gets_one_corrected_retry(self):
+        failure = {"ok": False, "error_type": "Qwen35ObservationError",
+                   "message": "Qwen3.5 timing plan returned NoneType shot entries; expected 1", "raw_json": '{"shots":null}'}
+        success = {"ok": True, "timing_plan": {
+            "confidence": "high", "analysis": "ok", "raw_json": "{}", "system_prompt": "system",
+            "planning_prompt": "prompt", "character_name_table": [], "shots": [{
+                "source_shot": 1, "shot_start_frame": 0, "shot_end_frame": 17,
+                "visual_beats": [], "overlays": [],
+            }]}}
+        calls = []
+        def worker(payload):
+            calls.append(payload.copy())
+            return types.SimpleNamespace(returncode=0), failure if len(calls) == 1 else success
+        with patch.object(qwen35, "_run_worker_once", side_effect=worker):
+            result = qwen35._run_worker({"director_mtp": False}, True)
+        self.assertEqual(result.shots[0].source_shot, 1)
+        self.assertFalse(calls[0].get("timing_plan_repair", False))
+        self.assertTrue(calls[1]["timing_plan_repair"])
+        self.assertEqual(len(calls), 2)
+
     def test_missing_chunk_prompt_gets_bounded_corrected_retries(self):
         failure = {"ok": False, "error_type": "Qwen35ObservationError",
                    "message": "Qwen response contains no usable H3 prompt text; returned keys: analysis, confidence",

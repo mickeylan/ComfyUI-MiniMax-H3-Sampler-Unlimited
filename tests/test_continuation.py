@@ -68,8 +68,18 @@ class ContinuationTests(unittest.TestCase):
                 checkpoint, "new story", "continue", "replace").result
             self.assertEqual(plan["checkpoint_id"], manifest["checkpoint_id"])
             self.assertEqual(json.loads(plan_json)["prompt"], "new story")
-            cache.clear()
+            reference_set = {"version": 1, "images": (torch.zeros((2, 8, 8, 3)),),
+                             "videos": (), "video_audios": (), "audios": (),
+                             "ref_image_size": "match", "ref_scale": 1.0}
+            plan, plan_json = continuation.HREndlessContinuationPlan.execute(
+                checkpoint, "new story", "continue", "replace", reference_set).result
+            self.assertIs(plan["reference_set"]["images"][0], reference_set["images"][0])
+            self.assertEqual(json.loads(plan_json)["reference_set"]["images"], 1)
             self.assertEqual(continuation.list_checkpoints()[0]["checkpoint_id"], manifest["checkpoint_id"])
+            cache._update_manifest(status="interrupted", completed_chunks=0)
+            reused, _info = continuation.HREndlessContinuationCheckpoint.execute("ignored").result
+            self.assertEqual(reused["checkpoint_id"], manifest["checkpoint_id"])
+            cache.clear()
 
     def test_checkpoint_id_rejects_path_traversal(self):
         with self.assertRaisesRegex(ValueError, "Invalid"):

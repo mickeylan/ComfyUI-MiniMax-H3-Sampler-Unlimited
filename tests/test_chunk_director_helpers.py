@@ -778,6 +778,10 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(boundary_latent.shape[2], nodes._video_steps(5))
         self.assertTrue(torch.equal(boundary_latent, previous[:, :, -2:]))
         self.assertNotEqual(boundary_latent.data_ptr(), previous.data_ptr())
+        checkpoint_chunk = {**plan[1], "output_trim_frames": 0}
+        checkpoint_boundary, checkpoint_start = nodes._video_continuation_boundary_guide(previous, checkpoint_chunk, 0, True)
+        self.assertEqual(checkpoint_start, 0)
+        self.assertTrue(torch.equal(checkpoint_boundary, previous[:, :, -2:]))
 
         no_boundary, no_boundary_start = nodes._video_continuation_boundary_guide(previous, plan[1], 22, True)
         self.assertIsNone(no_boundary)

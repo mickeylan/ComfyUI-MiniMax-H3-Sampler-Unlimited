@@ -224,7 +224,11 @@ def _timing_messages(request: dict[str, Any]) -> tuple[str, str]:
         "chunk_count": request["chunk_count"], "fps": request["fps"],
         "source_shots": _source_shots(request["source_shots"]), "original_prompt": request["original_prompt"],
     }
-    return templates["TIMING_SYSTEM"], _render(templates["TIMING_USER"], values)
+    prompt = _render(templates["TIMING_USER"], values)
+    if request.get("timing_plan_repair"):
+        prompt += (f"\n\nCORRECTION: Return exactly {len(request.get('source_shots', ()))} shot objects in the shots array, "
+                   "one for each Source Shot in order. shots must never be null. Return only the complete corrected JSON object.")
+    return templates["TIMING_SYSTEM"], prompt
 
 
 def _chunk_messages(request: dict[str, Any]) -> tuple[str, str]:
@@ -886,6 +890,12 @@ def _run_worker(request: dict[str, Any], timing: bool):
         process, value = _run_worker_once(payload)
     if value is None:
         raise DirectorWorkerError(f"Qwen worker exited with status {process.returncode} without a result", returncode=process.returncode)
+    if (timing and not value.get("ok")
+            and value.get("error_type") == "Qwen35ObservationError"
+            and "timing plan" in str(value.get("message", ""))):
+        payload["timing_plan_repair"] = True
+        logging.warning("HR Endless Sampler Qwen returned an invalid timing plan; requesting one corrected plan.")
+        process, value = _run_worker_once(payload)
     repair_attempts = 0
     while (not timing and not value.get("ok")
            and value.get("error_type") == "Qwen35ObservationError"

@@ -75,6 +75,11 @@ def list_checkpoints() -> list[dict]:
     return result
 
 
+def latest_checkpoint() -> dict | None:
+    checkpoints = list_checkpoints()
+    return checkpoints[-1] if checkpoints else None
+
+
 def _cache_identity(manifest: dict) -> str:
     payload = {"format": manifest.get("format"), "fingerprint": manifest.get("fingerprint"),
                "source_prompt_sha256": manifest.get("source_prompt_sha256"), "created": manifest.get("created")}
@@ -169,7 +174,15 @@ class HREndlessContinuationCheckpoint(io.ComfyNode):
 
     @classmethod
     def execute(cls, name="", reference_set=None):
-        manifest = create_checkpoint_from_last_run(name, reference_set=reference_set)
+        try:
+            manifest = create_checkpoint_from_last_run(name, reference_set=reference_set)
+        except ValueError as error:
+            if str(error) != "A complete current-format replay cache is required":
+                raise
+            manifest = latest_checkpoint()
+            if manifest is None:
+                raise
+            print(f"[HR Endless Sampler] Latest replay is incomplete; reusing continuation checkpoint {manifest['checkpoint_id']} ({manifest['name']}).", flush=True)
         value = {"type": "HR_CONTINUATION_CHECKPOINT", "version": 1, "checkpoint_id": manifest["checkpoint_id"]}
         return io.NodeOutput(value, json.dumps(manifest, ensure_ascii=False, indent=2))
 
@@ -245,4 +258,14 @@ class HREndlessContinuationPlan(io.ComfyNode):
         plan = {"type": "HR_CONTINUATION_PLAN", "version": 1, "checkpoint_id": manifest["checkpoint_id"],
                 "prompt": str(prompt).strip(), "audio_mode": audio_mode, "reference_policy": reference_policy,
                 "reference_set": effective_references}
-        return io.NodeOutput(plan, json.dumps(plan, ensure_ascii=False, indent=2))
+        summary = {key: value for key, value in plan.items() if key != "reference_set"}
+        if effective_references is not None:
+            summary["reference_set"] = {
+                "images": len(effective_references.get("images", ())),
+                "videos": sum(value is not None for value in effective_references.get("videos", ())),
+                "video_audios": sum(value is not None for value in effective_references.get("video_audios", ())),
+                "audios": len(effective_references.get("audios", ())),
+                "ref_image_size": effective_references.get("ref_image_size", "match"),
+                "ref_scale": effective_references.get("ref_scale", 1.0),
+            }
+        return io.NodeOutput(plan, json.dumps(summary, ensure_ascii=False, indent=2))

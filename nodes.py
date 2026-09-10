@@ -1205,9 +1205,9 @@ def _chunk_plan_without_overlap(video_t, audio_t, chunk_frames):
 def _video_continuation_boundary_guide(previous_video, chunk, context_keyframes, use_video_continuation):
     if not use_video_continuation or context_keyframes:
         return None, 0
-    if not chunk.get("synthetic_prefix") or chunk.get("output_trim_frames") != 5:
-        raise ValueError("Video1 boundary keyframe needs the five-frame discarded packing prefix")
-    guide_t = _video_steps(chunk["output_trim_frames"])
+    if not chunk.get("synthetic_prefix") or chunk.get("output_trim_frames") not in (0, 5):
+        raise ValueError("Video1 boundary keyframe needs a five-frame synthetic packing prefix")
+    guide_t = _video_steps(5)
     if previous_video.shape[2] < guide_t:
         raise ValueError("Previous chunk is too short for the five-frame Video1 boundary keyframe")
     return previous_video[:, :, -guide_t:].clone(), 0
@@ -2581,6 +2581,8 @@ class HREndlessSampler(SamplerCustomAdvanced):
             return io.NodeOutput(sampled[0], sampled[1], "", normalize_timeline(None, fps=fps, total_frames=0))
 
         video, audio = streams
+        width = int(video.shape[4]) * 16
+        height = int(video.shape[3]) * 16
         context_keyframes = int(context_keyframes_enable) * context_keyframes
         guide_overlap = int(guide_overlap_enable) * guide_overlap
         video_continuation = int(video_continuation_enable) * video_continuation
@@ -2633,7 +2635,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
         if positive is None:
             raise ValueError("HR Endless Sampler requires a standard guider with positive conditioning")
         ref2va = bool(positive[0].get("minimax_refs"))
-        if reference_set is not None and (images is not None or source_images):
+        if reference_set is not None and (images is not None or source_images) and continuation_state is None:
             raise ValueError("Connect reference_set or legacy images/source_images, not both")
         image_list = list(reference_images(reference_set)) if reference_set is not None else _source_images(images, source_images)
         base_reference_items = reference_presentation_items(reference_set, width, height) if reference_set is not None else None
@@ -2929,8 +2931,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     error,
                 )
 
-        width = int(video.shape[4]) * 16
-        height = int(video.shape[3]) * 16
         output_video = []
         output_audio = []
         denoised_video = []
