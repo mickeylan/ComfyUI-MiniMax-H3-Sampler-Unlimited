@@ -859,13 +859,22 @@ def _from_payload(value: dict[str, Any], timing: bool):
 
 def _run_worker_once(payload: dict[str, Any], *, timeout: int | None = 300) -> tuple[subprocess.CompletedProcess, dict[str, Any] | None]:
     print(f"[MINIMAX_H3_WORKER] launching worker timeout={timeout}s op={payload.get('operation')}", flush=True)
+    worker_path = Path(__file__).resolve()
+    worker_directory = str(worker_path.parent)
+    python_path = os.environ.get("PYTHONPATH", "")
+    worker_env = {
+        **os.environ,
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": worker_directory + (os.pathsep + python_path if python_path else ""),
+    }
     try:
         process = subprocess.run(
-            [sys.executable, "-u", str(Path(__file__).resolve()), "--worker"],
+            [sys.executable, "-u", str(worker_path), "--worker"],
             input=json.dumps(payload, ensure_ascii=False),
             text=True, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            cwd=worker_directory,
+            env=worker_env,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:

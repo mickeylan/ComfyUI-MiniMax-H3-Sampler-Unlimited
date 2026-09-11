@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import os
 import struct
 import sys
 import tempfile
@@ -383,6 +384,14 @@ class Qwen35Tests(unittest.TestCase):
         with patch.object(qwen35, "_run_worker_once", return_value=(process, None)):
             with self.assertRaisesRegex(qwen35.DirectorWorkerError, "CUDA backend failed to load"):
                 qwen35._run_worker({"director_mtp": False}, True)
+
+    def test_worker_launch_registers_plugin_directory_for_direct_imports(self):
+        process = types.SimpleNamespace(returncode=0, stderr="", stdout='MINIMAX_H3_QWEN35_RESULT={"ok": false}')
+        with patch.object(qwen35.subprocess, "run", return_value=process) as run:
+            qwen35._run_worker_once({"operation": "timing_plan"})
+        plugin_directory = str(Path(qwen35.__file__).resolve().parent)
+        self.assertEqual(run.call_args.kwargs["cwd"], plugin_directory)
+        self.assertEqual(run.call_args.kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0], plugin_directory)
 
     def test_native_mtp_failure_retries_timing_once_without_mtp(self):
         success = {
