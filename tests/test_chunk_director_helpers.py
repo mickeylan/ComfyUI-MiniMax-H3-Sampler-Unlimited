@@ -825,6 +825,15 @@ class ChunkDirectorHelperTest(unittest.TestCase):
                 torch.zeros((1, 24, 7, 34, 60)),
             )
 
+    def test_video_reference_metadata_is_rebuilt_from_actual_latent(self):
+        latent = torch.zeros((1, 24, 7, 34, 58))
+        block = nodes._normalize_h3_video_ref({
+            "kind": "video", "latent_t": 7, "latent_h": 36, "latent_w": 60,
+            "ref_audio_t": 0, "latent": latent,
+        })
+        self.assertEqual((block["latent_t"], block["latent_h"], block["latent_w"]), (7, 34, 58))
+        self.assertIs(block["latent"], latent)
+
     def test_debug_memory_preflight_uses_at_most_three_real_sigma_steps(self):
         sigmas = torch.arange(21, dtype=torch.float32)
         probe, steps = nodes._debug_preflight_sigmas(sigmas)

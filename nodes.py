@@ -1235,6 +1235,20 @@ def _pad_h3_keyframe_video(latent, target_video):
     return padded
 
 
+def _normalize_h3_video_ref(block):
+    """Make H3 reference layout metadata authoritative from its actual latent tensor."""
+    normalized = dict(block)
+    latent = normalized.get("latent")
+    if latent is None:
+        return normalized
+    if latent.ndim != 5:
+        raise ValueError(f"MiniMax H3 visual reference must be [B,C,T,H,W], got {tuple(latent.shape)}")
+    normalized["latent_t"] = int(latent.shape[2])
+    normalized["latent_h"] = int(latent.shape[3])
+    normalized["latent_w"] = int(latent.shape[4])
+    return normalized
+
+
 def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prompt, video_context=None,
                             audio_context=None, audio_end_frame=5.0, video_refs=(), video_context_start=0,
                             target_video=None):
@@ -1251,8 +1265,9 @@ def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prom
             cond["minimax_token_tags"] = token_tags
         else:
             cond.pop("minimax_token_tags", None)
-        if video_refs:
-            cond["minimax_refs"] = [*cond.get("minimax_refs", ()), *video_refs]
+        existing_refs = [_normalize_h3_video_ref(ref) for ref in cond.get("minimax_refs", ())]
+        if existing_refs or video_refs:
+            cond["minimax_refs"] = [*existing_refs, *(_normalize_h3_video_ref(ref) for ref in video_refs)]
         keyframes = []
         for keyframe in cond.get("minimax_keyframes", ()):
             position = keyframe["resolved_frame_index"]
