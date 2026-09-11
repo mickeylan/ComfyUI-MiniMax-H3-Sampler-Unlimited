@@ -1,4 +1,4 @@
-"""Process-isolated local Qwen3.5 multimodal director."""
+"""Process-isolated Qwen3.6/Qwen3.8 multimodal worker runtime."""
 
 from __future__ import annotations
 
@@ -707,8 +707,8 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _complete(request: dict[str, Any]) -> dict[str, Any]:
-    if request.get("director_backend", "qwen3.5") == "qwen3.5":
-        return _complete_qwen35(request)
+    if request.get("director_backend") not in {"qwen3.6", "qwen3.8"}:
+        raise Qwen35ObservationError("Qwen3.6/3.8 worker received an unsupported backend")
 
     Llama, MTMDChatHandler, Qwen35ChatHandler, Jinja2ChatFormatter, handler_factory, SpecConfig, SpeculativeType = _load_runtime()
     operation = request["operation"]
@@ -860,7 +860,7 @@ def _from_payload(value: dict[str, Any], timing: bool):
 def _run_worker_once(payload: dict[str, Any], *, timeout: int | None = 300) -> tuple[subprocess.CompletedProcess, dict[str, Any] | None]:
     print(f"[MINIMAX_H3_WORKER] launching worker timeout={timeout}s op={payload.get('operation')}", flush=True)
     module_path = Path(__file__).resolve()
-    worker_path = module_path.with_name("qwen38_worker.py") if payload.get("director_backend") in {"qwen3.6", "qwen3.8"} else module_path
+    worker_path = module_path.with_name("qwen38_worker.py") if payload.get("director_backend") == "qwen3.8" else module_path
     worker_directory = str(module_path.parent)
     python_path = os.environ.get("PYTHONPATH", "")
     worker_env = {
@@ -1102,4 +1102,4 @@ def _worker_main() -> int:
 if __name__ == "__main__":
     if sys.argv[1:] == ["--worker"]:
         raise SystemExit(_worker_main())
-    raise SystemExit("qwen35.py is an internal worker; use it through the sampler node")
+    raise SystemExit("qwen36_38.py is an internal worker; use it through the sampler node")

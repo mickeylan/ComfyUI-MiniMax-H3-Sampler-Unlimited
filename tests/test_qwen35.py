@@ -388,10 +388,18 @@ class Qwen35Tests(unittest.TestCase):
     def test_worker_launch_registers_plugin_directory_for_direct_imports(self):
         process = types.SimpleNamespace(returncode=0, stderr="", stdout='MINIMAX_H3_QWEN35_RESULT={"ok": false}')
         with patch.object(qwen35.subprocess, "run", return_value=process) as run:
-            qwen35._run_worker_once({"operation": "timing_plan"})
+            qwen35._run_worker_once({"operation": "timing_plan", "director_backend": "qwen3.5"})
         plugin_directory = str(Path(qwen35.__file__).resolve().parent)
+        self.assertTrue(run.call_args.args[0][2].endswith("qwen35.py"))
         self.assertEqual(run.call_args.kwargs["cwd"], plugin_directory)
         self.assertEqual(run.call_args.kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0], plugin_directory)
+
+    def test_qwen36_and_qwen38_use_their_own_worker_entrypoint(self):
+        process = types.SimpleNamespace(returncode=0, stderr="", stdout='MINIMAX_H3_QWEN35_RESULT={"ok": false}')
+        for backend in ("qwen3.6", "qwen3.8"):
+            with self.subTest(backend=backend), patch.object(qwen35.subprocess, "run", return_value=process) as run:
+                qwen35._run_worker_once({"operation": "timing_plan", "director_backend": backend})
+            self.assertTrue(run.call_args.args[0][2].endswith("qwen38_worker.py"))
 
     def test_native_mtp_failure_retries_timing_once_without_mtp(self):
         success = {
