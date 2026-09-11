@@ -803,6 +803,28 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(keyframe["resolved_frame_index"], 0)
         self.assertIs(keyframe["latent"], boundary_latent)
 
+    def test_continuation_keyframe_matches_target_patch_padding(self):
+        boundary = torch.arange(2 * 3 * 5, dtype=torch.float32).reshape(1, 1, 2, 3, 5)
+        target = torch.zeros((1, 1, 7, 3, 5), dtype=torch.float32)
+        conds = nodes._conditioning_for_chunk(
+            {"positive": [{"minimax_keyframes": []}]},
+            0,
+            22,
+            (torch.zeros((1, 1, 1)), {}),
+            video_context=boundary,
+            target_video=target,
+        )
+        padded = conds["positive"][0]["minimax_keyframes"][0]["latent"]
+        self.assertEqual(tuple(padded.shape), (1, 1, 2, 4, 6))
+        self.assertTrue(torch.equal(padded[..., :3, :5], boundary))
+
+    def test_continuation_keyframe_rejects_a_different_spatial_grid(self):
+        with self.assertRaisesRegex(ValueError, "spatial shape does not match"):
+            nodes._pad_h3_keyframe_video(
+                torch.zeros((1, 24, 2, 30, 40)),
+                torch.zeros((1, 24, 7, 34, 60)),
+            )
+
     def test_debug_memory_preflight_uses_at_most_three_real_sigma_steps(self):
         sigmas = torch.arange(21, dtype=torch.float32)
         probe, steps = nodes._debug_preflight_sigmas(sigmas)

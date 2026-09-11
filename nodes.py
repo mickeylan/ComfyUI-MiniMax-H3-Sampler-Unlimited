@@ -1213,8 +1213,31 @@ def _video_continuation_boundary_guide(previous_video, chunk, context_keyframes,
     return previous_video[:, :, -guide_t:].clone(), 0
 
 
+def _pad_h3_keyframe_video(latent, target_video):
+    """Match ComfyUI's 2x2 target patch padding for visual keyframe latents."""
+    if latent is None:
+        return None
+    target_h = (int(target_video.shape[-2]) + 1) // 2 * 2
+    target_w = (int(target_video.shape[-1]) + 1) // 2 * 2
+    source_h, source_w = int(latent.shape[-2]), int(latent.shape[-1])
+    if source_h > target_h or source_w > target_w or target_h - source_h > 1 or target_w - source_w > 1:
+        raise ValueError(
+            "MiniMax H3 continuation keyframe spatial shape does not match the target: "
+            f"keyframe={source_w}x{source_h}, target={target_w}x{target_h} latent pixels"
+        )
+    if (source_h, source_w) == (target_h, target_w):
+        return latent
+    padded = latent
+    if source_w < target_w:
+        padded = torch.cat((padded, padded[..., :1]), dim=-1)
+    if source_h < target_h:
+        padded = torch.cat((padded, padded[..., :1, :]), dim=-2)
+    return padded
+
+
 def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prompt, video_context=None,
-                            audio_context=None, audio_end_frame=5.0, video_refs=(), video_context_start=0):
+                            audio_context=None, audio_end_frame=5.0, video_refs=(), video_context_start=0,
+                            target_video=None):
     conds = {name: [item.copy() for item in values] for name, values in original_conds.items()}
     positive = conds.get("positive")
     if positive is None:
@@ -1236,9 +1259,13 @@ def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prom
             if frame_start <= position < frame_end:
                 local_keyframe = keyframe.copy()
                 local_keyframe["resolved_frame_index"] = position - frame_start
+                if target_video is not None and local_keyframe.get("latent") is not None:
+                    local_keyframe["latent"] = _pad_h3_keyframe_video(local_keyframe["latent"], target_video)
                 keyframes.append(local_keyframe)
 
         if video_context is not None:
+            if target_video is not None:
+                video_context = _pad_h3_keyframe_video(video_context, target_video)
             keyframes.append({"resolved_frame_index": video_context_start, "latent": video_context})
         if audio_context is not None:
             audio_start = audio_end_frame - audio_context.shape[-1] / FRAME_RESCALE
@@ -3815,6 +3842,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     audio_end_frame,
                     video_refs,
                     video_context_start,
+                    chunk_video,
                 )
 
                 # Every dependency on the previous sampler container has now
