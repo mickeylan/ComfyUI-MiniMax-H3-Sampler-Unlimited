@@ -889,7 +889,13 @@ def _run_worker(request: dict[str, Any], timing: bool):
         payload["director_mtp"] = False
         process, value = _run_worker_once(payload)
     if value is None:
-        raise DirectorWorkerError(f"Qwen worker exited with status {process.returncode} without a result", returncode=process.returncode)
+        stderr = str(getattr(process, "stderr", "") or "").strip()
+        stdout = str(getattr(process, "stdout", "") or "").strip()
+        detail = stderr[-4000:] or stdout[-2000:] or "no worker output"
+        raise DirectorWorkerError(
+            f"Qwen worker exited with status {process.returncode} without a result: {detail}",
+            returncode=process.returncode,
+        )
     if (timing and not value.get("ok")
             and value.get("error_type") == "Qwen35ObservationError"
             and "timing plan" in str(value.get("message", ""))):

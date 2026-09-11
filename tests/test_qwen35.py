@@ -378,6 +378,12 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(captured["tokens"], [14])
         self.assertFalse(captured["reset"])
 
+    def test_worker_exit_without_envelope_includes_stderr(self):
+        process = types.SimpleNamespace(returncode=1, stderr="CUDA backend failed to load", stdout="worker start")
+        with patch.object(qwen35, "_run_worker_once", return_value=(process, None)):
+            with self.assertRaisesRegex(qwen35.DirectorWorkerError, "CUDA backend failed to load"):
+                qwen35._run_worker({"director_mtp": False}, True)
+
     def test_native_mtp_failure_retries_timing_once_without_mtp(self):
         success = {
             "ok": True,
