@@ -3,24 +3,11 @@
 
 > ⚠️ **注意**：这是 [hradec/ComfyUI-HR-Endless-Sampler](https://github.com/hradec/ComfyUI-HR-Endless-Sampler) 的中文用户/低显存优化分支。
 
-本项目以 **HR Endless Sampler 节点族**为主：在保留 MiniMax H3 低显存 physical chunk 连续采样的基础上，加入多导演、实时预览、Timeline、Save/Load、断点重跑、分块重拍和持久续写。仓库中当前附带的 Storyboard/JZL 节点属于上游 Story Director 方向的实验性集成，不改变本项目以 Sampler 为核心的定位。
+本项目以 **HR Endless Sampler 节点族**为核心：在保留 MiniMax H3 低显存 physical chunk 连续采样的基础上，加入多导演、统一参考媒体、实时预览、Timeline、Save/Load、断点重跑、分块重拍和持久续写。
 
 https://github.com/user-attachments/assets/5da194ea-4d29-4fd3-9b1c-edd537b88431
 
 - video generated with HR Endless Sampler at 1080p 625 frames on a 16GB GPU
-
-## Story Director 实验性集成（非本项目主线）
-
-仓库当前保留一套供联调使用的 JZL 多媒体提示词测试工作流。该规划能力后续属于独立 Story Director 项目；HR Endless Sampler 只消费其 H3 prompt、参考媒体和可选导演配置。
-
-加载 `example_workflows/HR-JZL-MVP.json`。将图片、视频帧批次、视频音轨和独立音频接入 `HR MiniMax H3 Reference Set`，再运行 `HR MiniMax H3 JZL Storyboard`：
-
-- Qwen3.5/Qwen3.8直接分析图片及均匀抽取的视频帧；
-- `faster-whisper`在本地转写视频音轨与独立音频；
-- 输出原生JZL `[SHOT_START]...[SHOT_END]`四合一块；
-- `JZL Segment Dispatcher`选择一段并把H3提示词送入Reference Conditioning。
-
-有音频时，`whisper_model_path`必须填写ComfyUI `models`目录下的本地faster-whisper模型相对路径。示例工作流中的CLIP、视频VAE和音频VAE端口需连接现有MiniMax H3加载节点。
 
 ## 🎯 本分支特色
 
@@ -114,16 +101,13 @@ The way to use is pretty straight forward - just replace the normal "Sampler" no
 | `HR Endless Continuation Plan` | 设置新提示词、音频策略以及参考媒体继承/替换/合并策略。 |
 | `HR Endless Continuation Assemble` | 将 checkpoint 中的旧音视频 latent 与本次续写结果拼接。 |
 
-### 当前仓库中的辅助与实验节点
+### Sampler 辅助节点
 
 | Node | Purpose |
 | --- | --- |
-| `HR Qwen Director Config` | 为 Sampler 和实验性规划节点共享本地 Qwen model/mmproj/runtime 配置。 |
+| `HR Qwen Director Config` | 为 Sampler 共享本地 Qwen model/mmproj/runtime 配置。 |
 | `HR MiniMax H3 Reference Set` | 统一输入最多 9 张图片、3 个视频及对应音轨、3 条独立音频。 |
 | `HR MiniMax H3 Reference Conditioning` | 创建 MiniMax H3 Ref2VA conditioning 和 nested AV latent。 |
-| `HR MiniMax H3 Storyboard Planner` | 实验性全局 Storyboard 规划器；长期归属 Story Director 项目。 |
-| `HR MiniMax H3 JZL Storyboard` | 实验性 JZL 四合一多媒体规划器；长期归属 Story Director 项目。 |
-| `HR MiniMax H3 JZL Segment Dispatcher` | 实验性 JZL 段选择和参考素材重排；长期归属 Story Director 项目。 |
 
 The Save and Load players use the same colored chunk timeline and shot brackets
 as the live Preview node, but omit the live sampling graphs. Hovering a chunk
@@ -505,7 +489,7 @@ plus peak RAM and VRAM use.
 - Chunked denoise masks are not supported.
 - Gemma/Qwen observes generated video frames, not generated audio. It preserves dialogue and sound instructions from the source prompt, but does not judge the resulting soundtrack.
 - 重拍和持久续写已经完成代码、缓存协议及模拟测试，但尚未完成真实 ComfyUI + H3 + GPU 的端到端验收。
-- Reference Set/JZL 的真实视频、同步音轨、独立音频和本地 faster-whisper 路径仍需实机联调。
+- Reference Set 的真实视频、同步音轨和独立音频路径仍需实机联调。
 - 12GB VRAM 可用性来自本分支用户对特定 Qwen3.6/3.8 UD-IQ2-mtp 配置的实测，不代表所有模型、分辨率和参考媒体组合都能稳定运行。
 - 上游 llama.cpp issue #27439 截至 2026-09-10 仍为 open；必须保留 disposable worker 和 operation-local non-MTP fallback。
 
