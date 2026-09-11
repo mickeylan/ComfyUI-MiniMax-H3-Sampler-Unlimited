@@ -766,6 +766,12 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             (0, 0, 22),
         )
 
+    def test_detects_whether_comfyui_can_pack_keyframes_with_references(self):
+        with patch("inspect.getsource", return_value='payload["cond_video_latents"] = payload.get("cond_video_latents", []) + [r["latent"]'):
+            self.assertTrue(nodes._h3_supports_keyframes_with_refs())
+        with patch("inspect.getsource", return_value='payload["cond_video_latents"] = [r["latent"]'):
+            self.assertFalse(nodes._h3_supports_keyframes_with_refs())
+
     def test_video1_boundary_keyframe_uses_complete_discarded_packing_prefix(self):
         plan = nodes._chunk_plan_without_overlap(
             nodes._video_steps(73),

@@ -1202,6 +1202,17 @@ def _chunk_plan_without_overlap(video_t, audio_t, chunk_frames):
     return plan
 
 
+def _h3_supports_keyframes_with_refs():
+    """Whether ComfyUI appends keyframe and reference visual latents together."""
+    try:
+        import inspect
+        from comfy.model_base import MiniMaxH3
+        source = inspect.getsource(MiniMaxH3.extra_conds)
+    except (ImportError, AttributeError, OSError, TypeError):
+        return False
+    return 'payload.get("cond_video_latents", []) + [r["latent"]' in source
+
+
 def _video_continuation_boundary_guide(previous_video, chunk, context_keyframes, use_video_continuation):
     if not use_video_continuation or context_keyframes:
         return None, 0
@@ -3660,15 +3671,26 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         use_video_continuation,
                     )
                     if boundary_video_context is not None:
-                        video_context = boundary_video_context
-                        video_context_start = boundary_keyframe_index
-                        if debug:
-                            logging.info(
-                                "HR Endless Sampler chunk %d/%d Video1 boundary keyframe: "
-                                "previous final five-frame latent tail anchored across discarded local frames 0-4",
+                        if include_video1_reference and not _h3_supports_keyframes_with_refs():
+                            boundary_video_context = None
+                            logging.warning(
+                                "HR Endless Sampler chunk %d/%d: this ComfyUI H3 version overwrites visual "
+                                "keyframe latents when references are present; using Video1 without the optional "
+                                "five-frame boundary keyframe to avoid an invalid packed layout. Update ComfyUI "
+                                "to enable both together.",
                                 index + 1,
                                 len(active_plan),
                             )
+                        else:
+                            video_context = boundary_video_context
+                            video_context_start = boundary_keyframe_index
+                            if debug:
+                                logging.info(
+                                    "HR Endless Sampler chunk %d/%d Video1 boundary keyframe: "
+                                    "previous final five-frame latent tail anchored across discarded local frames 0-4",
+                                    index + 1,
+                                    len(active_plan),
+                                )
                     if include_video1_reference:
                         reference_latent = previous_video[:, :, -_video_steps(video_continuation):].clone()
                         full_reference_latent = reference_latent
