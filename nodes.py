@@ -19,7 +19,7 @@ import comfy.nested_tensor
 import comfy.patcher_extension
 import comfy.sample
 import comfy.utils
-from comfy.ldm.minimax.model import FRAME_PER_TOKEN, FRAME_RESCALE
+from comfy.ldm.minimax.model import FRAME_PER_TOKEN, FRAME_RESCALE, PackedLayout
 from comfy_api.latest import io
 from comfy_extras.nodes_custom_sampler import SamplerCustomAdvanced
 from tqdm.auto import tqdm
@@ -1381,23 +1381,67 @@ def _pad_h3_keyframe_video(latent, target_video):
 
 
 def _normalize_h3_video_ref(block):
-    """Make H3 reference layout metadata authoritative from its actual latent tensor."""
+    """Make H3 reference layout metadata authoritative from its actual latent tensors."""
     normalized = dict(block)
     latent = normalized.get("latent")
-    if latent is None:
-        return normalized
-    if latent.ndim != 5:
-        raise ValueError(f"MiniMax H3 visual reference must be [B,C,T,H,W], got {tuple(latent.shape)}")
-    normalized["latent_t"] = int(latent.shape[2])
-    normalized["latent_h"] = int(latent.shape[3])
-    normalized["latent_w"] = int(latent.shape[4])
+    if latent is not None:
+        if latent.ndim != 5:
+            raise ValueError(f"MiniMax H3 visual reference must be [B,C,T,H,W], got {tuple(latent.shape)}")
+        normalized["latent_t"] = int(latent.shape[2])
+        normalized["latent_h"] = int(latent.shape[3])
+        normalized["latent_w"] = int(latent.shape[4])
+    audio_latent = normalized.get("audio_latent")
+    if audio_latent is None:
+        normalized["ref_audio_t"] = 0
+        if normalized.get("kind") == "video_audio":
+            normalized["kind"] = "video"
+    else:
+        normalized["ref_audio_t"] = int(audio_latent.shape[-1])
+        if normalized.get("kind") == "video":
+            normalized["kind"] = "video_audio"
     return normalized
+
+
+def _visual_only_reference_conds(conds):
+    return {
+        name: [{**cond, "minimax_refs": [
+            ({**ref, "kind": "video", "ref_audio_t": 0, "audio_latent": None}
+             if ref.get("kind") in ("video", "video_audio") else ref)
+            for ref in cond.get("minimax_refs", ())
+        ]} for cond in values]
+        for name, values in conds.items()
+    }
+
+
+def _validate_h3_audio_conditioning(conds):
+    for group, values in conds.items():
+        for cond_index, cond in enumerate(values):
+            for ref_index, ref in enumerate(cond.get("minimax_refs", ())):
+                audio_latent = ref.get("audio_latent")
+                declared = int(ref.get("ref_audio_t", 0) or 0)
+                actual = 0 if audio_latent is None else int(audio_latent.shape[-1])
+                if declared != actual:
+                    raise ValueError(
+                        f"HR Endless Sampler {group}[{cond_index}] reference[{ref_index}] audio metadata mismatch: "
+                        f"ref_audio_t={declared}, actual={actual}, kind={ref.get('kind')}"
+                    )
+            for keyframe_index, keyframe in enumerate(cond.get("minimax_keyframes", ())):
+                audio_latent = keyframe.get("audio_latent")
+                if audio_latent is not None and audio_latent.ndim != 4:
+                    raise ValueError(
+                        f"HR Endless Sampler {group}[{cond_index}] keyframe[{keyframe_index}] "
+                        f"audio latent must be [B,C,T,L], got {tuple(audio_latent.shape)}"
+                    )
 
 
 def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prompt, video_context=None,
                             audio_context=None, audio_end_frame=5.0, video_refs=(), video_context_start=0,
                             target_video=None):
     conds = {name: [item.copy() for item in values] for name, values in original_conds.items()}
+    for values in conds.values():
+        for cond in values:
+            if "minimax_refs" in cond:
+                cond["minimax_refs"] = [_normalize_h3_video_ref(ref) for ref in cond["minimax_refs"]]
     positive = conds.get("positive")
     if positive is None:
         raise ValueError("HR Endless Sampler requires a standard guider with positive conditioning")
@@ -1438,6 +1482,22 @@ def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prom
             cond["minimax_keyframes"] = keyframes
         else:
             cond.pop("minimax_keyframes", None)
+
+    structural_refs = positive[0].get("minimax_refs")
+    structural_keyframes = positive[0].get("minimax_keyframes")
+    for name, values in conds.items():
+        if name == "positive":
+            continue
+        for cond in values:
+            if structural_refs is not None:
+                cond["minimax_refs"] = structural_refs
+            else:
+                cond.pop("minimax_refs", None)
+            if structural_keyframes is not None:
+                cond["minimax_keyframes"] = structural_keyframes
+            else:
+                cond.pop("minimax_keyframes", None)
+    _validate_h3_audio_conditioning(conds)
     return conds
 
 
@@ -1869,6 +1929,59 @@ def _refresh_console_progress():
             pass
 
 
+def _rebuild_h3_layout(kwargs, x, cross_attn):
+    payload = kwargs.get("minimax_payload")
+    if not isinstance(payload, dict):
+        return kwargs
+    original_refs = list(payload.get("refs", ()))
+    refs = [_normalize_h3_video_ref(ref) for ref in original_refs]
+    refs_changed = any(
+        original.get("kind") != normalized.get("kind")
+        or int(original.get("ref_audio_t", 0) or 0) != int(normalized.get("ref_audio_t", 0) or 0)
+        or original.get("audio_latent") is not normalized.get("audio_latent")
+        for original, normalized in zip(original_refs, refs)
+    )
+    keyframes = [dict(keyframe) for keyframe in payload.get("keyframes", ())]
+    cond_audio_latents = [
+        keyframe["audio_latent"] for keyframe in keyframes if keyframe.get("audio_latent") is not None
+    ] + [ref["audio_latent"] for ref in refs if ref.get("audio_latent") is not None]
+    declared_rows = 2 * (
+        sum(int(keyframe["audio_latent"].shape[-1]) for keyframe in keyframes if keyframe.get("audio_latent") is not None)
+        + sum(int(ref.get("ref_audio_t", 0) or 0) for ref in refs)
+    )
+    actual_rows = 2 * sum(int(latent.shape[-1]) for latent in cond_audio_latents)
+    layout = payload.get("layout")
+    layout_rows = None if layout is None or not hasattr(layout, "audio_update") else int((~layout.audio_update).sum().item())
+    if layout is not None and hasattr(layout, "signature"):
+        signature = layout.signature
+    else:
+        video, audio = x.unbind() if hasattr(x, "unbind") else x
+        signature = (int(cross_attn.shape[1]), int(video.shape[2]), int(video.shape[3]), int(video.shape[4]), int(audio.shape[-1]))
+    rebuilt_layout = PackedLayout(*signature, keyframes=keyframes, refs=refs)
+    rebuilt_rows = int((~rebuilt_layout.audio_update).sum().item())
+    if rebuilt_rows != actual_rows:
+        raise ValueError(
+            "HR Endless Sampler rejected inconsistent H3 audio conditioning before model execution: "
+            f"layout_rows={rebuilt_rows}, tensor_rows={actual_rows}, declared_rows={declared_rows}, "
+            f"refs={[(ref.get('kind'), ref.get('ref_audio_t'), ref.get('audio_latent') is not None) for ref in refs]}"
+        )
+    if layout is rebuilt_layout and not refs_changed:
+        return kwargs
+    updated_payload = dict(payload)
+    updated_payload["refs"] = refs
+    updated_payload["keyframes"] = keyframes
+    updated_payload["cond_audio_latents"] = cond_audio_latents
+    updated_payload["layout"] = rebuilt_layout
+    updated_kwargs = dict(kwargs)
+    updated_kwargs["minimax_payload"] = updated_payload
+    if layout_rows != rebuilt_rows or refs_changed:
+        logging.warning(
+            "HR Endless Sampler replaced H3 packed layout: cached=%s rebuilt=%d actual=%d.",
+            layout_rows, rebuilt_rows, actual_rows,
+        )
+    return updated_kwargs
+
+
 class _VRAMMonitor:
     def __init__(self, timing, device, components, chunk_count, debug=False):
         self.timing = timing
@@ -1905,6 +2018,7 @@ class _VRAMMonitor:
         self.call += 1
         scope = self.scope or f"chunk {self.chunk + 1}/{self.chunk_count}"
         label = f"{scope} DiT evaluation {self.call}"
+        kwargs = _rebuild_h3_layout(kwargs, x, c_crossattn)
         tensors = {"model input": x, "cross attention": c_crossattn, "model conditions": kwargs}
         self.report(label + " before", tensors, sample_group="dit")
         try:
@@ -1925,6 +2039,16 @@ class _FixedNoise:
 
     def generate_noise(self, _latent):
         return self.samples
+
+
+def _should_run_debug_memory_preflight(debug, replay_start_index, active_plan, include_video1_reference, external_active):
+    return bool(
+        debug
+        and replay_start_index == 0
+        and len(active_plan) > 1
+        and include_video1_reference
+        and not external_active
+    )
 
 
 def _run_debug_memory_preflight(*, guider, sampler, sigmas, chunk_latent, chunk_noise,
@@ -2856,6 +2980,8 @@ class HREndlessSampler(SamplerCustomAdvanced):
         gemma_director_needed = bool(gemma_shots) and continuation_state is None and not external_active
 
         original_conds = guider.original_conds
+        if external_active and external_continuation.get("visual_references_only"):
+            original_conds = _visual_only_reference_conds(original_conds)
         positive = original_conds.get("positive")
         if positive is None:
             raise ValueError("HR Endless Sampler requires a standard guider with positive conditioning")
@@ -3364,11 +3490,8 @@ class HREndlessSampler(SamplerCustomAdvanced):
         vram_monitor.report("execution prepared", {"full latent": samples, "full noise": full_noise})
 
         try:
-            if (
-                debug
-                and replay_start_index == 0
-                and len(active_plan) > 1
-                and include_video1_reference
+            if _should_run_debug_memory_preflight(
+                debug, replay_start_index, active_plan, include_video1_reference, external_active
             ):
                 first_chunk = active_plan[0]
                 preflight_video = video[:, :, first_chunk["video_start"]:first_chunk["video_end"]]
@@ -3850,7 +3973,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 video_items = []
                 video_refs = []
                 boundary_video_context = None
-                if continuation and use_video_continuation:
+                if continuation and use_video_continuation and not (external_active and index == 0):
                     boundary_video_context, boundary_keyframe_index = _video_continuation_boundary_guide(
                         previous_video,
                         chunk,

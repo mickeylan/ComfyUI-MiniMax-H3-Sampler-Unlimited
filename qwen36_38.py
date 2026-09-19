@@ -715,10 +715,12 @@ def _video_bridge_messages(request: dict[str, Any]) -> tuple[str, str]:
     language = "Chinese" if request.get("prompt_lang", "zh") == "zh" else "English"
     system = (
         "You are a MiniMax H3 video bridge director. Analyze identity reference pictures, then the final 22 "
-        "frames of source video A, then the first 22 frames of destination video B. Design a generated bridge "
-        "that begins from A's visible state and naturally reaches B's visible state. Identity comes from the "
-        "pictures; endpoint pose, composition, lighting, camera motion, and environment come from the videos. "
-        "Return exactly one JSON object and no markdown. Do not invent additional people. "
+        "frames of source video A, then the first 22 frames of destination video B. Use those sequences to infer "
+        "A's outgoing motion and B's incoming motion, but design only the minimum visible state change between A's "
+        "exact final frame and B's exact first frame. H3 receives those two frames as hard first/last anchors. Do not "
+        "invent a new shot, secondary action, flourish, narrative event, camera move, or any action occurring after B "
+        "begins. Identity comes from the pictures; endpoint pose, composition, lighting, camera motion, and environment "
+        "come from the videos. Return exactly one JSON object and no markdown. Do not invent additional people. "
         f"Write all descriptive values in {language}; preserve only required H3 field names and media labels in English."
     )
     pictures = ", ".join(f"<Picture {index}>" for index in range(1, picture_count + 1)) or "none"
@@ -727,9 +729,7 @@ def _video_bridge_messages(request: dict[str, Any]) -> tuple[str, str]:
 - then {a_count} chronological analysis stills from the end of video A
 - then {b_count} chronological analysis stills from the start of video B
 
-For the final H3 prompt, the conditioning media labels are different from this analysis-image order:
-- <Video 1> is B's 22-frame destination reference
-- <Video 2> is A's 22-frame opening continuation reference
+The analysis stills are not H3 video references and must not be cited as <Video 1> or <Video 2>. H3 receives A's exact final frame as its start anchor and B's exact first frame as its end anchor outside the text prompt.
 
 Transition length: {int(request['transition_frames'])} frames.
 Requested strategy: {request.get('transition_strategy', 'auto')}.
@@ -745,10 +745,11 @@ Return this exact JSON shape:
   "analysis": {{
     "subjects": [{{"subject_id":"Subject 1","identity_features":"...","state_at_a_end":"...","state_at_b_start":"...","identity_risks":[]}}],
     "camera_a": "...", "camera_b": "...", "environment_a": "...", "environment_b": "...",
-    "motion_a": "...", "motion_b": "..."
+    "motion_a": "...", "motion_b": "...", "minimum_required_motion": "...",
+    "forbidden_replay_after_b_start": "..."
   }},
   "constraints": ["identity and endpoint constraints"],
-  "h3_prompt": "A complete MiniMax H3 prompt containing subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, and non_diegetic_music; cite {pictures}; treat <Video 2> as the A opening state and <Video 1> as the B destination state",
+  "h3_prompt": "A complete MiniMax H3 prompt containing subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, and non_diegetic_music; cite identity-only {pictures}; explicitly state the exact A-end start state, exact B-start destination state, minimum required motion, fixed-camera contract, and prohibition on replaying B's later action; do not cite Video labels",
   "risk_report": "brief honest risk assessment"
 }}"""
     return system, prompt

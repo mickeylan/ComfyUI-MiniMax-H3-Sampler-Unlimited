@@ -656,7 +656,14 @@ EXTERNAL_CONTINUATION_SCHEMA = "confidence, observed_end_state, transition_plan,
 
 
 def _external_messages(request: dict[str, Any]) -> tuple[str, str]:
-    system = "Report only observable facts from chronological tail frames. The first new action must inherit the final visible action, camera, positions, lighting, and audio. References cannot reset proven pose or location. Return only JSON."
+    system = ("Report only observable facts from chronological tail frames. The first new action must inherit the final visible "
+              "action, camera, positions, lighting, and audio. References cannot reset proven pose or location. Keep camera scale, "
+              "lens perspective, screen direction, horizon, and axis stable unless the chronological boundary frames prove an "
+              "already-running camera move. Never invent a push-in, pull-back, crash zoom, rapid dolly, whip pan, orbit, or abrupt "
+              "reframing as a transition shortcut. When the request supplies a destination state, use chronological frames "
+              "only to infer outgoing and incoming motion, then describe the minimum visible state change between the exact "
+              "start and destination anchors. Do not invent a new shot, secondary action, narrative event, or replay action "
+              "that belongs after the destination begins. Return only JSON.")
     schema = ({"confidence": "high|medium|low", "observed_end_state": {
         "subjects": [], "objects": [], "environment": "", "camera": "", "audio": "",
         "last_visible_event": "", "must_continue": [], "must_not_assume": []},
@@ -667,8 +674,12 @@ def _external_messages(request: dict[str, Any]) -> tuple[str, str]:
               f"Reference summary: {request.get('reference_summary', 'none')}\n"
               f"Return exactly this JSON shape with every key present: {json.dumps(schema, ensure_ascii=False)}")
     if request.get("structural_repair"):
-        prompt += ("\nCORRECTION: Repair the following previous JSON into the exact required shape. Preserve its observed facts "
-                   "and H3 continuation content; no markdown or prose outside JSON:\n"
+        prompt += ("\nCORRECTION: Repair the following previous JSON into the exact required shape. Preserve all valid observed "
+                   "facts and transition planning. If h3_prompt is absent or empty, write it now from those facts and the "
+                   "transition plan as one complete executable MiniMax H3 prompt beginning exactly with [Shot 1]. The "
+                   "h3_prompt must describe the continuous visible action, camera bridge, environment, lighting, and audio; "
+                   "it must not describe analysis, reference sheets, split screens, collages, panels, or inspection steps. "
+                   "Return every required key, with no markdown or prose outside JSON:\n"
                    + str(request.get("previous_response", "")))
     return system, prompt
 
@@ -721,9 +732,12 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     )
     print(f"[MINIMAX_H3_WORKER] MTMDChatHandler(mmgrpo) done t={time.monotonic()-t0:.1f}s", flush=True)
     print(f"[MINIMAX_H3_WORKER] loading GGUF t={time.monotonic()-t0:.1f}s", flush=True)
+    context_tokens = int(request.get("director_n_ctx", QWEN35_CONTEXT_TOKENS))
+    if context_tokens < QWEN35_CONTEXT_TOKENS or context_tokens > 262144:
+        raise Qwen35ObservationError("Qwen3.5 context must be between 65536 and 262144 tokens")
     llm = Llama(
         model_path=request["director_model_path"], chat_handler=handler, n_gpu_layers=-1,
-        n_ctx=QWEN35_CONTEXT_TOKENS, n_batch=QWEN35_BATCH_SIZE, n_ubatch=QWEN35_BATCH_SIZE,
+        n_ctx=context_tokens, n_batch=QWEN35_BATCH_SIZE, n_ubatch=QWEN35_BATCH_SIZE,
         flash_attn=True, type_k=8, type_v=8, swa_full=False, verbose=False,
     )
     print(f"[MINIMAX_H3_WORKER] GGUF loaded t={time.monotonic()-t0:.1f}s", flush=True)
@@ -1032,13 +1046,16 @@ def _run_storyboard_worker(request: dict[str, Any]) -> dict[str, Any]:
 class Qwen35ContinuityDirector:
     def __init__(self, model_path: Path, mmproj_path: Path, debug=False, capture_directory=None, observation_image_directory=None,
                  mtp_enabled=True, mtp_draft_tokens=2, reasoning_effort="xhigh", cpu_moe=False, n_cpu_moe=0,
-                 backend="qwen3.5"):
+                 backend="qwen3.5", context_tokens=None):
         self.model_path = Path(model_path).resolve()
         self.mmproj_path = Path(mmproj_path).resolve()
         self.backend = str(backend)
         if self.backend not in {"qwen3.5", "qwen3.6", "qwen3.8"}:
             raise ValueError(f"Unknown Qwen backend: {self.backend}")
         self.debug = bool(debug)
+        self.context_tokens = int(context_tokens) if context_tokens is not None else None
+        if self.context_tokens is not None and (self.context_tokens < QWEN35_CONTEXT_TOKENS or self.context_tokens > 262144):
+            raise ValueError("Qwen3.5 context must be between 65536 and 262144 tokens")
         self.mtp_enabled = bool(mtp_enabled) and self.backend in {"qwen3.6", "qwen3.8"}
         self.mtp_draft_tokens = int(mtp_draft_tokens)
         if self.mtp_draft_tokens < 1 or self.mtp_draft_tokens > 8:
@@ -1056,7 +1073,7 @@ class Qwen35ContinuityDirector:
         self.last_timing_system_prompt = self.last_timing_planning_prompt = ""
 
     def _configure_request(self, request: dict[str, Any]) -> None:
-        context_tokens = {
+        context_tokens = self.context_tokens or {
             "qwen3.5": QWEN35_CONTEXT_TOKENS,
             "qwen3.6": QWEN36_CONTEXT_TOKENS,
             "qwen3.8": QWEN38_CONTEXT_TOKENS,

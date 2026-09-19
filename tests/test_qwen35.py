@@ -342,6 +342,15 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(request["director_n_ctx"], 65536)
         self.assertFalse(request["director_mtp"])
 
+    def test_qwen35_context_override_is_forwarded(self):
+        director = qwen35.Qwen35ContinuityDirector(
+            Path("qwen3.5-model.gguf"), Path("mmproj-qwen3.5.gguf"),
+            backend="qwen3.5", context_tokens=131072,
+        )
+        request = {}
+        director._configure_request(request)
+        self.assertEqual(request["director_n_ctx"], 131072)
+
     def test_selected_qwen_backend_is_propagated_to_worker_request(self):
         director = qwen35.Qwen35ContinuityDirector(Path("qwen3.8.gguf"), Path("mmproj-qwen3.8.gguf"), backend="qwen3.8")
         request = {}
@@ -489,6 +498,24 @@ class Qwen35Tests(unittest.TestCase):
             with self.assertRaisesRegex(qwen35.Qwen35ObservationError, "bad JSON"):
                 qwen35._run_worker({"director_mtp": True}, True)
         worker.assert_called_once()
+
+    def test_external_repair_requires_new_prompt_when_previous_response_omits_it(self):
+        previous = json.dumps({
+            "confidence": "high",
+            "observed_end_state": {"subjects": ["two people"]},
+            "transition_plan": {"first_action": "continue moving"},
+        })
+        system, prompt = qwen35._external_messages({
+            "structural_repair": True,
+            "previous_response": previous,
+        })
+        self.assertIn("Never invent a push-in, pull-back", system)
+        self.assertIn("minimum visible state change", system)
+        self.assertIn("Do not invent a new shot", system)
+        self.assertIn("If h3_prompt is absent or empty, write it now", prompt)
+        self.assertIn("beginning exactly with [Shot 1]", prompt)
+        self.assertIn("must not describe analysis", prompt)
+        self.assertIn(previous, prompt)
 
     def test_storyboard_messages_include_target_and_image_inventory(self):
         system, prompt = qwen35._storyboard_messages({

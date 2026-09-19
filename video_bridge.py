@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import torch
 import torchaudio
 
 import comfy.model_management
+import folder_paths
 from comfy_api.latest import io
 
 try:
     from .director_backend import resolve_director_selection
     from .director_config import HRDirectorConfig, normalize_qwen38_config
-    from .qwen36_38 import _image_url, _run_worker_once
+    from .qwen35 import Qwen35ContinuityDirector, Qwen35ObservationError, _image_url, _run_worker_once
     from .reference_set import (
         HRReferenceSet, HRMiniMaxH3ReferenceConditioning, _encode_audio, _resize,
         normalize_reference_set, reference_images,
@@ -23,7 +25,7 @@ try:
 except ImportError:  # Direct lightweight test loading.
     from director_backend import resolve_director_selection
     from director_config import HRDirectorConfig, normalize_qwen38_config
-    from qwen36_38 import _image_url, _run_worker_once
+    from qwen35 import Qwen35ContinuityDirector, Qwen35ObservationError, _image_url, _run_worker_once
     from reference_set import (
         HRReferenceSet, HRMiniMaxH3ReferenceConditioning, _encode_audio, _resize,
         normalize_reference_set, reference_images,
@@ -33,6 +35,22 @@ except ImportError:  # Direct lightweight test loading.
 
 HRVideoBridgeSource = io.Custom("HR_VIDEO_BRIDGE_SOURCE")
 HRVideoBridgePlan = io.Custom("HR_VIDEO_BRIDGE_PLAN")
+
+
+def _save_qwen35_bridge_error(error: Qwen35ObservationError) -> Path:
+    directory = Path(folder_paths.get_output_directory()) / "hr_endless_sampler"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "video_bridge_last_qwen35_error.json"
+    raw = str(error.raw_json or "")
+    try:
+        response = json.loads(raw)
+    except json.JSONDecodeError:
+        response = raw
+    path.write_text(json.dumps({
+        "error": str(error),
+        "response": response,
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
 BRIDGE_SOURCE_VERSION = 1
 H3_BOUNDARY_FRAMES = 22
 
@@ -224,8 +242,8 @@ class HRVideoBridgeDirector(io.ComfyNode):
         source = normalize_bridge_source(bridge_source)
         refs = normalize_reference_set(reference_set)
         config = normalize_qwen38_config(director_config)
-        if config["backend"] not in {"qwen3.6", "qwen3.8"}:
-            raise ValueError("HR Video Bridge Director supports only the isolated Qwen3.6/3.8 runtime")
+        if config["backend"] not in {"qwen3.5", "qwen3.6", "qwen3.8"}:
+            raise ValueError("HR Video Bridge Director requires Qwen3.5, Qwen3.6, or Qwen3.8")
         transition_frames = int(transition_frames)
         if transition_frames not in {22, 39, 56, 73}:
             raise ValueError("Bridge transition_frames must be 22, 39, 56, or 73")
@@ -233,6 +251,89 @@ class HRVideoBridgeDirector(io.ComfyNode):
         selection = resolve_director_selection(config["backend"], config["model"], config["mmproj"])
         if selection.model_path is None or selection.mmproj_path is None:
             raise ValueError("Video Bridge Director requires a local Qwen GGUF and same-family mmproj")
+
+        if config["backend"] == "qwen3.5":
+            target_height, target_width = source["a_tail"].shape[1:3]
+            destination = torch.nn.functional.interpolate(
+                source["b_head"].movedim(-1, 1), size=(target_height, target_width),
+                mode="bilinear", align_corners=False,
+            ).movedim(1, -1)
+            identity_images = [torch.nn.functional.interpolate(
+                image.movedim(-1, 1), size=(target_height, target_width),
+                mode="bilinear", align_corners=False,
+            ).movedim(1, -1)[0] for image in pictures]
+            paired_boundaries = torch.cat((source["a_tail"], destination), dim=2)
+            identity_canvases = [torch.cat((image, image), dim=1).unsqueeze(0) for image in identity_images]
+            observations = torch.cat((paired_boundaries, *identity_canvases), dim=0)
+            output_language = "Chinese" if prompt_lang == "zh" else "English"
+            instruction = (
+                f"Generate a {transition_frames}-frame bridge beginning at video A's visible final state and ending at "
+                f"video B's visible opening state. Each of the first 22 chronological comparison images has A on the "
+                f"left and B on the right. Strategy={transition_strategy}; identity={identity_policy}; "
+                f"clothing={clothing_policy}. Use the chronological frames only to infer A's outgoing motion and B's incoming "
+                f"motion. The H3 generation itself is first/last-frame generation: A's final frame is the exact start anchor and "
+                f"B's first frame is the exact end anchor. Plan only the minimum visible state change required between those two "
+                f"anchors; do not invent a new shot, secondary action, flourish, or narrative event. Keep camera scale, lens "
+                f"perspective, screen direction, horizon, and axis stable through the bridge. Do not use a push-in, pull-back, "
+                f"crash zoom, rapid dolly, whip pan, orbit, or abrupt reframing merely to reconcile A and B. Prefer the shortest "
+                f"continuous subject motion and posture adjustment that reaches B. Change framing only when the chronological A/B "
+                f"boundary frames prove the same camera motion is already underway. End exactly at B's first visible frame and do "
+                f"not perform or replay any action that occurs after B begins; B itself owns that continuation. The executable H3 "
+                f"prompt must state the exact A-end state, exact B-start state, minimum required motion, fixed camera contract, and "
+                f"the ban on replaying B's later action. Identity pictures are identity-only evidence: never show a reference sheet, "
+                f"turnaround, four-view layout, split screen, panel, collage, character card, or the pictures themselves in "
+                f"the generated video. Describe one continuous cinematic scene only. Write descriptive content in "
+                f"{output_language}, but the executable H3 prompt must begin with the exact English label [Shot 1]. "
+                f"{str(user_instruction or '').strip()}"
+            )
+            comfy.model_management.unload_all_models()
+            comfy.model_management.soft_empty_cache()
+            director = Qwen35ContinuityDirector(
+                selection.model_path, selection.mmproj_path, debug=config["debug"],
+                mtp_enabled=False, backend="qwen3.5", context_tokens=131072,
+            )
+            try:
+                directed = director.external_video_continuation(
+                    instruction, observations,
+                    source={
+                        "fps": float(source["fps"]), "source_frames": int(source["source_a_frame_count"]),
+                        "tail_frames": H3_BOUNDARY_FRAMES, "tail_observation_count": H3_BOUNDARY_FRAMES,
+                        "destination_frame_count": H3_BOUNDARY_FRAMES,
+                        "reference_image_count": len(identity_images), "transition_frames": transition_frames,
+                        "prompt_lang": prompt_lang,
+                    },
+                    reference_summary=(
+                        f"The first {H3_BOUNDARY_FRAMES} chronological comparison images pair A on the left with B on the right; "
+                        f"then {len(identity_images)} identity-only pictures follow. B is the required destination. The identity "
+                        f"pictures must never become visible content, framing, layout, panels, split screens, collages, or shots."
+                    ),
+                )
+            except Qwen35ObservationError as error:
+                path = _save_qwen35_bridge_error(error)
+                raise Qwen35ObservationError(
+                    f"{error}; raw response saved to {path}", raw_json=error.raw_json,
+                ) from error
+            plan = {
+                "type": "HR_VIDEO_BRIDGE_PLAN", "version": 1,
+                "transition_frames": transition_frames, "strategy": transition_strategy,
+                "analysis": {
+                    "confidence": directed.confidence,
+                    "observed_end_state": directed.observed_end_state,
+                    "transition_plan": directed.transition_plan,
+                },
+                "constraints": list(directed.observed_end_state.get("must_continue", ())),
+                "h3_prompt": directed.h3_prompt,
+                "risk_report": "",
+                "reference_labels": {
+                    "pictures": [f"<Picture {index}>" for index in range(1, len(pictures) + 1)],
+                    "video_a": "<Video 2>", "video_b": "<Video 1>",
+                },
+                "source_fps": float(source["fps"]), "source": source,
+            }
+            return io.NodeOutput(
+                plan, directed.h3_prompt,
+                json.dumps(plan["analysis"], ensure_ascii=False, indent=2), "",
+            )
 
         images = [image[0] for image in pictures]
         images.extend(frame for frame in source["a_tail"])
@@ -292,8 +393,8 @@ def _bridge_reference_set(reference_set: Any, source: dict[str, Any]) -> dict[st
     return {
         "version": 1,
         "images": refs["images"],
-        "videos": (source["b_head"],),
-        "video_audios": (source["b_head_audio"],) if source.get("b_head_audio") is not None else (),
+        "videos": (),
+        "video_audios": (),
         "audios": (),
         "ref_image_size": refs["ref_image_size"],
         "ref_scale": refs["ref_scale"],
@@ -307,7 +408,7 @@ class HRVideoBridgeConditioning(io.ComfyNode):
             node_id="HRVideoBridgeConditioning",
             display_name="HR Video Bridge Conditioning",
             category="model/sampling/custom",
-            description="Build H3 conditioning: identity pictures and B head as references, A tail as the first-frame continuation anchor.",
+            description="Build H3 first/last-frame conditioning: A's final frame anchors the start and B's first frame anchors the destination.",
             inputs=[
                 io.Clip.Input("clip"), io.Vae.Input("vae"), io.Vae.Input("audio_vae"),
                 HRVideoBridgePlan.Input("bridge_plan"), HRReferenceSet.Input("reference_set"),
@@ -335,31 +436,34 @@ class HRVideoBridgeConditioning(io.ComfyNode):
         positive, latent, normalized_refs = conditioned
         samples = latent["samples"].unbind()
         target_video = samples[0]
-        resized_a = _resize(source["a_tail"], int(width), int(height), "disabled")
+        resized_a = _resize(source["a_tail"][-1:], int(width), int(height), "disabled")
+        resized_b = _resize(source["b_head"][:1], int(width), int(height), "disabled")
         video_context = vae.encode(resized_a)
-        keyframe = {"resolved_frame_index": 0, "latent": video_context}
+        keyframes = [
+            {"resolved_frame_index": 0, "latent": video_context},
+            {"resolved_frame_index": int(plan["transition_frames"]) - 1, "latent": vae.encode(resized_b)},
+        ]
         audio_context = None
-        if audio_mode == "continue" and source.get("a_tail_audio") is not None:
-            audio_context, _steps = _encode_audio(audio_vae, source["a_tail_audio"])
-            keyframe["audio_latent"] = audio_context
         updated_positive = []
         for embedding, metadata in positive:
             updated = dict(metadata)
-            keyframes = [dict(item) for item in updated.get("minimax_keyframes", ())]
-            keyframes = [item for item in keyframes if not (
-                item.get("resolved_frame_index") == 0 and item.get("latent") is not None
+            existing_keyframes = [dict(item) for item in updated.get("minimax_keyframes", ())]
+            anchor_indices = {item["resolved_frame_index"] for item in keyframes}
+            existing_keyframes = [item for item in existing_keyframes if not (
+                item.get("resolved_frame_index") in anchor_indices and item.get("latent") is not None
             )]
-            updated["minimax_keyframes"] = [*keyframes, keyframe]
+            updated["minimax_keyframes"] = [*existing_keyframes, *keyframes]
             updated_positive.append([embedding, updated])
         continuation = {
             "type": "HR_H3_EXTERNAL_CONTINUATION", "version": 1,
             "video_context": video_context, "video_context_start": 0,
             "audio_context": audio_context, "audio_context_start": 0,
-            "audio_mode": audio_mode, "tail_images": resized_a,
+            "audio_mode": "mute", "visual_references_only": True, "tail_images": resized_a,
             "source_audio_tail": source.get("a_tail_audio"), "prompt": prompt,
             "analysis": plan.get("analysis", {}), "target_frames": int(plan["transition_frames"]),
+            "reference_set": normalized_refs,
             "source_fps": float(source["fps"]), "source_frames": int(source["source_a_frame_count"]),
-            "tail_frames": H3_BOUNDARY_FRAMES,
+            "tail_frames": 1,
         }
         if target_video.shape[2] < 2:
             raise ValueError("Bridge target latent is too short for MiniMax H3")
@@ -376,6 +480,17 @@ def _frame_distance(left: torch.Tensor, right: torch.Tensor) -> float:
     return float((left - right).abs().mean() + 0.25 * color)
 
 
+def _preserve_bridge_span(start: int, end: int, total: int, minimum: int) -> tuple[int, int]:
+    minimum = min(max(1, int(minimum)), int(total))
+    start = max(0, min(int(start), int(total)))
+    end = max(start, min(int(end), int(total)))
+    if end - start >= minimum:
+        return start, end
+    center = (start + end) // 2
+    start = max(0, min(center - minimum // 2, int(total) - minimum))
+    return start, start + minimum
+
+
 def _best_seam(left: torch.Tensor, right: torch.Tensor, search: int) -> dict[str, Any]:
     left_start = max(0, int(left.shape[0]) - int(search))
     right_end = min(int(right.shape[0]), int(search))
@@ -389,6 +504,28 @@ def _best_seam(left: torch.Tensor, right: torch.Tensor, search: int) -> dict[str
     if best is None:
         raise ValueError("Could not search an empty video seam")
     return best
+
+
+def _best_sequence_seam(left: torch.Tensor, right: torch.Tensor, search: int) -> dict[str, Any]:
+    left_start = max(0, int(left.shape[0]) - int(search))
+    right_end = min(int(right.shape[0]), int(search))
+    best = None
+    for left_index in range(left_start, int(left.shape[0])):
+        for right_start in range(right_end):
+            count = min(int(left.shape[0]) - left_index, right_end - right_start)
+            if count < 3:
+                continue
+            score = sum(_frame_distance(left[left_index + offset], right[right_start + offset])
+                        for offset in range(count)) / count
+            candidate = {
+                "left_index": left_index + count - 1,
+                "right_index": right_start + count - 1,
+                "score": score,
+                "overlap_frames": count,
+            }
+            if best is None or (score, -count) < (best["score"], -best["overlap_frames"]):
+                best = candidate
+    return best if best is not None else _best_seam(left, right, search)
 
 
 def _audio_tensor(audio: Any, sample_rate: int, channels: int) -> torch.Tensor:
@@ -429,6 +566,44 @@ def _edge_fade(parts: list[torch.Tensor], fade_samples: int) -> list[torch.Tenso
     return result
 
 
+def _crossfade_parts(parts, overlap, dim):
+    overlaps = [int(overlap)] * (len(parts) - 1) if isinstance(overlap, int) else [int(value) for value in overlap]
+    if len(overlaps) != len(parts) - 1:
+        raise ValueError("Crossfade overlap count must match the number of seams")
+    output = parts[0]
+    used = []
+    for part, requested in zip(parts[1:], overlaps):
+        count = min(requested, int(output.shape[dim]), int(part.shape[dim]))
+        used.append(count)
+        if count <= 0:
+            output = torch.cat((output, part), dim=dim)
+            continue
+        left = output.narrow(dim, output.shape[dim] - count, count)
+        right = part.narrow(dim, 0, count).to(left)
+        shape = [1] * left.ndim
+        shape[dim] = count
+        weight = (0.5 - 0.5 * torch.cos(
+            torch.linspace(0.0, torch.pi, count + 2, device=left.device, dtype=left.dtype)[1:-1]
+        )).reshape(shape)
+        blended = left * (1.0 - weight) + right * weight
+        output = torch.cat((output.narrow(dim, 0, output.shape[dim] - count), blended,
+                            part.narrow(dim, count, part.shape[dim] - count)), dim=dim)
+    return output, used
+
+
+def _source_bridge_audio(audio_a, audio_b, sample_rate, channels, sample_count):
+    left = _audio_tensor(audio_a, sample_rate, channels)
+    right = _audio_tensor(audio_b, sample_rate, channels)
+    left = left[:, -sample_count:]
+    right = right[:, :sample_count]
+    if left.shape[-1] < sample_count:
+        left = torch.nn.functional.pad(left, (sample_count - left.shape[-1], 0))
+    if right.shape[-1] < sample_count:
+        right = torch.nn.functional.pad(right, (0, sample_count - right.shape[-1]))
+    fade = torch.linspace(0.0, 1.0, sample_count, device=left.device, dtype=left.dtype).unsqueeze(0)
+    return left * (1.0 - fade) + right.to(left) * fade
+
+
 class HRVideoBridgeAssemble(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -440,8 +615,10 @@ class HRVideoBridgeAssemble(io.ComfyNode):
                 io.Audio.Input("bridge_audio", optional=True),
                 io.Combo.Input("assemble_policy", options=["auto_seam", "hard_cut_debug"], default="auto_seam"),
                 io.Int.Input("seam_search_frames", default=12, min=1, max=22, step=1),
-                io.Combo.Input("audio_policy", options=["use_bridge_audio", "mute_bridge"], default="use_bridge_audio"),
+                io.Combo.Input("audio_policy", options=["mute_bridge", "source_crossfade", "use_bridge_audio"], default="mute_bridge"),
                 io.Float.Input("fade_seconds", default=0.25, min=0.0, max=2.0, step=0.01),
+                io.Int.Input("video_blend_frames", default=3, min=0, step=1, tooltip="Requested crossfade length per video seam; execution clamps it to the frames actually available on both sides."),
+                io.Int.Input("min_bridge_frames", default=22, min=5, max=73, step=1),
             ],
             outputs=[io.Image.Output(display_name="frames"), io.Audio.Output(display_name="audio"),
                      HREndlessTimeline.Output(display_name="timeline"), io.String.Output(display_name="seam report")],
@@ -450,7 +627,8 @@ class HRVideoBridgeAssemble(io.ComfyNode):
 
     @classmethod
     def execute(cls, bridge_source, bridge_frames, bridge_audio=None, assemble_policy="auto_seam",
-                seam_search_frames=12, audio_policy="use_bridge_audio", fade_seconds=0.25):
+                seam_search_frames=12, audio_policy="mute_bridge", fade_seconds=0.25,
+                video_blend_frames=3, min_bridge_frames=22):
         source = normalize_bridge_source(bridge_source)
         bridge = _validate_images(bridge_frames, "bridge_frames")
         a, b = source["video_a"], source["video_b"]
@@ -458,13 +636,14 @@ class HRVideoBridgeAssemble(io.ComfyNode):
             raise ValueError("A, bridge, and B must have identical frame dimensions before assembly")
         if assemble_policy == "auto_seam":
             left = _best_seam(a, bridge, seam_search_frames)
-            right = _best_seam(bridge, b, seam_search_frames)
-            a_end = left["left_index"] + 1
+            right = _best_sequence_seam(bridge, b, seam_search_frames)
+            a_end = int(a.shape[0])
             bridge_start = left["right_index"] + 1
             bridge_end = right["left_index"] + 1
             b_start = right["right_index"] + 1
-            if bridge_end <= bridge_start:
-                bridge_start, bridge_end = 0, int(bridge.shape[0])
+            bridge_start, bridge_end = _preserve_bridge_span(
+                bridge_start, bridge_end, int(bridge.shape[0]), int(min_bridge_frames)
+            )
         elif assemble_policy == "hard_cut_debug":
             a_end, bridge_start, bridge_end, b_start = int(a.shape[0]), 0, int(bridge.shape[0]), 0
             left = {"left_index": a_end - 1, "right_index": 0, "score": _frame_distance(a[-1], bridge[0])}
@@ -472,10 +651,15 @@ class HRVideoBridgeAssemble(io.ComfyNode):
         else:
             raise ValueError(f"Unknown bridge assemble policy: {assemble_policy}")
         parts = [a[:a_end], bridge[bridge_start:bridge_end], b[b_start:]]
-        frames = torch.cat(parts, dim=0)
         fps = float(source["fps"])
+        blend_frames = int(video_blend_frames) if assemble_policy == "auto_seam" else 0
+        seam_blends = [0, blend_frames]
+        frames, video_overlaps = _crossfade_parts(parts, seam_blends, 0)
 
-        audio_inputs = [source.get("audio_a"), None if audio_policy == "mute_bridge" else bridge_audio, source.get("audio_b")]
+        if audio_policy == "source_crossfade":
+            audio_inputs = [source.get("audio_a"), None, source.get("audio_b")]
+        else:
+            audio_inputs = [source.get("audio_a"), None if audio_policy == "mute_bridge" else bridge_audio, source.get("audio_b")]
         available = [item for item in audio_inputs if isinstance(item, dict) and isinstance(item.get("waveform"), torch.Tensor)]
         audio = None
         audio_info = None
@@ -485,19 +669,27 @@ class HRVideoBridgeAssemble(io.ComfyNode):
             ranges = [(0, a_end), (bridge_start, bridge_end), (b_start, int(b.shape[0]))]
             audio_parts = [_audio_segment(item, start, end, fps, sample_rate, channels)
                            for item, (start, end) in zip(audio_inputs, ranges)]
-            if audio_policy == "mute_bridge":
+            if audio_policy == "source_crossfade":
+                audio_parts[1] = _source_bridge_audio(
+                    source.get("audio_a"), source.get("audio_b"), sample_rate, channels, audio_parts[1].shape[-1]
+                )
+            elif audio_policy == "mute_bridge":
                 audio_parts[1].zero_()
             audio_parts = _edge_fade(audio_parts, round(float(fade_seconds) * sample_rate))
-            waveform = torch.cat(audio_parts, dim=-1).unsqueeze(0)
+            audio_overlap = round(blend_frames * sample_rate / fps)
+            waveform, audio_overlaps = _crossfade_parts(audio_parts, [0, audio_overlap], -1)
+            waveform = waveform.unsqueeze(0)
             expected = round(int(frames.shape[0]) * sample_rate / fps)
             waveform = waveform[..., :expected]
             if waveform.shape[-1] < expected:
                 waveform = torch.nn.functional.pad(waveform, (0, expected - waveform.shape[-1]))
             audio = {"waveform": waveform, "sample_rate": sample_rate}
             audio_info = {"policy": audio_policy, "sample_rate": sample_rate, "channels": channels,
-                          "fade_seconds": float(fade_seconds), "total_samples": expected}
+                          "fade_seconds": float(fade_seconds), "video_blend_frames": blend_frames,
+                          "overlap_samples": audio_overlaps, "total_samples": expected}
 
-        lengths = [int(part.shape[0]) for part in parts]
+        lengths = [int(parts[0].shape[0]) - video_overlaps[0], int(parts[1].shape[0]),
+                   int(parts[2].shape[0]) - video_overlaps[1]]
         starts = [0, lengths[0], lengths[0] + lengths[1]]
         timeline_value = {
             "schema_version": 1, "producer": "HR Video Bridge Assemble", "fps": fps,
@@ -508,12 +700,14 @@ class HRVideoBridgeAssemble(io.ComfyNode):
                 {"type": "source_b", "start": starts[2], "end": int(frames.shape[0]) - 1, "source_start": b_start, "source_end": int(b.shape[0]) - 1},
             ],
             "seams": [
-                {"side": "a_to_bridge", "frame": starts[1], **left},
-                {"side": "bridge_to_b", "frame": starts[2], **right},
+                {"side": "a_to_bridge", "frame": starts[1], "blend_frames": video_overlaps[0], **left},
+                {"side": "bridge_to_b", "frame": starts[2], "blend_frames": video_overlaps[1], **right},
             ],
             "audio": audio_info,
         }
         timeline = normalize_timeline(timeline_value, fps=fps, total_frames=int(frames.shape[0]))
         report = {"left": left, "right": right, "ranges": {"a_end": a_end, "bridge_start": bridge_start,
-                  "bridge_end": bridge_end, "b_start": b_start}, "output_frames": int(frames.shape[0])}
+                  "bridge_end": bridge_end, "b_start": b_start}, "video_blend_frames": video_overlaps,
+                  "visible_bridge_frames": bridge_end - bridge_start,
+                  "output_frames": int(frames.shape[0])}
         return io.NodeOutput(frames, audio, timeline, json.dumps(report, ensure_ascii=False, indent=2))
