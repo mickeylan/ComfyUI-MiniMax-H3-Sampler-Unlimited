@@ -214,13 +214,41 @@ class HRMiniMaxH3ReferenceSet(io.ComfyNode):
 
     @classmethod
     def execute(cls, ref_image_size="match", ref_scale=1.0, ref_images=None, ref_videos=None,
-                ref_video_audios=None, ref_audios=None):
+                ref_video_audios=None, ref_audios=None, **dynamic_inputs):
+        """Accept both aggregated Autogrow dictionaries and expanded slot kwargs.
+
+        ComfyUI normally groups dynamic inputs under their Autogrow schema name,
+        while saved/manual workflows can submit the expanded ``ref_image_0``
+        names directly. Normalizing both forms here keeps those workflows
+        portable across ComfyUI frontend/backend versions.
+        """
+        groups = {
+            "ref_images": dict(ref_images or {}) if isinstance(ref_images, dict) else {},
+            "ref_videos": dict(ref_videos or {}) if isinstance(ref_videos, dict) else {},
+            "ref_video_audios": dict(ref_video_audios or {}) if isinstance(ref_video_audios, dict) else {},
+            "ref_audios": dict(ref_audios or {}) if isinstance(ref_audios, dict) else {},
+        }
+        prefixes = (
+            ("ref_video_audio_", "ref_video_audios"),
+            ("ref_image_", "ref_images"),
+            ("ref_video_", "ref_videos"),
+            ("ref_audio_", "ref_audios"),
+        )
+        unknown = []
+        for name, value in dynamic_inputs.items():
+            group = next((group for prefix, group in prefixes if name.startswith(prefix)), None)
+            if group is None:
+                unknown.append(name)
+            elif value is not None:
+                groups[group][name] = value
+        if unknown:
+            raise ValueError("Unknown HR Reference Set inputs: " + ", ".join(sorted(unknown)))
         return io.NodeOutput(normalize_reference_set({
             "version": 1,
-            "images": _ordered(ref_images, "ref_image_", 9),
-            "videos": _indexed(ref_videos, "ref_video_", 3),
-            "video_audios": _indexed(ref_video_audios, "ref_video_audio_", 3),
-            "audios": _ordered(ref_audios, "ref_audio_", 3),
+            "images": _ordered(groups["ref_images"], "ref_image_", 9),
+            "videos": _indexed(groups["ref_videos"], "ref_video_", 3),
+            "video_audios": _indexed(groups["ref_video_audios"], "ref_video_audio_", 3),
+            "audios": _ordered(groups["ref_audios"], "ref_audio_", 3),
             "ref_image_size": ref_image_size,
             "ref_scale": ref_scale,
         }))

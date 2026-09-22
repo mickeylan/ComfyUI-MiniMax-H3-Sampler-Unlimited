@@ -69,6 +69,29 @@ class ReferenceSetTests(unittest.TestCase):
         self.assertEqual(videos, (first_video, second_video, None))
         self.assertEqual(audios, (None, second_audio, None))
 
+    def test_execute_accepts_expanded_autogrow_slot_kwargs(self):
+        first = object()
+        second = object()
+        output = reference_set.HRMiniMaxH3ReferenceSet.execute(
+            ref_image_0=first,
+            ref_image_1=second,
+        )
+        value = output[0][0]
+        self.assertEqual(value["images"], (first, second))
+
+    def test_execute_merges_aggregated_and_expanded_autogrow_inputs(self):
+        first = object()
+        second = object()
+        output = reference_set.HRMiniMaxH3ReferenceSet.execute(
+            ref_images={"ref_image_0": first},
+            ref_image_1=second,
+        )
+        self.assertEqual(output[0][0]["images"], (first, second))
+
+    def test_execute_rejects_unknown_dynamic_input(self):
+        with self.assertRaisesRegex(ValueError, "Unknown HR Reference Set inputs"):
+            reference_set.HRMiniMaxH3ReferenceSet.execute(unexpected=object())
+
     def test_story_director_image_batch_expands_to_individual_references(self):
         batch = torch.zeros((4, 32, 32, 3))
         images = reference_set.reference_images({"version": 1, "images": (batch,)})
