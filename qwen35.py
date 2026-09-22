@@ -12,7 +12,7 @@ import struct
 import time
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -76,6 +76,12 @@ class QwenChunkPrompt:
     timing_plan: str = ""
     end_state: str = ""
     last_seen_character_state: tuple[dict[str, Any], ...] = ()
+    # Shared parent-process contract for Qwen3.6/3.8 workers. Qwen3.5's
+    # existing chunk operation does not author this field and therefore keeps
+    # the empty default without changing its prompt or inference behavior.
+    event_ledger: dict[str, tuple[dict[str, Any], ...]] = field(default_factory=lambda: {
+        "completed": (), "active": (), "pending": (), "forbidden": (),
+    })
     system_prompt: str = ""
     observation_prompt: str = ""
     validation_warnings: tuple[str, ...] = ()
@@ -933,14 +939,26 @@ def _payload(value: Any) -> dict[str, Any]:
                        "visual_beats": [item.__dict__ for item in shot.visual_beats],
                        "overlays": [{"start_frame": item.start_frame, "end_frame": item.end_frame, "overlay_type": item.overlay_type, "content": item.content} for item in shot.overlays]} for shot in value.shots],
         }
-    return {name: getattr(value, name) for name in ("confidence", "analysis", "detailed_description", "raw_json", "timing_plan", "end_state", "last_seen_character_state", "system_prompt", "observation_prompt", "validation_warnings")}
+    return {name: getattr(value, name) for name in ("confidence", "analysis", "detailed_description", "raw_json", "timing_plan", "end_state", "last_seen_character_state", "event_ledger", "system_prompt", "observation_prompt", "validation_warnings")}
 
 
 def _from_payload(value: dict[str, Any], timing: bool, external: bool = False):
     if external:
         return QwenExternalContinuation(**{**value, "validation_warnings": tuple(value.get("validation_warnings", ()))})
     if not timing:
-        return QwenChunkPrompt(**{**value, "last_seen_character_state": tuple(value.get("last_seen_character_state", ())), "validation_warnings": tuple(value.get("validation_warnings", ()))})
+        ledger = value.get("event_ledger")
+        if not isinstance(ledger, dict):
+            ledger = {}
+        normalized_ledger = {
+            name: tuple(dict(item) for item in ledger.get(name, ()) if isinstance(item, dict))
+            for name in ("completed", "active", "pending", "forbidden")
+        }
+        return QwenChunkPrompt(**{
+            **value,
+            "last_seen_character_state": tuple(value.get("last_seen_character_state", ())),
+            "event_ledger": normalized_ledger,
+            "validation_warnings": tuple(value.get("validation_warnings", ())),
+        })
     shots = tuple(QwenShotTimingShot(
         int(shot["source_shot"]), int(shot["shot_start_frame"]), int(shot["shot_end_frame"]),
         tuple(QwenShotTimingBeat(**beat) for beat in shot["visual_beats"]),

@@ -517,6 +517,29 @@ class Qwen35Tests(unittest.TestCase):
         self.assertIn("must not describe analysis", prompt)
         self.assertIn(previous, prompt)
 
+    def test_parent_payload_accepts_qwen36_38_event_ledger(self):
+        result = qwen35._from_payload({
+            "confidence": "high",
+            "analysis": "continue",
+            "detailed_description": "next action",
+            "raw_json": "{}",
+            "event_ledger": {
+                "completed": [{"id": "S1.V1", "summary": "stood up"}],
+                "active": [{"id": "S1.V2", "summary": "walking"}],
+                "pending": [],
+                "forbidden": [{"id": "S1.V1", "summary": "stood up"}],
+            },
+        }, False)
+        self.assertEqual(result.event_ledger["completed"][0]["id"], "S1.V1")
+        self.assertEqual(result.event_ledger["active"][0]["id"], "S1.V2")
+
+    def test_qwen35_chunk_payload_defaults_to_empty_event_ledger(self):
+        original = qwen35.QwenChunkPrompt("high", "ok", "continue", "{}")
+        restored = qwen35._from_payload(qwen35._payload(original), False)
+        self.assertEqual(restored.event_ledger, {
+            "completed": (), "active": (), "pending": (), "forbidden": (),
+        })
+
     def test_storyboard_messages_include_target_and_image_inventory(self):
         system, prompt = qwen35._storyboard_messages({
             "director_backend": "qwen3.8",
