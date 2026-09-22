@@ -300,6 +300,8 @@ class HRMiniMaxH3ReferenceConditioning(io.ComfyNode):
             ref_blocks.append({"kind": "image", "latent_h": target_height // 16, "latent_w": target_width // 16, "latent": encoded})
 
         for index, video in enumerate(refs["videos"]):
+            if video is None:
+                continue
             if not isinstance(video, torch.Tensor) or video.ndim != 4 or video.shape[0] < 5:
                 raise ValueError("MiniMax H3 reference videos must be NHWC IMAGE batches with at least 5 frames")
             source_height, source_width = video.shape[1:3]

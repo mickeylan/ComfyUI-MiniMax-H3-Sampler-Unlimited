@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -101,6 +102,31 @@ class ReferenceSetTests(unittest.TestCase):
     def test_story_director_image_batch_respects_h3_limit(self):
         with self.assertRaisesRegex(ValueError, "at most 9"):
             reference_set.reference_images({"version": 1, "images": (torch.zeros((10, 8, 8, 3)),)})
+
+    def test_conditioning_skips_empty_fixed_video_slots(self):
+        image = torch.zeros((1, 32, 32, 3))
+        refs = {
+            "version": 1,
+            "images": (image,),
+            "videos": (None, None, None),
+            "video_audios": (None, None, None),
+            "audios": (),
+            "ref_image_size": "match",
+            "ref_scale": 1.0,
+        }
+        vae = types.SimpleNamespace(encode=lambda frames: torch.zeros((1, 24, 2, 2, 2)))
+        clip = types.SimpleNamespace(
+            tokenize=lambda prompt, minimax_ref_items: (prompt, minimax_ref_items),
+            encode_from_tokens_scheduled=lambda tokens: [[torch.zeros(1), {}]],
+        )
+        latent = {"samples": object()}
+        with patch.object(reference_set, "_empty_av_latent", return_value=(latent, 5)), \
+             patch.object(reference_set, "_resize", side_effect=lambda frames, *_args: frames), \
+             patch.object(reference_set.node_helpers, "conditioning_set_values", side_effect=lambda conditioning, _values: conditioning, create=True):
+            output = reference_set.HRMiniMaxH3ReferenceConditioning.execute(
+                clip, vae, None, "prompt", 32, 32, 5, refs
+            )
+        self.assertIs(output[0][1], latent)
 
     def test_normalize_accepts_same_index_video_soundtrack(self):
         video = object()
