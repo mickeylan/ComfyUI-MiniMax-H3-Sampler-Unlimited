@@ -12,7 +12,7 @@ import struct
 import time
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -22,9 +22,11 @@ from PIL import Image
 try:
     from .director_errors import DirectorDependencyError, DirectorObservationError, DirectorWorkerError
     from .story_format import compile_h3_prompt, validate_storyboard_plan
+    from .prompt_skill import compile_prompt_skill, prompt_skill_messages
 except ImportError:  # Direct worker execution.
     from director_errors import DirectorDependencyError, DirectorObservationError, DirectorWorkerError
     from story_format import compile_h3_prompt, validate_storyboard_plan
+    from prompt_skill import compile_prompt_skill, prompt_skill_messages
 
 
 QWEN35_CONTEXT_TOKENS = 65536
@@ -41,6 +43,7 @@ QWEN38_IMAGE_MIN_TOKENS = 256
 QWEN38_IMAGE_MAX_TOKENS = 1344
 QWEN38_CHUNK_RESPONSE_TOKENS = 4096
 QWEN38_TIMING_RESPONSE_TOKENS = 8192
+QWEN_PROMPT_SKILL_RESPONSE_TOKENS = 8192
 QWEN_JZL_RESPONSE_TOKENS = 32768
 QWEN35_PROMPTS_PATH = Path(__file__).with_name("qwen35_prompts.txt")
 _WORKER_RESULT_PREFIX = "MINIMAX_H3_QWEN35_RESULT="
@@ -73,6 +76,9 @@ class QwenChunkPrompt:
     timing_plan: str = ""
     end_state: str = ""
     last_seen_character_state: tuple[dict[str, Any], ...] = ()
+    event_ledger: dict[str, tuple[dict[str, Any], ...]] = field(default_factory=lambda: {
+        "completed": (), "active": (), "pending": (), "forbidden": (),
+    })
     system_prompt: str = ""
     observation_prompt: str = ""
     validation_warnings: tuple[str, ...] = ()
@@ -249,12 +255,27 @@ def _chunk_messages(request: dict[str, Any]) -> tuple[str, str]:
         "previous_characters": json.dumps(request.get("previous_last_seen_character_state", ()), ensure_ascii=False),
     }
     prompt = _render(templates["CHUNK_USER"], values)
+    previous_ledger = request.get("previous_event_ledger")
+    if not isinstance(previous_ledger, dict):
+        previous_ledger = {"completed": [], "active": [], "pending": [], "forbidden": []}
+    prompt += (
+        "\n\nEVENT OWNERSHIP LEDGER — prevent repeated shots and actions.\n"
+        "Previous ledger:\n" + json.dumps(previous_ledger, ensure_ascii=False, indent=2) + "\n\n"
+        "Treat completed and forbidden events as immutable history: detailed_description MUST NOT stage, replay, "
+        "restart, or visually recap them. Begin from the visible end_state and active events. Only active events and "
+        "mandatory current-slice coverage may appear now. Pending events outside the current slice must not appear early. "
+        "Return an event_ledger object with exactly four arrays: completed, active, pending, forbidden. Each item must "
+        "contain non-empty id and summary strings. Move previously active events to completed only when the attached "
+        "rendered stills show completion. Copy every completed event into forbidden so it cannot be replayed later. "
+        "Use stable mandatory-coverage IDs such as S1.V1 whenever available."
+    )
     if request.get("missing_prompt_repair"):
         prompt += ("\n\nCORRECTION: Your previous JSON omitted the required H3 prompt text. Return exactly one JSON object "
                    "using this schema: {\"confidence\":\"high|medium|low\",\"analysis\":\"brief factual check\","
                    "\"detailed_description\":\"complete H3 shot text with every required marker\","
                    "\"timing_plan\":\"brief timing summary\",\"end_state\":\"visible final state\","
-                   "\"last_seen_character_state\":[]}. detailed_description must not be empty. "
+                   "\"last_seen_character_state\":[],\"event_ledger\":{\"completed\":[],\"active\":[],"
+                   "\"pending\":[],\"forbidden\":[]}}. detailed_description must not be empty. "
                    "Do not return {}, markdown, or prose outside the JSON object.")
     return templates["CHUNK_SYSTEM"], prompt
 
@@ -414,6 +435,43 @@ def _timing_plan(value: dict[str, Any], request: dict[str, Any], raw: str, syste
     return QwenShotTimingPlan(str(value.get("confidence", "unknown")), str(value.get("analysis", "")).strip(), tuple(shots), tuple(table), raw, system, prompt, attempts=(attempt,))
 
 
+def _event_ledger(value: Any) -> dict[str, tuple[dict[str, Any], ...]]:
+    buckets = ("completed", "active", "pending", "forbidden")
+    if value is None:
+        return {name: () for name in buckets}
+    if not isinstance(value, dict):
+        raise Qwen35ObservationError("Qwen event_ledger must be a JSON object")
+    result = {}
+    ownership = {}
+    for bucket in buckets:
+        items = value.get(bucket, [])
+        if not isinstance(items, (list, tuple)):
+            raise Qwen35ObservationError(f"Qwen event_ledger.{bucket} must be an array")
+        normalized = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise Qwen35ObservationError(f"Qwen event_ledger.{bucket} items must be objects")
+            event_id = str(item.get("id", "")).strip()
+            summary = str(item.get("summary", "")).strip()
+            if not event_id or not summary:
+                raise Qwen35ObservationError(f"Qwen event_ledger.{bucket} items require id and summary")
+            if event_id in ownership and ownership[event_id] != bucket:
+                # Completed events are deliberately mirrored into forbidden.
+                if {ownership[event_id], bucket} != {"completed", "forbidden"}:
+                    raise Qwen35ObservationError(
+                        f"Qwen event {event_id} appears in both {ownership[event_id]} and {bucket}"
+                    )
+            ownership[event_id] = bucket
+            normalized.append({**item, "id": event_id, "summary": summary})
+        result[bucket] = tuple(normalized)
+    forbidden_ids = {item["id"] for item in result["forbidden"]}
+    result["forbidden"] = (*result["forbidden"], *(
+        {**item, "reason": str(item.get("reason") or "completed event must not replay")}
+        for item in result["completed"] if item["id"] not in forbidden_ids
+    ))
+    return result
+
+
 def _chunk_prompt(value: dict[str, Any], raw: str, system: str, prompt: str, request: dict[str, Any] | None = None) -> QwenChunkPrompt:
     description = next(
         (
@@ -443,7 +501,8 @@ def _chunk_prompt(value: dict[str, Any], raw: str, system: str, prompt: str, req
     return QwenChunkPrompt(
         str(value.get("confidence", "unknown")), str(value.get("analysis", "")).strip(), description.strip(), raw,
         str(value.get("timing_plan", "")), str(value.get("end_state", "")),
-        tuple(dict(item) for item in state if isinstance(item, dict)), system, prompt,
+        tuple(dict(item) for item in state if isinstance(item, dict)),
+        _event_ledger(value.get("event_ledger")), system, prompt,
         attempts=(QwenPromptAttempt("initial response", raw),),
     )
 
@@ -796,12 +855,13 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
 
     Llama, MTMDChatHandler, Qwen35ChatHandler, Jinja2ChatFormatter, handler_factory, SpecConfig, SpeculativeType = _load_runtime()
     operation = request["operation"]
-    if operation not in {"timing_plan", "chunk", "storyboard", "jzl_storyboard", "video_bridge"}:
+    if operation not in {"timing_plan", "chunk", "storyboard", "jzl_storyboard", "video_bridge", "prompt_skill_compile"}:
         raise Qwen35ObservationError(f"Unknown Qwen operation: {operation}")
     timing = operation == "timing_plan"
     storyboard = operation == "storyboard"
     jzl_storyboard = operation == "jzl_storyboard"
     video_bridge = operation == "video_bridge"
+    prompt_skill = operation == "prompt_skill_compile"
     family = _qwen_family(request["director_model_path"])
     handler = None if timing or family == "qwen3.8" else MTMDChatHandler(
         clip_model_path=request["director_mmproj_path"], verbose=False, use_gpu=False,
@@ -870,6 +930,8 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             system, prompt = _storyboard_messages(request)
         elif video_bridge:
             system, prompt = _video_bridge_messages(request)
+        elif prompt_skill:
+            system, prompt = prompt_skill_messages(request)
         else:
             system, prompt = _chunk_messages(request)
         content: Any = prompt
@@ -882,7 +944,7 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             "temperature": 0.7,
             "top_p": 0.8 if family == "qwen3.8" else 0.9,
             "top_k": 40,
-            "max_tokens": QWEN_JZL_RESPONSE_TOKENS if jzl_storyboard else {
+            "max_tokens": QWEN_JZL_RESPONSE_TOKENS if jzl_storyboard else QWEN_PROMPT_SKILL_RESPONSE_TOKENS if prompt_skill else {
                 "qwen3.5": QWEN35_TIMING_RESPONSE_TOKENS if timing else QWEN35_CHUNK_RESPONSE_TOKENS,
                 "qwen3.6": QWEN36_TIMING_RESPONSE_TOKENS if timing else QWEN36_CHUNK_RESPONSE_TOKENS,
                 "qwen3.8": QWEN38_TIMING_RESPONSE_TOKENS if timing else QWEN38_CHUNK_RESPONSE_TOKENS,
@@ -899,14 +961,15 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             result = text
         else:
             value, raw = _extract_json(text)
-            result = (_video_bridge_result(value, request) if video_bridge else
+            result = (compile_prompt_skill(value, request) if prompt_skill else
+                      _video_bridge_result(value, request) if video_bridge else
                       _storyboard_result(value, request) if storyboard else
                       _timing_plan(value, request, raw, system, prompt) if timing else
                       _chunk_prompt(value, raw, system, prompt, request))
         usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
         stats = getattr(llm, "last_speculative_stats", None)
         return {
-            "jzl_storyboard" if jzl_storyboard else ("video_bridge" if video_bridge else ("storyboard" if storyboard else ("timing_plan" if timing else "chunk_prompt"))): result if storyboard or jzl_storyboard or video_bridge else _payload(result),
+            "jzl_storyboard" if jzl_storyboard else ("prompt_skill_compile" if prompt_skill else ("video_bridge" if video_bridge else ("storyboard" if storyboard else ("timing_plan" if timing else "chunk_prompt")))): result if storyboard or jzl_storyboard or video_bridge or prompt_skill else _payload(result),
             "generation": {
                 "finish_reason": choice.get("finish_reason"),
                 "prompt_tokens": usage.get("prompt_tokens"),
@@ -932,12 +995,17 @@ def _payload(value: Any) -> dict[str, Any]:
                        "visual_beats": [item.__dict__ for item in shot.visual_beats],
                        "overlays": [{"start_frame": item.start_frame, "end_frame": item.end_frame, "overlay_type": item.overlay_type, "content": item.content} for item in shot.overlays]} for shot in value.shots],
         }
-    return {name: getattr(value, name) for name in ("confidence", "analysis", "detailed_description", "raw_json", "timing_plan", "end_state", "last_seen_character_state", "system_prompt", "observation_prompt", "validation_warnings")}
+    return {name: getattr(value, name) for name in ("confidence", "analysis", "detailed_description", "raw_json", "timing_plan", "end_state", "last_seen_character_state", "event_ledger", "system_prompt", "observation_prompt", "validation_warnings")}
 
 
 def _from_payload(value: dict[str, Any], timing: bool):
     if not timing:
-        return QwenChunkPrompt(**{**value, "last_seen_character_state": tuple(value.get("last_seen_character_state", ())), "validation_warnings": tuple(value.get("validation_warnings", ()))})
+        return QwenChunkPrompt(**{
+            **value,
+            "last_seen_character_state": tuple(value.get("last_seen_character_state", ())),
+            "event_ledger": _event_ledger(value.get("event_ledger")),
+            "validation_warnings": tuple(value.get("validation_warnings", ())),
+        })
     shots = tuple(QwenShotTimingShot(
         int(shot["source_shot"]), int(shot["shot_start_frame"]), int(shot["shot_end_frame"]),
         tuple(QwenShotTimingBeat(**beat) for beat in shot["visual_beats"]),
