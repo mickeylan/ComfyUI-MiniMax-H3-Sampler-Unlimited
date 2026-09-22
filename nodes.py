@@ -38,6 +38,10 @@ from .gemma4 import (
     is_official_gemma4_pair,
 )
 from .preview import begin_preview_execution
+from .prompt_skill import (
+    active_prompt_plan_pictures, filter_prompt_plan_picture_items,
+    localize_prompt_from_plan, normalize_prompt_plan, prompt_plan_shots,
+)
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images, reference_presentation_items
 from .video_io import HREndlessTimeline, normalize_timeline
@@ -47,6 +51,7 @@ HREndlessRetakePlan = io.Custom("HR_RETAKE_PLAN")
 HREndlessContinuationPlan = io.Custom("HR_CONTINUATION_PLAN")
 HREndlessExternalContinuation = io.Custom("HR_H3_EXTERNAL_CONTINUATION")
 HRH3EventLedger = io.Custom("HR_H3_EVENT_LEDGER")
+HRH3PromptPlan = io.Custom("HR_H3_PROMPT_PLAN")
 AUDIO_LATENT_FPS = 40
 VIDEO_FPS = 24
 MIN_VIDEO_STEPS = 2
@@ -939,10 +944,16 @@ def _debug_chunk_prompt(index, chunk, content_start, chunk_prompt, gemma_report=
     return f"{_debug_chunk_header(index, chunk, content_start)}{report}\n{chunk_prompt}"
 
 
+def _director_segment_values(segment):
+    shot_index, shot_start, shot_end, body = segment[:4]
+    return shot_index, shot_start, shot_end, body, bool(segment[4]) if len(segment) > 4 else True
+
+
 def _gemma_shot_records(shots, range_start, range_end, sampled_start, fps, target):
     selected = [shot for shot in shots if shot[1] < range_end and shot[2] > range_start]
     records = []
-    for local_index, (shot_index, shot_start, shot_end, body) in enumerate(selected):
+    for local_index, segment in enumerate(selected):
+        shot_index, shot_start, shot_end, body, is_cut = _director_segment_values(segment)
         record = {
             "shot_number": shot_index + 1,
             "shot_start": shot_start,
@@ -951,7 +962,9 @@ def _gemma_shot_records(shots, range_start, range_end, sampled_start, fps, targe
         }
         if target:
             target_start = max(range_start, shot_start)
-            if local_index == 0:
+            if not is_cut:
+                required_marker = None
+            elif local_index == 0:
                 # [Shot 1] is a genuine shot-opening signal to H3.  Never
                 # synthesize it merely because a new physical sampler chunk
                 # starts in the middle of a source shot.  When a real cut
@@ -988,17 +1001,19 @@ def _gemma_shot_records(shots, range_start, range_end, sampled_start, fps, targe
 
 
 def _gemma_source_shot_records(shots, range_start, range_end):
-    """Return complete source-shot facts for Gemma's preproduction pass."""
-    return [
-        {
-            "shot_number": shot_index + 1,
-            "shot_start": shot_start,
-            "shot_end": shot_end,
-            "source_body": body,
-        }
-        for shot_index, shot_start, shot_end, body in shots
-        if shot_start < range_end and shot_end > range_start
-    ]
+    """Return complete source-shot or continuous-beat facts for preproduction."""
+    records = []
+    for segment in shots:
+        shot_index, shot_start, shot_end, body, is_cut = _director_segment_values(segment)
+        if shot_start < range_end and shot_end > range_start:
+            records.append({
+                "shot_number": shot_index + 1,
+                "shot_start": shot_start,
+                "shot_end": shot_end,
+                "source_body": body,
+                "cut": is_cut,
+            })
+    return records
 
 
 def _gemma_preproduction_chunks(active_plan):
@@ -1452,7 +1467,7 @@ def _validate_h3_audio_conditioning(conds):
 
 def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prompt, video_context=None,
                             audio_context=None, audio_end_frame=5.0, video_refs=(), video_context_start=0,
-                            target_video=None):
+                            target_video=None, active_picture_indices=None):
     conds = {name: [item.copy() for item in values] for name, values in original_conds.items()}
     for values in conds.values():
         for cond in values:
@@ -1471,6 +1486,10 @@ def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prom
         else:
             cond.pop("minimax_token_tags", None)
         existing_refs = [_normalize_h3_video_ref(ref) for ref in cond.get("minimax_refs", ())]
+        if active_picture_indices is not None:
+            existing_refs = filter_prompt_plan_picture_items(
+                existing_refs, active_picture_indices, kind_key="kind"
+            )
         if existing_refs or video_refs:
             cond["minimax_refs"] = [*existing_refs, *(_normalize_h3_video_ref(ref) for ref in video_refs)]
         keyframes = []
@@ -2812,6 +2831,10 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     "initial_event_ledger", optional=True,
                     tooltip="Optional event ownership seed from HR H3 Prompt Skill Compiler.",
                 ),
+                HRH3PromptPlan.Input(
+                    "prompt_plan", optional=True,
+                    tooltip="Optional typed six-field shot plan from HR H3 Prompt Skill Compiler. When connected, provides chunk-local camera/state/events/forbidden/audio fields for structured compilation.",
+                ),
                 HREndlessContinuationPlan.Input("continuation_plan", optional=True,
                                                 tooltip="Continue from an immutable HR Endless continuation checkpoint."),
             ],
@@ -2836,7 +2859,8 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 pytorch_memory_fraction=DEFAULT_PYTORCH_MEMORY_FRACTION,
                 debug=False, debug_stop_chunk=0, debug_start_chunk=0, director_backend="gemma4",
                 director_model="auto", director_mmproj="auto", director_config=None, reference_set=None,
-                continuation_plan=None, external_continuation=None, initial_event_ledger=None, **_deprecated_inputs):
+                continuation_plan=None, external_continuation=None, initial_event_ledger=None, prompt_plan=None,
+                **_deprecated_inputs):
         _set_pytorch_memory_fraction(DEFAULT_PYTORCH_MEMORY_FRACTION, guider.model_patcher.load_device)
         if retake_plan is not None and continuation_plan is not None:
             raise ValueError("retake_plan and continuation_plan cannot be used together")
@@ -2996,7 +3020,20 @@ class HREndlessSampler(SamplerCustomAdvanced):
             active_plan[0].update(context_video_t=_video_steps(5), context_audio_t=_audio_steps(5),
                                   output_trim_frames=0, synthetic_prefix=True)
             plan = active_plan if debug_stop_chunk == 0 else [*active_plan, *plan[len(active_plan):]]
-        _gemma_markers, gemma_shots, _gemma_description_end = _parse_prompt_shots(prompt, plan[-1]["frame_end"], fps)
+        typed_prompt_plan = None if prompt_plan is None else normalize_prompt_plan(
+            prompt_plan, fps=fps, total_frames=plan[-1]["frame_end"]
+        )
+        source_prompt_identity = prompt
+        if typed_prompt_plan is not None:
+            source_prompt_identity += "\n\nHR_H3_PROMPT_PLAN:\n" + json.dumps(
+                typed_prompt_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+        if typed_prompt_plan is not None:
+            _gemma_markers = []
+            gemma_shots = prompt_plan_shots(typed_prompt_plan)
+            _gemma_description_end = None
+        else:
+            _gemma_markers, gemma_shots, _gemma_description_end = _parse_prompt_shots(prompt, plan[-1]["frame_end"], fps)
         gemma_director_needed = bool(gemma_shots) and continuation_state is None and not external_active
 
         original_conds = guider.original_conds
@@ -3034,6 +3071,16 @@ class HREndlessSampler(SamplerCustomAdvanced):
             video_number,
             audio_number,
         )
+        if typed_prompt_plan is not None:
+            localized_prompts = []
+            for index, (chunk, (chunk_prompt, _debug_prompt)) in enumerate(zip(active_plan, planned_prompts)):
+                localized = localize_prompt_from_plan(
+                    chunk_prompt, typed_prompt_plan,
+                    frame_start=chunk["frame_start"], frame_end=chunk["frame_end"],
+                )
+                content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
+                localized_prompts.append((localized, _debug_chunk_prompt(index, chunk, content_start, localized)))
+            planned_prompts = localized_prompts
         if debug:
             logging.info(
                 "HR Endless Sampler independent continuation controls: "
@@ -3200,7 +3247,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         debug_start_chunk - 1,
                         debug_start_chunk,
                     )
-                    current_prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+                    current_prompt_hash = hashlib.sha256(source_prompt_identity.encode("utf-8")).hexdigest()
                     if loaded_cache["manifest"].get("source_prompt_sha256") != current_prompt_hash:
                         replay_prompt_changed = True
                         # The cached physical predecessor is still the exact
@@ -3286,7 +3333,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
             try:
                 candidate_cache.create(
                     replay_fingerprint,
-                    prompt,
+                    source_prompt_identity,
                     {
                         "video": video,
                         "audio": audio,
@@ -3635,7 +3682,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     finally:
                         gemma_preproduction_seconds += timing.add("gemma4", timer_started)
                     if replay_cache is not None and replay_timing_plan is None:
-                        replay_cache.save_timing_plan(gemma_preproduction_timing_plan, source_prompt=prompt)
+                        replay_cache.save_timing_plan(gemma_preproduction_timing_plan, source_prompt=source_prompt_identity)
                     _append_gemma_timing_plan(
                         gemma_prompt_log,
                         "Character-name table:\n"
@@ -3860,7 +3907,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 continuation_audio_label,
                                 include_video1_reference,
                             ),
-                            "original_prompt": prompt,
+                            "original_prompt": planned_prompts[index][0],
                         }
                         if gemma_preproduction_cache_ready and gemma_preproduction_cache is not None:
                             request["preproduction_cache"] = gemma_preproduction_cache.worker_spec()
@@ -4131,7 +4178,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     continuation_video_label = f"<Video {video_number}>" if continuation and include_video1_reference else None
                     continuation_audio_label = f"<Audio {audio_number}>" if continuation and include_video1_reference else None
                     chunk_prompt = _prompt_with_gemma_description(
-                        prompt,
+                        planned_prompts[index][0] if typed_prompt_plan is not None else prompt,
                         gemma_description,
                         drop_picture_anchors=continuation and not ref2va,
                         continuation_video_label=continuation_video_label,
@@ -4183,11 +4230,33 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 logging.info("HR Endless Sampler: %s.", qwen_message)
                 if preview_execution is not None:
                     preview_execution.set_phase(qwen_message, chunk=index)
+                active_picture_indices = None
+                chunk_images = image_list
+                chunk_reference_items = base_reference_items
+                chunk_positive = positive
+                if typed_prompt_plan is not None:
+                    active_picture_indices = active_prompt_plan_pictures(
+                        typed_prompt_plan, frame_start=chunk["frame_start"], frame_end=chunk["frame_end"]
+                    )
+                    if active_picture_indices and active_picture_indices[-1] > len(image_list):
+                        raise ValueError("prompt_plan picture mapping exceeds the connected reference images")
+                    chunk_images = [image_list[picture - 1] for picture in active_picture_indices]
+                    chunk_positive = []
+                    for embedding, metadata in positive:
+                        local_metadata = dict(metadata)
+                        local_metadata["minimax_refs"] = filter_prompt_plan_picture_items(
+                            metadata.get("minimax_refs", ()), active_picture_indices, kind_key="kind"
+                        )
+                        chunk_positive.append([embedding, local_metadata])
+                    if base_reference_items is not None:
+                        chunk_reference_items = filter_prompt_plan_picture_items(
+                            base_reference_items, active_picture_indices, kind_key="type"
+                        )
                 timer_started = time.perf_counter()
                 try:
                     encoded_prompt = _encode_prompt(
-                        clip, chunk_prompt, image_list, positive, width, height, continuation, video_items,
-                        base_reference_items,
+                        clip, chunk_prompt, chunk_images, chunk_positive, width, height, continuation, video_items,
+                        chunk_reference_items,
                     )
                 finally:
                     timing.add("qwen", timer_started)
@@ -4233,6 +4302,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     video_refs,
                     video_context_start,
                     chunk_video,
+                    active_picture_indices,
                 )
 
                 # Every dependency on the previous sampler container has now

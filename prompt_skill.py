@@ -12,6 +12,8 @@ except ImportError:  # Direct worker execution.
 
 
 CONTINUITY_MODES = ("strict", "balanced", "cinematic")
+_DESCRIPTION_FIELD = re.compile(r"(?:detailed_description|integrated_multimodal_description)\s*:", re.IGNORECASE)
+_DESCRIPTION_END = re.compile(r"\n\s*(?:overall_soundscape|non_diegetic_music)\s*:", re.IGNORECASE)
 
 
 def prompt_skill_messages(request: dict[str, Any]) -> tuple[str, str]:
@@ -131,6 +133,139 @@ def compile_prompt_skill(value: Any, request: dict[str, Any]) -> dict[str, Any]:
         "warnings": plan["warnings"],
         "planned_frames": int(request["total_frames"]),
     }
+
+
+def build_typed_prompt_plan(compiled: dict[str, Any], *, fps: float) -> dict[str, Any]:
+    plan = compiled["shot_plan"]
+    return {
+        "type": "HR_H3_PROMPT_PLAN",
+        "version": 1,
+        "fps": float(fps),
+        "total_frames": int(compiled["planned_frames"]),
+        "image_subjects": [dict(item) for item in plan.get("image_subjects", ())],
+        "shots": [dict(item) for item in plan.get("shots", ())],
+        "summary": str(plan.get("summary", "")),
+        "retention_analysis": str(plan.get("retention_analysis", "")),
+        "overall_soundscape": str(plan.get("overall_soundscape", "")),
+        "non_diegetic_music": str(plan.get("non_diegetic_music", "")),
+        "warnings": list(compiled.get("warnings", ())),
+    }
+
+
+def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("type") != "HR_H3_PROMPT_PLAN":
+        raise ValueError("prompt_plan must come from HR H3 Prompt Skill Compiler or a compatible adapter")
+    if value.get("version") != 1:
+        raise ValueError(f"prompt_plan version {value.get('version')} is not supported")
+    if abs(float(value.get("fps", fps)) - float(fps)) > 1e-6:
+        raise ValueError("prompt_plan FPS does not match HR Endless Sampler FPS")
+    if int(value.get("total_frames", 0)) != int(total_frames):
+        raise ValueError("prompt_plan total_frames does not match the MiniMax H3 latent")
+    subjects, shots = value.get("image_subjects", ()), value.get("shots", ())
+    if not isinstance(subjects, (list, tuple)) or not isinstance(shots, (list, tuple)) or not shots:
+        raise ValueError("prompt_plan requires image_subjects and at least one shot")
+    declared_pictures = {
+        int(item.get("picture", 0)) for item in subjects if isinstance(item, dict) and int(item.get("picture", 0) or 0) > 0
+    }
+    normalized_shots, previous_end = [], 0
+    for index, shot in enumerate(shots, 1):
+        if not isinstance(shot, dict):
+            raise ValueError(f"prompt_plan shot {index} must be an object")
+        start, end = int(shot.get("start_frame", -1)), int(shot.get("end_frame", -1))
+        if start != previous_end or end <= start or end > total_frames:
+            raise ValueError(f"prompt_plan shot {index} has invalid interval [{start},{end})")
+        required = ("camera", "start_state", "events", "end_state", "forbidden_replays", "audio", "description")
+        if any(name not in shot for name in required):
+            raise ValueError(f"prompt_plan shot {index} is missing required fields")
+        pictures = tuple(int(item) for item in shot.get("pictures", ()))
+        if any(picture not in declared_pictures for picture in pictures):
+            raise ValueError(f"prompt_plan shot {index} references an undeclared picture")
+        normalized_shots.append({
+            **shot, "pictures": pictures, "start_frame": start, "end_frame": end,
+            "cut": bool(shot.get("cut", True)),
+        })
+        previous_end = end
+    if previous_end != total_frames:
+        raise ValueError("prompt_plan shots do not cover the complete latent")
+    return {**value, "image_subjects": [dict(item) for item in subjects], "shots": normalized_shots}
+
+
+def prompt_plan_shots(plan: dict[str, Any]) -> list[tuple[int, int, int, str, bool]]:
+    return [
+        (index, shot["start_frame"], shot["end_frame"], str(shot["description"]).strip(), bool(shot["cut"]))
+        for index, shot in enumerate(plan["shots"])
+    ]
+
+
+def _description_text(prompt: str) -> str:
+    field = _DESCRIPTION_FIELD.search(prompt)
+    if field is None:
+        return prompt.strip()
+    end = _DESCRIPTION_END.search(prompt, field.end())
+    return prompt[field.end():(end.start() if end is not None else len(prompt))].strip()
+
+
+def active_prompt_plan_pictures(plan: dict[str, Any], *, frame_start: int, frame_end: int) -> tuple[int, ...]:
+    return tuple(sorted({
+        int(picture)
+        for shot in plan["shots"] if shot["start_frame"] < frame_end and shot["end_frame"] > frame_start
+        for picture in shot.get("pictures", ()) if isinstance(picture, int) or str(picture).isdigit()
+    }))
+
+
+def filter_prompt_plan_picture_items(items: Any, active_pictures: tuple[int, ...], *, kind_key: str) -> list[Any]:
+    allowed, picture_index, result = set(active_pictures), 0, []
+    for item in items or ():
+        if isinstance(item, dict) and item.get(kind_key) == "image":
+            picture_index += 1
+            if picture_index not in allowed:
+                continue
+        result.append(item)
+    return result
+
+
+def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
+    active = [shot for shot in plan["shots"] if shot["start_frame"] < frame_end and shot["end_frame"] > frame_start]
+    active_pictures = active_prompt_plan_pictures(plan, frame_start=frame_start, frame_end=frame_end)
+    picture_map = {picture: index for index, picture in enumerate(active_pictures, 1)}
+    def remap_picture(match):
+        old = int(match.group(1))
+        return f"<Picture {picture_map[old]}>" if old in picture_map else ""
+    local_description = re.sub(r"<Picture\s+(\d+)>", remap_picture, _description_text(prompt), flags=re.IGNORECASE)
+    subjects = []
+    for item in plan["image_subjects"]:
+        picture = int(item.get("picture", 0) or 0)
+        if picture not in picture_map:
+            continue
+        subjects.append(
+            f"<Subject {int(item.get('subject', picture))}> is {str(item.get('name', '')).strip()} "
+            f"from <Picture {picture_map[picture]}>: {str(item.get('observable_features', '')).strip()}."
+        )
+    summary = " ".join(str(shot["description"]).strip() for shot in active if str(shot["description"]).strip())
+    retention = []
+    for shot in active:
+        retention.extend((
+            f"Camera contract: {str(shot['camera']).strip()}.",
+            f"Opening state: {str(shot['start_state']).strip()}.",
+            f"Required ending state: {str(shot['end_state']).strip()}.",
+        ))
+        retention.extend(
+            f"Forbidden replay: {str(item).strip()}."
+            for item in shot.get("forbidden_replays", ()) if str(item).strip()
+        )
+    retention.append(
+        f"Only events scheduled inside frames [{frame_start},{frame_end}) may appear; "
+        "subjects and events owned only by later intervals must remain absent."
+    )
+    soundscape = " ".join(str(shot["audio"]).strip() for shot in active if str(shot["audio"]).strip()) or "N/A"
+    return "\n\n".join((
+        "subject_definitions:\n" + ("\n".join(subjects) or "None."),
+        "summary:\n" + (summary or "Continue only the established current interval."),
+        "retention_analysis:\n" + "\n".join(retention),
+        "detailed_description:\n" + local_description,
+        "overall_soundscape:\n" + soundscape,
+        "non_diegetic_music:\n" + str(plan.get("non_diegetic_music", "N/A") or "N/A").strip(),
+    ))
 
 
 def build_prompt_skill_request(story: str, *, duration_seconds: float, fps: float, image_count: int,

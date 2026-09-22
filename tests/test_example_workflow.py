@@ -23,11 +23,13 @@ class ExampleWorkflowTests(unittest.TestCase):
         self.assertEqual(link[1:5], [2602, 5, 2603, 6])
         self.assertEqual(link[5], "INT")
 
-    def test_prompt_and_event_ledger_drive_sampler(self):
+    def test_prompt_plan_and_event_ledger_drive_sampler(self):
         prompt = self.links[self.input_link(2576, "prompt")]
         ledger = self.links[self.input_link(2576, "initial_event_ledger")]
+        plan = self.links[self.input_link(2576, "prompt_plan")]
         self.assertEqual(prompt[1:4], [2602, 0, 2576])
         self.assertEqual(ledger[1:4], [2602, 2, 2576])
+        self.assertEqual(plan[1:4], [2602, 6, 2576])
 
     def test_example_contains_only_active_connected_workflow_nodes(self):
         self.assertTrue(all(node.get("mode", 0) == 0 for node in self.nodes.values()))

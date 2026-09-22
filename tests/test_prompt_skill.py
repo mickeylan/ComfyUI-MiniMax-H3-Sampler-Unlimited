@@ -87,6 +87,80 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(captured["director_backend"], "qwen3.5")
         self.assertEqual(result["planned_frames"], 56)
 
+    def test_builds_versioned_typed_plan_without_changing_legacy_outputs(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        typed_plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        self.assertEqual(typed_plan["type"], "HR_H3_PROMPT_PLAN")
+        self.assertEqual(typed_plan["version"], 1)
+        self.assertEqual(typed_plan["total_frames"], 56)
+        self.assertEqual(typed_plan["shots"][0]["events"][0]["id"], "S1.V1")
+        self.assertEqual(compiled["prompt"].splitlines()[0], "subject_definitions:")
+        self.assertEqual(compiled["initial_event_ledger"]["pending"][0]["id"], "S1.V1")
+
+    def test_typed_plan_copies_mutable_collections(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        typed_plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        typed_plan["shots"].append({})
+        typed_plan["image_subjects"].append({})
+        self.assertEqual(len(compiled["shot_plan"]["shots"]), 2)
+        self.assertEqual(len(compiled["shot_plan"]["image_subjects"]), 1)
+
+    def test_chunk_local_prompt_removes_future_subject_and_sound(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        typed_plan = prompt_skill.normalize_prompt_plan(
+            prompt_skill.build_typed_prompt_plan(compiled, fps=24.0), fps=24.0, total_frames=56
+        )
+        current_chunk_prompt = compiled["prompt"].replace(
+            "\n[Shot 2] At 00:00.917, Already inside, the hero opens the door once.", ""
+        )
+        localized = prompt_skill.localize_prompt_from_plan(
+            current_chunk_prompt, typed_plan, frame_start=0, frame_end=22
+        )
+        self.assertIn("Hero", localized)
+        self.assertIn("footsteps", localized)
+        self.assertNotIn("opens the door", localized)
+        self.assertNotIn("door creak", localized)
+
+    def test_active_pictures_are_filtered_and_locally_renumbered(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        typed_plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        typed_plan["image_subjects"].append({
+            "picture": 3, "subject": 3, "name": "Future Dragon", "observable_features": "red scales",
+        })
+        typed_plan["shots"][1]["pictures"] = [3]
+        normalized = prompt_skill.normalize_prompt_plan(typed_plan, fps=24.0, total_frames=56)
+        self.assertEqual(prompt_skill.active_prompt_plan_pictures(normalized, frame_start=22, frame_end=56), (3,))
+        localized = prompt_skill.localize_prompt_from_plan(
+            "detailed_description:\n[Shot 1] Future Dragon from <Picture 3> appears.\n\n"
+            "overall_soundscape:\nroar\n\nnon_diegetic_music:\nN/A",
+            normalized, frame_start=22, frame_end=56,
+        )
+        self.assertIn("Future Dragon", localized)
+        self.assertIn("<Picture 1>", localized)
+        self.assertNotIn("<Picture 3>", localized)
+        items = [
+            {"kind": "image", "id": 1}, {"kind": "image", "id": 2},
+            {"kind": "image", "id": 3}, {"kind": "video", "id": 4},
+        ]
+        filtered = prompt_skill.filter_prompt_plan_picture_items(items, (3,), kind_key="kind")
+        self.assertEqual([item["id"] for item in filtered], [3, 4])
+
+    def test_continuous_beat_does_not_claim_a_camera_cut(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        typed_plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        typed_plan["shots"][1]["cut"] = False
+        normalized = prompt_skill.normalize_prompt_plan(typed_plan, fps=24.0, total_frames=56)
+        segments = prompt_skill.prompt_plan_shots(normalized)
+        self.assertTrue(segments[0][4])
+        self.assertFalse(segments[1][4])
+
+    def test_prompt_plan_rejects_latent_length_mismatch(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        with self.assertRaisesRegex(ValueError, "total_frames"):
+            prompt_skill.normalize_prompt_plan(
+                prompt_skill.build_typed_prompt_plan(compiled, fps=24.0), fps=24.0, total_frames=73
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

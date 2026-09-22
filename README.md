@@ -115,11 +115,13 @@ The way to use is pretty straight forward - just replace the normal "Sampler" no
 | Node | Purpose |
 | --- | --- |
 | `HR Qwen Director Config` | 为 Sampler 和提示词编译器共享本地 Qwen3.5/3.6/3.8 model/mmproj/runtime 配置。 |
-| `HR H3 Prompt Skill Compiler` | 将普通故事编译成带原子事件所有权、Shot 起止状态、禁止重复项和差异化机位的 H3 六字段提示词；自动使用连接的 Director Config 后端。 |
+| `HR H3 Prompt Skill Compiler` | 将普通故事编译成 H3 六字段提示词、事件账本和版本化 `HR_H3_PROMPT_PLAN`；Sampler 可按 physical chunk 局部化六字段并门控当前 Picture 引用。 |
 | `HR MiniMax H3 Reference Set` | 统一输入最多 9 张图片、3 个视频及对应音轨、3 条独立音频。 |
 | `HR MiniMax H3 Reference Conditioning` | 创建 MiniMax H3 Ref2VA conditioning 和 nested AV latent。 |
 
-提示词编译接线：人物图片 → `HR MiniMax H3 Reference Set`；同一个 `HR Qwen Director Config` 同时连接 `HR H3 Prompt Skill Compiler` 和 `HR Endless Sampler`；Compiler 的 `H3 prompt` 接 Reference Conditioning 与 Sampler 的 `prompt`。用户在 Director Config 选择 Qwen3.5 时两者都使用 3.5，选择 Qwen3.6/3.8 时同理。
+提示词编译接线：人物图片 → `HR MiniMax H3 Reference Set`；同一个 `HR Qwen Director Config` 同时连接 `HR H3 Prompt Skill Compiler` 和 `HR Endless Sampler`；Compiler 的 `H3 prompt` 接 Reference Conditioning 与 Sampler 的 `prompt`，`prompt plan` 接 Sampler 的 `prompt_plan`，事件账本接 `initial_event_ledger`。用户在 Director Config 选择 Qwen3.5 时两者都使用 3.5，选择 Qwen3.6/3.8 时同理。`prompt_plan` 是可选输入；不连接时保留旧纯 Prompt 路径，并继续兼容 `MiniMaxH3DirectorCS` 输出的 model/conditioning/latent/prompt/fps。
+
+平台接入边界、typed plan schema、长镜头 continuous beat、资产映射、DirectorCS 兼容和验收矩阵见 [`new-aigc平台接入HR-Endless详细方案.md`](new-aigc平台接入HR-Endless详细方案.md)。
 
 视频桥接接线：两个 `HR Endless Sampler Load Video.images/audio/fps` → `HR Video Bridge Extract`；人物图片 → `HR MiniMax H3 Reference Set`；Extract + Reference Set + `HR Qwen Director Config` → Director → Conditioning；Conditioning 的 `positive` 接 Guider，`latent`、`external_continuation`、`bridge_reference_set`、`prompt` 接 `HR Endless Sampler`；Sampler latent 经 VAE Decode 后与 Extract 输出一起接 `HR Video Bridge Assemble`。详细说明见 [`视频自然过渡节点实施计划.md`](视频自然过渡节点实施计划.md)。
 

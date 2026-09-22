@@ -216,8 +216,9 @@ def _source_shots(shots: Sequence[dict[str, Any]]) -> str:
         duration = int(shot["shot_end"]) - int(shot["shot_start"])
         marker = shot.get("required_marker")
         marker_line = f"Required H3 marker: {marker}\n" if marker else ""
+        unit = "Shot" if shot.get("cut", True) else "Continuous beat (no cut)"
         blocks.append(
-            f"Source Shot {int(shot['shot_number'])}: duration {duration} frames; valid local interval [0,{duration}).\n"
+            f"Source {unit} {int(shot['shot_number'])}: duration {duration} frames; valid local interval [0,{duration}).\n"
             f"{marker_line}{str(shot['source_body']).strip()}"
         )
     return "\n\n".join(blocks)

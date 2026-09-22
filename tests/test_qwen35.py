@@ -540,6 +540,14 @@ class Qwen35Tests(unittest.TestCase):
             "completed": (), "active": (), "pending": (), "forbidden": (),
         })
 
+    def test_continuous_beat_is_not_presented_as_a_new_shot(self):
+        rendered = qwen35._source_shots([{
+            "shot_number": 2, "shot_start": 39, "shot_end": 73,
+            "source_body": "Continue the same take.", "cut": False,
+        }])
+        self.assertIn("Continuous beat (no cut)", rendered)
+        self.assertNotIn("Source Shot", rendered)
+
     def test_storyboard_messages_include_target_and_image_inventory(self):
         system, prompt = qwen35._storyboard_messages({
             "director_backend": "qwen3.8",

@@ -260,6 +260,12 @@ review date, versions/commits checked, and outcome below.
   `target_commitish: main`; that release response does not state a vendored
   llama.cpp commit. No newer official package with a confirmed fix was found.
   Preserve disposable workers and the operation-local non-MTP fallback.
+- 2026-09-22 (typed long-shot plan integration): issue #27439 remains open,
+  labeled `bug-unconfirmed` and `stale`, with no linked branch or pull request.
+  PyPI's 0.3.35 JSON endpoint still exists and its package metadata does not
+  identify a different vendored llama.cpp commit. No confirmed upstream fix was
+  found, so this change leaves the disposable worker and operation-local non-MTP
+  retry unchanged.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at

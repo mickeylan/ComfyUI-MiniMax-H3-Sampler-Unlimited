@@ -9,12 +9,13 @@ from comfy_api.latest import io
 
 from .director_backend import resolve_director_selection
 from .director_config import HRDirectorConfig, normalize_qwen38_config
-from .prompt_skill import CONTINUITY_MODES, build_prompt_skill_request
+from .prompt_skill import CONTINUITY_MODES, build_prompt_skill_request, build_typed_prompt_plan
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images
 
 
 HRH3EventLedger = io.Custom("HR_H3_EVENT_LEDGER")
+HRH3PromptPlan = io.Custom("HR_H3_PROMPT_PLAN")
 
 
 class HRH3PromptSkillCompiler(io.ComfyNode):
@@ -46,6 +47,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
                 io.String.Output(display_name="event ledger JSON"),
                 io.String.Output(display_name="validation report"),
                 io.Int.Output(display_name="planned frames"),
+                HRH3PromptPlan.Output(display_name="prompt plan"),
             ],
             is_experimental=True,
         )
@@ -86,6 +88,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             "events": sum(len(item.get("events", ())) for item in plan.get("shots", ())),
             "warnings": list(warnings),
         }
+        typed_plan = build_typed_prompt_plan(result, fps=fps)
         return io.NodeOutput(
             str(result["prompt"]),
             json.dumps(plan, ensure_ascii=False, indent=2),
@@ -93,4 +96,5 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             json.dumps(result["initial_event_ledger"], ensure_ascii=False, indent=2),
             json.dumps(report, ensure_ascii=False, indent=2),
             int(result["planned_frames"]),
+            typed_plan,
         )
