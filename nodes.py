@@ -1508,13 +1508,26 @@ def _pad_h3_keyframe_video(latent, target_video):
     return aligned
 
 
+def _pad_h3_reference_video(latent):
+    """Pad an independent H3 reference to its own 2x2 patch grid."""
+    if latent is None:
+        return None
+    if latent.ndim != 5:
+        raise ValueError(f"MiniMax H3 visual reference must be [B,C,T,H,W], got {tuple(latent.shape)}")
+    padded = latent
+    if padded.shape[-1] % 2:
+        padded = torch.cat((padded, padded[..., -1:]), dim=-1)
+    if padded.shape[-2] % 2:
+        padded = torch.cat((padded, padded[..., -1:, :]), dim=-2)
+    return padded
+
+
 def _normalize_h3_video_ref(block):
     """Make H3 reference layout metadata authoritative from its actual latent tensors."""
     normalized = dict(block)
-    latent = normalized.get("latent")
+    latent = _pad_h3_reference_video(normalized.get("latent"))
     if latent is not None:
-        if latent.ndim != 5:
-            raise ValueError(f"MiniMax H3 visual reference must be [B,C,T,H,W], got {tuple(latent.shape)}")
+        normalized["latent"] = latent
         normalized["latent_t"] = int(latent.shape[2])
         normalized["latent_h"] = int(latent.shape[3])
         normalized["latent_w"] = int(latent.shape[4])
@@ -1642,14 +1655,6 @@ def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prom
                 existing_refs, active_picture_indices, kind_key="kind"
             )
         combined_refs = [*existing_refs, *(_normalize_h3_video_ref(ref) for ref in video_refs)]
-        if target_video is not None:
-            combined_refs = [
-                _normalize_h3_video_ref({
-                    **ref,
-                    "latent": _pad_h3_keyframe_video(ref.get("latent"), target_video),
-                }) if ref.get("latent") is not None else ref
-                for ref in combined_refs
-            ]
         if combined_refs:
             cond["minimax_refs"] = combined_refs
         keyframes = []
