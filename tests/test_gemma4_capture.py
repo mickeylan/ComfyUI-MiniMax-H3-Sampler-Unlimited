@@ -1157,7 +1157,7 @@ class GemmaCaptureTest(unittest.TestCase):
         self.assertEqual(dialogue["overlay_type"], "dialogue")
         self.assertEqual((dialogue["overlap_start_frame"], dialogue["overlap_end_frame"]), (24, 39))
         rendered = plan.for_target_shots(target, 24.0)
-        self.assertIn("[S2.O1] dialogue at source-relative frames 24-47", rendered)
+        self.assertIn("[S2.O1] dialogue at source-relative frames 24-52", rendered)
         self.assertIn("Required now [S2.O1], overlay/dialogue", rendered)
 
     def test_qwen_timing_plan_does_not_initialize_mtmd(self):
@@ -1880,6 +1880,9 @@ class GemmaCaptureTest(unittest.TestCase):
         self.assertIn("Every camera movement, follow, pan, zoom, track, shake, or reposition", system)
         self.assertIn("`In a continuous movement,`", system)
         self.assertIn("never turn it into an undocumented cut", system)
+        self.assertIn("Camera scale is persistent and one-way across physical chunks", system)
+        self.assertIn("Never reset to a wide shot to repeat a push-in", system)
+        self.assertIn("push-in/pull-back oscillation", system)
         self.assertIn("Maintain `last_seen_character_state`", system)
         self.assertIn("remains off-screen", system)
         self.assertIn("never substitute a referenced animal", system)

@@ -77,7 +77,31 @@ class Qwen35Tests(unittest.TestCase):
         }
         plan = qwen35._timing_plan(value, self.request(), json.dumps(value), "system", "prompt")
         self.assertEqual(plan.shots[0].visual_beats[-1].end_frame, 68)
-        self.assertEqual((plan.shots[0].overlays[0].start_frame, plan.shots[0].overlays[0].end_frame), (50, 68))
+        self.assertEqual((plan.shots[0].overlays[0].start_frame, plan.shots[0].overlays[0].end_frame), (50, 51))
+
+    def test_timing_parser_removes_zero_length_visual_beat_without_hiding_real_gap(self):
+        value = {
+            "shots": [{
+                "source_shot": 1,
+                "visual_beats": [
+                    {"start_frame": 0, "end_frame": 24, "action": "walk"},
+                    {"start_frame": 24, "end_frame": 24, "action": "duplicate boundary"},
+                    {"start_frame": 24, "end_frame": 68, "action": "stop"},
+                ],
+            }],
+        }
+        plan = qwen35._timing_plan(value, self.request(), json.dumps(value), "system", "prompt")
+        self.assertEqual(
+            [(beat.start_frame, beat.end_frame, beat.action) for beat in plan.shots[0].visual_beats],
+            [(0, 24, "walk"), (24, 68, "stop")],
+        )
+        self.assertEqual(plan.validation_warnings, (
+            "Removed zero-length Source Shot 1 visual beat 2 at frame 24.",
+        ))
+
+        value["shots"][0]["visual_beats"][2]["start_frame"] = 25
+        with self.assertRaisesRegex(qwen35.Qwen35ObservationError, "not contiguous at 25-68 after 24"):
+            qwen35._timing_plan(value, self.request(), json.dumps(value), "system", "prompt")
 
     def test_timing_parser_normalizes_global_frames_to_shot_local_frames(self):
         request = self.request()
@@ -151,6 +175,27 @@ class Qwen35Tests(unittest.TestCase):
                 plan = qwen35._timing_plan(value, self.request(), json.dumps(value), "system", "prompt")
                 self.assertEqual(plan.shots[0].visual_beats[0].action, "The hero walks.")
 
+    def test_timing_plan_slices_long_dialogue_per_chunk(self):
+        dialogue = "<Subject 3> (S1) says: <d>[Chinese] 姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗</d> with synchronized visible lip movement."
+        plan = qwen35.QwenShotTimingPlan(
+            "high", "", (
+                qwen35.QwenShotTimingShot(1, 0, 60, (qwen35.QwenShotTimingBeat(0, 60, "hold"),), (
+                    qwen35.QwenShotTimingOverlay(0, 60, "dialogue", dialogue),
+                )),
+            ), (), "{}",
+        )
+        actions = []
+        for start, end in ((0, 20), (20, 40), (40, 60)):
+            coverage = plan.mandatory_coverage([{
+                "shot_number": 1, "shot_start": 0, "shot_end": 60,
+                "target_start": start, "target_end": end,
+            }])
+            actions.append(next(item["action"] for item in coverage if item["id"] == "S1.O1"))
+        spoken = [action.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0] for action in actions]
+        self.assertEqual("".join(spoken), "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗")
+        self.assertNotEqual(actions[0], actions[1])
+        self.assertIn("continues speaking", actions[1])
+
     def test_timing_parser_keeps_a_valid_interval_when_action_text_is_missing(self):
         value = {
             "shots": [{
@@ -180,7 +225,11 @@ class Qwen35Tests(unittest.TestCase):
             "previous_gemma_end_state": "previous state",
             "previous_last_seen_character_state": [{"character": "Hero"}],
         }
-        _system, prompt = qwen35._chunk_messages(request)
+        system, prompt = qwen35._chunk_messages(request)
+        self.assertIn("Camera scale is persistent and one-way across physical chunks", system)
+        self.assertIn("Never reset to a wide shot merely to repeat a push-in", system)
+        self.assertIn("push-in/pull-back oscillation", system)
+        self.assertIn("for a Chinese original prompt, write those values in Chinese", system)
         for text in (
             "[Shot 1] At 00:00.208,", "Hero -> <Subject 1>", "<Video 1> and <Audio 1>",
             "40, 60", "previous prompt", "previous timing", "previous state", '"character": "Hero"',
@@ -403,6 +452,45 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["cwd"], plugin_directory)
         self.assertEqual(run.call_args.kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0], plugin_directory)
 
+    def test_worker_timeout_reports_last_completed_stage(self):
+        timeout = qwen35.subprocess.TimeoutExpired(
+            ["python", "qwen35.py", "--worker"],
+            600,
+            output=(
+                b"[MINIMAX_H3_WORKER] GGUF loaded t=12.5s\n"
+                b"[MINIMAX_H3_WORKER] starting LLM streaming op=prompt_skill_compile images=4 t=13.0s\n"
+            ),
+            stderr=b"llama progress",
+        )
+        with patch.object(qwen35.subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(
+                qwen35.DirectorWorkerError,
+                "starting LLM streaming op=prompt_skill_compile images=4.*stderr: llama progress",
+            ):
+                qwen35._run_worker_once(
+                    {"operation": "prompt_skill_compile", "director_backend": "qwen3.5"}, timeout=600
+                )
+
+    def test_worker_timeout_without_output_reports_missing_progress(self):
+        timeout = qwen35.subprocess.TimeoutExpired(["python", "qwen35.py", "--worker"], 600)
+        with patch.object(qwen35.subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(qwen35.DirectorWorkerError, "worker produced no progress output"):
+                qwen35._run_worker_once(
+                    {"operation": "prompt_skill_compile", "director_backend": "qwen3.5"}, timeout=600
+                )
+
+    def test_chunk_worker_allows_slow_multimodal_generation(self):
+        process = types.SimpleNamespace(returncode=0, stderr="", stdout='MINIMAX_H3_QWEN35_RESULT={"ok": false}')
+        with patch.object(qwen35.subprocess, "run", return_value=process) as run:
+            qwen35._run_worker_once({"operation": "chunk", "director_backend": "qwen3.5"})
+        self.assertEqual(run.call_args.kwargs["timeout"], 600)
+
+    def test_non_chunk_worker_keeps_bounded_timeout(self):
+        process = types.SimpleNamespace(returncode=0, stderr="", stdout='MINIMAX_H3_QWEN35_RESULT={"ok": false}')
+        with patch.object(qwen35.subprocess, "run", return_value=process) as run:
+            qwen35._run_worker_once({"operation": "timing_plan", "director_backend": "qwen3.5"})
+        self.assertEqual(run.call_args.kwargs["timeout"], 300)
+
     def test_qwen36_and_qwen38_use_their_own_worker_entrypoint(self):
         process = types.SimpleNamespace(returncode=0, stderr="", stdout='MINIMAX_H3_QWEN35_RESULT={"ok": false}')
         for backend in ("qwen3.6", "qwen3.8"):
@@ -457,6 +545,27 @@ class Qwen35Tests(unittest.TestCase):
         self.assertTrue(calls[1]["timing_plan_repair"])
         self.assertEqual(len(calls), 2)
 
+    def test_invalid_timing_plan_gets_second_corrected_retry(self):
+        failure = {"ok": False, "error_type": "Qwen35ObservationError",
+                   "message": "Qwen3.5 timing plan returned NoneType shot entries; expected 1", "raw_json": '{"shots":null}'}
+        success = {"ok": True, "timing_plan": {
+            "confidence": "high", "analysis": "ok", "raw_json": "{}", "system_prompt": "system",
+            "planning_prompt": "prompt", "character_name_table": [], "shots": [{
+                "source_shot": 1, "shot_start_frame": 0, "shot_end_frame": 17,
+                "visual_beats": [], "overlays": [],
+            }]}}
+        calls = []
+        def worker(payload):
+            calls.append(payload.copy())
+            return types.SimpleNamespace(returncode=0), success if len(calls) == 3 else failure
+        with patch.object(qwen35, "_run_worker_once", side_effect=worker):
+            result = qwen35._run_worker({"director_mtp": False}, True)
+        self.assertEqual(result.shots[0].source_shot, 1)
+        self.assertEqual(calls[1]["timing_plan_repair"], 1)
+        self.assertEqual(calls[2]["timing_plan_repair"], 2)
+        self.assertEqual(calls[2]["timing_plan_invalid_json"], '{"shots":null}')
+        self.assertEqual(len(calls), 3)
+
     def test_missing_chunk_prompt_gets_bounded_corrected_retries(self):
         failure = {"ok": False, "error_type": "Qwen35ObservationError",
                    "message": "Qwen response contains no usable H3 prompt text; returned keys: analysis, confidence",
@@ -477,6 +586,42 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(calls[2]["missing_prompt_repair"], 2)
         self.assertEqual(len(calls), 3)
 
+    def test_chunk_removes_completed_entrance_and_dialogue_without_retry(self):
+        request = {"completed_coverage": [
+            {"id": "S1.V1", "action": "The two enter from opposite sides and meet at center stage."},
+            {"id": "S1.O1", "action": "<Subject 3> (S1) says: <d>[Chinese] 你终于来了。</d>"},
+        ]}
+        result = qwen35._chunk_prompt(
+            {"detailed_description": (
+                "The two enter from opposite sides and meet at center stage. They remain together. "
+                "<Subject 3> (S1) says warmly: <d>[Chinese] 你终于来了。</d> "
+                "with synchronized visible lip movement. <Subject 4> continues listening."
+            )},
+            "{}", "system", "prompt", request,
+        )
+        self.assertNotIn("enter from opposite sides", result.detailed_description)
+        self.assertNotIn("你终于来了", result.detailed_description)
+        self.assertIn("remain together", result.detailed_description)
+        self.assertIn("continues listening", result.detailed_description)
+        self.assertEqual(result.validation_warnings, (
+            "Removed completed beat S1.V1 copied into the current chunk prompt.",
+            "Removed completed beat S1.O1 copied into the current chunk prompt.",
+        ))
+
+    def test_completed_beat_replay_gets_one_corrected_retry(self):
+        failure = {"ok": False, "error_type": "Qwen35ObservationError",
+                   "message": "Qwen chunk repeats completed beat(s): S1.V1", "raw_json": "{}"}
+        success = {"ok": True, "chunk_prompt": {
+            "confidence": "high", "analysis": "ok", "detailed_description": "They remain together and continue speaking.",
+            "raw_json": "{}", "timing_plan": "", "end_state": "", "last_seen_character_state": [],
+            "system_prompt": "system", "observation_prompt": "prompt", "validation_warnings": []}}
+        with patch.object(qwen35, "_run_worker_once", side_effect=[
+                (types.SimpleNamespace(returncode=1), failure),
+                (types.SimpleNamespace(returncode=0), success)]) as worker:
+            result = qwen35._run_worker({"director_mtp": False}, False)
+        self.assertIn("remain together", result.detailed_description)
+        self.assertTrue(worker.call_args_list[1].args[0]["completed_replay_repair"])
+
     def test_empty_description_uses_the_same_repair_path(self):
         failure = {"ok": False, "error_type": "Qwen35ObservationError",
                    "message": "Qwen response contains no usable H3 prompt text; returned keys: detailed_description",
@@ -491,6 +636,66 @@ class Qwen35Tests(unittest.TestCase):
             result = qwen35._run_worker({"director_mtp": False}, False)
         self.assertEqual(result.detailed_description, "[Shot 1] Continue.")
         self.assertEqual(worker.call_args_list[1].args[0]["missing_prompt_repair"], 1)
+
+    def test_prompt_skill_has_large_deterministic_response_budget(self):
+        self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
+
+    def test_prompt_skill_unwraps_known_result_containers(self):
+        plan = {"image_subjects": [], "shots": []}
+        for value in (
+            {"storyboard": plan},
+            {"result": {"plan": plan}},
+            {"data": [plan]},
+            {"output": json.dumps(plan)},
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(qwen35._prompt_skill_result_object(value), plan)
+
+    def test_prompt_skill_missing_plan_reports_actual_top_level_keys(self):
+        with self.assertRaisesRegex(ValueError, "returned top-level keys: analysis, summary"):
+            qwen35._prompt_skill_result_object({"analysis": "done", "summary": "text"})
+
+    def test_prompt_skill_repair_reuses_images_when_visual_plan_is_missing(self):
+        failure = {
+            "ok": False, "error_type": "Qwen35ObservationError",
+            "message": "storyboard response needs image_subjects and shots", "raw_json": "{}",
+        }
+        success = {"ok": True, "prompt_skill_compile": {"prompt": "fixed", "shot_plan": {}}}
+        with patch.object(qwen35, "_run_worker_once", side_effect=[
+                (types.SimpleNamespace(returncode=1), failure),
+                (types.SimpleNamespace(returncode=0), success)]) as worker:
+            qwen35._run_prompt_skill_worker({"director_mtp": False, "total_frames": 634, "image_urls": ["image"]})
+        self.assertEqual(worker.call_args_list[1].args[0]["image_urls"], ["image"])
+
+    def test_prompt_skill_invalid_intervals_get_one_complete_structure_repair(self):
+        failure = {
+            "ok": False,
+            "error_type": "Qwen35ObservationError",
+            "message": "Shot 2 has invalid or non-contiguous frame interval [634,1268)",
+            "raw_json": '{"image_subjects":[{"picture":1}],"shots":[{"start_frame":0,"end_frame":634},{"start_frame":634,"end_frame":1268}]}',
+        }
+        success = {"ok": True, "prompt_skill_compile": {"prompt": "fixed", "shot_plan": {}}}
+        with patch.object(qwen35, "_run_worker_once", side_effect=[
+                (types.SimpleNamespace(returncode=1), failure),
+                (types.SimpleNamespace(returncode=0), success)]) as worker:
+            result = qwen35._run_prompt_skill_worker({"director_mtp": False, "total_frames": 634, "image_urls": ["image"]})
+        self.assertEqual(result["prompt"], "fixed")
+        repair = worker.call_args_list[1].args[0]
+        self.assertTrue(repair["prompt_skill_structure_repair"])
+        self.assertEqual(repair["image_urls"], ["image"])
+        self.assertIn("[634,1268)", repair["prompt_skill_validation_error"])
+        self.assertEqual(repair["prompt_skill_previous_response"], failure["raw_json"])
+        self.assertEqual(len(worker.call_args_list), 2)
+
+    def test_prompt_skill_structure_repair_is_not_retried_twice(self):
+        failure = {
+            "ok": False, "error_type": "Qwen35ObservationError",
+            "message": "Shot 2 has invalid interval", "raw_json": '{"shots":[]}',
+        }
+        with patch.object(qwen35, "_run_worker_once", return_value=(types.SimpleNamespace(returncode=1), failure)) as worker:
+            with self.assertRaisesRegex(qwen35.Qwen35ObservationError, "invalid interval"):
+                qwen35._run_prompt_skill_worker({"director_mtp": False, "total_frames": 634})
+        self.assertEqual(worker.call_count, 2)
 
     def test_validation_failure_does_not_repeat_timing_without_mtp(self):
         failure = {"ok": False, "error_type": "Qwen35ObservationError", "message": "bad JSON", "raw_json": "bad"}

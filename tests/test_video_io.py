@@ -307,6 +307,22 @@ class FinishedVideoIOTest(unittest.TestCase):
         audio = next(item for item in schema.inputs if item.id == "audio")
         self.assertTrue(audio.optional)
 
+    def test_prompt_repairs_stale_output_slot_before_core_validation(self):
+        class Decoder:
+            RETURN_TYPES = ("LATENT", "IMAGE")
+        class Consumer:
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {"required": {"images": ("IMAGE",)}}
+        fake_nodes = types.SimpleNamespace(NODE_CLASS_MAPPINGS={"Decoder": Decoder, "Consumer": Consumer})
+        prompt = {"prompt": {
+            "1": {"class_type": "Decoder", "inputs": {}},
+            "2": {"class_type": "Consumer", "inputs": {"images": ["1", 4]}},
+        }}
+        with patch.dict(sys.modules, {"nodes": fake_nodes}):
+            repaired = video_io._repair_save_video_prompt_links(prompt)
+        self.assertEqual(repaired["prompt"]["2"]["inputs"]["images"], ["1", 1])
+
     def test_save_prompt_repairs_a_stale_upstream_output_slot_by_type(self):
         fake_nodes = types.SimpleNamespace(NODE_CLASS_MAPPINGS={
             "Sampler": types.SimpleNamespace(RETURN_TYPES=("LATENT", "STRING", "HRENDLESS_TIMELINE")),

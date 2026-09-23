@@ -1215,6 +1215,58 @@ def _repair_save_video_prompt_links(json_data):
             getattr(getattr(type(output), "Parent", None), "io_type", None)
             for output in schema.outputs
         )
+
+    def input_type(node_class, input_name):
+        if node_class is None:
+            return None
+        if hasattr(node_class, "define_schema"):
+            schema = node_class.define_schema()
+            item = next((value for value in schema.inputs if value.id == input_name), None)
+            if item is not None:
+                return getattr(getattr(type(item), "Parent", None), "io_type", None)
+        input_types = getattr(node_class, "INPUT_TYPES", None)
+        if callable(input_types):
+            groups = input_types()
+            for group in ("required", "optional"):
+                config = groups.get(group, {}).get(input_name)
+                if isinstance(config, tuple) and config:
+                    return config[0]
+        return None
+
+    for node_id, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        if node.get("class_type") == "HREndlessSamplerSaveVideo":
+            continue
+        destination_class = comfy_nodes.NODE_CLASS_MAPPINGS.get(node.get("class_type"))
+        for input_name, link in tuple(inputs.items()):
+            if not isinstance(link, list) or len(link) != 2 or not isinstance(link[1], int):
+                continue
+            origin_id, origin_slot = link
+            origin = prompt.get(str(origin_id), prompt.get(origin_id))
+            origin_type = origin.get("class_type") if isinstance(origin, dict) else None
+            origin_class = comfy_nodes.NODE_CLASS_MAPPINGS.get(origin_type)
+            return_types = output_types(origin_class)
+            if 0 <= origin_slot < len(return_types):
+                continue
+            expected_type = input_type(destination_class, input_name)
+            matching_slots = [index for index, value in enumerate(return_types) if value == expected_type]
+            if len(matching_slots) == 1:
+                inputs[input_name] = [origin_id, matching_slots[0]]
+                logging.warning(
+                    "HR Endless Sampler repaired stale %s.%s link from %s output %d to output %d (%s).",
+                    node_id, input_name, origin_id, origin_slot, matching_slots[0], expected_type,
+                )
+            else:
+                inputs.pop(input_name, None)
+                logging.error(
+                    "HR Endless Sampler removed stale %s.%s link from %s output %d; runtime %s exposes %d outputs %s.",
+                    node_id, input_name, origin_id, origin_slot, origin_type, len(return_types), return_types,
+                )
+
     for node_id, node in prompt.items():
         if not isinstance(node, dict) or node.get("class_type") != "HREndlessSamplerSaveVideo":
             continue

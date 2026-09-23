@@ -99,7 +99,7 @@ The way to use is pretty straight forward - just replace the normal "Sampler" no
 | `HR MiniMax H3 Continuation Analyzer` | 仅使用本地 Qwen3.5 分析普通视频最后 22 帧，输出 H3 prompt、尾帧上下文、分析 JSON 和预览；可选参考图只提供给 Qwen，不会成为 H3 reference。 |
 | `HR MiniMax H3 Continuation Apply` | 接收现有 MiniMax H3 conditioning 与 latent，使用 Analyzer 上下文编码并合并同位置 keyframe；原有 `cross_attn`、token tags 和 refs 原样保留，不重新 tokenization。输出可接 SelfLift，也保留 `external_continuation` 给 HR Endless Sampler。 |
 | `HR Video Bridge Extract` | 提取视频 A 最后 22 帧、视频 B 最前 22 帧及对应音频，建立桥接源数据。 |
-| `HR Video Bridge Director` | 使用隔离的 Qwen3.6/3.8 分析人物参考图和 A/B 边界，输出结构化过渡计划及 H3 提示词。 |
+| `HR Video Bridge Director` | 使用隔离的 Qwen3.5/3.6/3.8 分析人物参考图和 A/B 边界，输出结构化过渡计划及 H3 提示词。Qwen3.5 复用同插件既有多模态 worker，并自动禁用 MTP/MoE 参数。 |
 | `HR Video Bridge Conditioning` | 将人物图和 B 头作为 references、A 尾作为首端 continuation，输出可接 HR Endless Sampler 的 conditioning、latent 和 external continuation。 |
 | `HR Video Bridge Assemble` | 自动搜索 A/Bridge/B 的低差异接缝，组装帧、音频、Timeline 和接缝报告。 |
 | `HR Endless Segment Retake Director` | 浏览最近一次完整 replay cache，选择 physical chunks、编辑 H3 prompt 并生成重拍计划。 |

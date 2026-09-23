@@ -221,6 +221,7 @@ def validate_storyboard_plan(value: Any, *, image_count: int, total_frames: int)
         if picture < 1 or picture > image_count:
             raise ValueError(f"Picture {picture} is outside the {image_count} connected images")
         normalized_subjects.append({
+            "entity_id": str(item.get("entity_id", f"asset_{picture}")).strip(),
             "picture": picture,
             "subject": picture,
             "name": str(item.get("name", "")).strip(),

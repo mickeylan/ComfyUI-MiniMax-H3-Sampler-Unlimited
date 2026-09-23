@@ -61,6 +61,11 @@ function createControls(node) {
                     await sleep(500);
                     const current = await api.getQueue();
                     if (!(current.Running || []).some(item => item.prompt?.[1] === promptId)) {
+                        const startWidget = node.widgets?.find(widget => widget.name === "debug_start_chunk");
+                        if (startWidget) {
+                            startWidget.value = 0;
+                            startWidget.callback?.(0);
+                        }
                         status.textContent = "正在从头重新排队…";
                         await app.queuePrompt(0, 1);
                         status.textContent = "已从头重新排队";

@@ -95,9 +95,10 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         ])
         self.assertEqual(input_ids[input_ids.index("director_backend"):input_ids.index("director_mtp_draft_tokens")],
                          ["director_backend", "director_model", "director_mmproj"])
-        self.assertEqual(input_ids[-7:], ["director_mtp_draft_tokens", "director_reasoning_effort",
+        self.assertEqual(input_ids[-9:], ["director_mtp_draft_tokens", "director_reasoning_effort",
                                           "director_cpu_moe", "director_n_cpu_moe",
-                                          "director_config", "reference_set", "continuation_plan"])
+                                          "director_config", "reference_set", "initial_event_ledger",
+                                          "prompt_plan", "continuation_plan"])
 
         execute_params = inspect.signature(nodes.HREndlessSampler.execute).parameters
         self.assertNotIn("video_continuation_enable", execute_params)
@@ -131,6 +132,29 @@ class ChunkDirectorHelperTest(unittest.TestCase):
                 "0.10mp (448x256)",
             ),
         )
+
+    def test_typed_prompt_plan_disables_secondary_chunk_directing(self):
+        shots = [(0, 0, 56, "fixed source description", True)]
+        self.assertFalse(nodes._needs_chunk_director({"type": "HR_H3_PROMPT_PLAN"}, shots, None, False))
+        self.assertTrue(nodes._needs_chunk_director(None, shots, None, False))
+        self.assertFalse(nodes._needs_chunk_director(None, shots, {"checkpoint": True}, False))
+        self.assertFalse(nodes._needs_chunk_director(None, shots, None, True))
+
+    def test_prompt_plan_filters_internal_conditioning_metadata_dicts(self):
+        cross_attn = torch.zeros((1, 2, 3))
+        positive = [{
+            "cross_attn": cross_attn,
+            "pooled_output": torch.ones((1, 3)),
+            "minimax_refs": [
+                {"kind": "image", "id": 1},
+                {"kind": "image", "id": 2},
+                {"kind": "video", "id": 3},
+            ],
+        }]
+        filtered = nodes._prompt_plan_positive(positive, (2,))
+        self.assertIs(filtered[0]["cross_attn"], cross_attn)
+        self.assertEqual([item["id"] for item in filtered[0]["minimax_refs"]], [2, 3])
+        self.assertIsNot(filtered[0], positive[0])
 
     def test_pytorch_memory_fraction_sets_explicit_cuda_allocator_limit(self):
         properties = type("DeviceProperties", (), {"total_memory": 16 * 1024 ** 3})()
@@ -302,6 +326,69 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             self.assertTrue(archived.manifest_path.is_file())
             self.assertEqual(cache.load_if_compatible({"geometry": "next"})[0]["manifest"]["status"], "recording")
 
+    def test_restart_control_survives_active_cache_deletion(self):
+        with tempfile.TemporaryDirectory() as temp_root, \
+                patch.object(nodes.tempfile, "gettempdir", return_value=temp_root):
+            cache = nodes._LastRunReplayCache()
+            cache.create({"geometry": "stable"}, "prompt", {"video": torch.zeros(1)})
+            nodes._set_replay_control("restart")
+            cache.clear()
+            self.assertTrue(nodes._replay_control_path().is_file())
+            self.assertEqual(nodes._consume_replay_control(), "restart")
+
+    def test_deleted_run_cannot_recreate_old_chunks_after_restart(self):
+        with tempfile.TemporaryDirectory() as temp_root, \
+                patch.object(nodes.tempfile, "gettempdir", return_value=temp_root):
+            old_run = nodes._LastRunReplayCache()
+            old_run.create({"geometry": "stable"}, "prompt", {"video": torch.zeros(1)})
+            old_run.save_chunk(1, {"sampled_video": torch.zeros(1)})
+            nodes._set_replay_control("restart")
+            self.assertFalse(old_run.manifest_path.exists())
+            self.assertFalse(old_run.chunk_path(1).exists())
+            with self.assertRaisesRegex(RuntimeError, "invalidated by delete/restart"):
+                old_run.save_chunk(2, {"sampled_video": torch.ones(1)})
+            self.assertFalse(old_run.chunk_path(2).exists())
+            self.assertEqual(list((old_run.root / "chunks").glob("*.pt")), [])
+
+    def test_restart_epoch_survives_process_memory_reset_and_blocks_every_old_write(self):
+        with tempfile.TemporaryDirectory() as temp_root, \
+                patch.object(nodes.tempfile, "gettempdir", return_value=temp_root):
+            old_run = nodes._LastRunReplayCache()
+            old_run.create({"geometry": "stable"}, "prompt", {"video": torch.zeros(1)})
+            nodes._set_replay_control("restart")
+            current_generation = nodes._REPLAY_GENERATION
+            try:
+                nodes._REPLAY_GENERATION = old_run.generation
+                self.assertFalse(old_run._is_current())
+                for write in (
+                    lambda: old_run.create({"geometry": "old"}, "old", {"video": torch.zeros(1)}),
+                    lambda: old_run.save_timing_plan(object()),
+                    lambda: old_run.save_chunk(1, {"sampled_video": torch.zeros(1)}),
+                    lambda: old_run.mark_interrupted(1),
+                    lambda: old_run.mark_complete(1),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "invalidated by delete/restart"):
+                        write()
+                fresh_run = nodes._LastRunReplayCache()
+                fresh_run.create({"geometry": "fresh"}, "fresh", {"video": torch.ones(1)})
+                manifest = json.loads(fresh_run.manifest_path.read_text(encoding="utf-8"))
+                self.assertEqual(manifest["replay_epoch"], nodes._read_replay_epoch())
+                self.assertEqual(manifest["completed_chunks"], 0)
+            finally:
+                nodes._REPLAY_GENERATION = current_generation
+
+    def test_restart_control_deletes_active_cache_immediately_and_survives_old_run_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp_root, \
+                patch.object(nodes.tempfile, "gettempdir", return_value=temp_root):
+            cache = nodes._LastRunReplayCache()
+            cache.create({"geometry": "stable"}, "prompt", {"video": torch.zeros(1)})
+            nodes._set_replay_control("restart")
+            self.assertFalse(cache.manifest_path.exists())
+            self.assertEqual(nodes._read_replay_control(), "restart")
+            self.assertEqual(nodes._read_replay_control(), "restart")
+            self.assertEqual(nodes._consume_replay_control(), "restart")
+            self.assertEqual(nodes._read_replay_control(), "keep")
+
     def test_replay_control_is_consumed_once_without_deleting_history(self):
         with tempfile.TemporaryDirectory() as temp_root, \
                 patch.object(nodes.tempfile, "gettempdir", return_value=temp_root), \
@@ -383,6 +470,24 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         finally:
             with preview._PREVIEW_CACHE_LOCK:
                 preview._PREVIEW_CACHE.pop(node_id, None)
+
+    def test_chunk_prompt_log_is_chinese_and_reports_actual_h3_inputs(self):
+        with patch.object(nodes.logging, "info") as logged:
+            nodes._log_chunk_prompt_zh(
+                4, 24,
+                {"frame_start": 136, "frame_end": 175, "output_trim_frames": 5},
+                [2, 3],
+                [{"id": "S1.V2", "action": "第二个人走入画面"}],
+                "两个人并肩站立。",
+                "subject_definitions:\n<Subject 2>...\ndetailed_description:\n两个人并肩站立。",
+            )
+        template, *args = logged.call_args.args
+        rendered = template % tuple(args)
+        self.assertIn("分段提示词 5/24", rendered)
+        self.assertIn("本段启用人物/素材图片：Picture 2、Picture 3", rendered)
+        self.assertIn("第二个人走入画面", rendered)
+        self.assertIn("导演最终分段描述：\n两个人并肩站立。", rendered)
+        self.assertIn("实际送入 H3 的完整提示词", rendered)
 
     def test_preparation_progress_reports_to_console_and_preview(self):
         phases = []
@@ -842,6 +947,90 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(keyframe["resolved_frame_index"], 0)
         self.assertIs(keyframe["latent"], boundary_latent)
 
+    def test_audio_continuation_uses_real_previous_tail_on_exact_h3_timeline(self):
+        plan = nodes._chunk_plan_without_overlap(
+            nodes._video_steps(107), nodes._audio_steps(107), 39,
+        )
+        previous = torch.arange(65, dtype=torch.float32).reshape(1, 1, 1, 65).expand(1, 32, 2, 65).clone()
+        first_tail, first_end = nodes._continuation_audio_context(previous, 39, plan[1])
+        self.assertEqual(first_tail.shape[-1], plan[1]["context_audio_t"])
+        self.assertTrue(torch.equal(first_tail, previous[..., -plan[1]["context_audio_t"]:]))
+        self.assertNotEqual(first_tail.data_ptr(), previous.data_ptr())
+        self.assertEqual(first_end, 5.0)
+
+        rounded_previous = torch.arange(57, dtype=torch.float32).reshape(1, 1, 1, 57).expand(1, 32, 2, 57).clone()
+        rounded_tail, rounded_end = nodes._continuation_audio_context(rounded_previous, 34, plan[2])
+        self.assertEqual(rounded_tail.shape[-1], plan[2]["context_audio_t"])
+        self.assertAlmostEqual(rounded_end, 5.2)
+
+        conds = nodes._conditioning_for_chunk(
+            {"positive": [{}], "negative": [{}]},
+            plan[1]["frame_start"], plan[1]["frame_end"],
+            (torch.zeros((1, 1, 1)), {}),
+            audio_context=first_tail, audio_end_frame=first_end,
+        )
+        for group in ("positive", "negative"):
+            keyframe = conds[group][0]["minimax_keyframes"][0]
+            self.assertIs(keyframe["audio_latent"], first_tail)
+            self.assertAlmostEqual(
+                keyframe["resolved_frame_index"],
+                first_end - first_tail.shape[-1] / nodes.FRAME_RESCALE,
+            )
+
+    def test_later_chunk_owns_complete_audio_overlap_without_length_drift(self):
+        parts = []
+        first = torch.full((1, 2, 2, 65), 1.0)
+        second = torch.cat((
+            torch.full((1, 2, 2, 8), 2.0),
+            torch.full((1, 2, 2, 57), 3.0),
+        ), dim=-1)
+        third = torch.cat((
+            torch.full((1, 2, 2, 9), 4.0),
+            torch.full((1, 2, 2, 56), 5.0),
+        ), dim=-1)
+        nodes._append_audio_with_overlap(parts, first, 0)
+        nodes._append_audio_with_overlap(parts, second, 8)
+        nodes._append_audio_with_overlap(parts, third, 9)
+        assembled = torch.cat(parts, dim=-1)
+        self.assertEqual(assembled.shape[-1], 65 + 57 + 56)
+        self.assertTrue(torch.all(assembled[..., :57] == 1.0))
+        self.assertTrue(torch.all(assembled[..., 57:65] == 2.0))
+        self.assertTrue(torch.all(assembled[..., 65:113] == 3.0))
+        self.assertTrue(torch.all(assembled[..., 113:122] == 4.0))
+        self.assertTrue(torch.all(assembled[..., 122:] == 5.0))
+
+    def test_saved_audio_overlap_reconstructs_the_same_sequence_after_resume(self):
+        states = [
+            {"output_audio": torch.full((1, 2, 2, 65), 1.0), "audio_overlap_steps": 0},
+            {
+                "output_audio": torch.full((1, 2, 2, 57), 3.0),
+                "output_audio_with_overlap": torch.cat((
+                    torch.full((1, 2, 2, 8), 2.0),
+                    torch.full((1, 2, 2, 57), 3.0),
+                ), dim=-1),
+                "audio_overlap_steps": 8,
+            },
+        ]
+        parts = []
+        for state in states:
+            nodes._append_saved_audio(parts, state, "output_audio", "output_audio_with_overlap")
+        assembled = torch.cat(parts, dim=-1)
+        self.assertEqual(assembled.shape[-1], 122)
+        self.assertTrue(torch.all(assembled[..., :57] == 1.0))
+        self.assertTrue(torch.all(assembled[..., 57:65] == 2.0))
+        self.assertTrue(torch.all(assembled[..., 65:] == 3.0))
+
+    def test_audio_overlap_requires_a_previous_chunk(self):
+        with self.assertRaisesRegex(ValueError, "without a previous chunk"):
+            nodes._append_audio_with_overlap([], torch.zeros((1, 32, 2, 65)), 8)
+
+    def test_audio_continuation_rejects_inconsistent_previous_grid(self):
+        plan = nodes._chunk_plan_without_overlap(
+            nodes._video_steps(73), nodes._audio_steps(73), 39,
+        )
+        with self.assertRaisesRegex(ValueError, "previous audio grid is inconsistent"):
+            nodes._continuation_audio_context(torch.zeros((1, 32, 2, 64)), 39, plan[1])
+
     def test_continuation_keyframe_replaces_same_position_visual_anchor(self):
         old = torch.zeros((1, 24, 2, 2, 2))
         replacement = torch.ones((1, 24, 7, 2, 2))
@@ -883,6 +1072,132 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         })
         self.assertEqual((block["latent_t"], block["latent_h"], block["latent_w"]), (7, 34, 58))
         self.assertIs(block["latent"], latent)
+
+    def test_bridge_visual_only_references_remove_real_audio_latents(self):
+        audio = torch.zeros((1, 32, 2, 36))
+        conds = nodes._visual_only_reference_conds({
+            "positive": [{"minimax_refs": [{"kind": "video_audio", "ref_audio_t": 36,
+                                               "latent": torch.zeros((1, 24, 7, 4, 6)), "audio_latent": audio}]}],
+            "negative": [{"minimax_refs": [{"kind": "video_audio", "ref_audio_t": 36,
+                                               "latent": torch.zeros((1, 24, 7, 4, 6)), "audio_latent": audio}]}],
+        })
+        for name in ("positive", "negative"):
+            ref = conds[name][0]["minimax_refs"][0]
+            self.assertEqual(ref["kind"], "video")
+            self.assertEqual(ref["ref_audio_t"], 0)
+            self.assertIsNone(ref["audio_latent"])
+
+    def test_chunk_conditioning_normalizes_negative_reference_audio_metadata(self):
+        stale_ref = {
+            "kind": "video_audio", "ref_audio_t": 36,
+            "latent": torch.zeros((1, 24, 7, 4, 6)), "audio_latent": None,
+        }
+        conds = nodes._conditioning_for_chunk(
+            {"positive": [{"minimax_refs": [stale_ref]}], "negative": [{"minimax_refs": [stale_ref]}]},
+            0, 22, (torch.zeros((1, 1, 1)), {}),
+        )
+        for name in ("positive", "negative"):
+            ref = conds[name][0]["minimax_refs"][0]
+            self.assertEqual(ref["kind"], "video")
+            self.assertEqual(ref["ref_audio_t"], 0)
+
+    def test_chunk_conditioning_uses_same_structural_payload_for_cfg(self):
+        positive_ref = {"kind": "video", "ref_audio_t": 0, "latent": torch.zeros((1, 24, 7, 4, 6))}
+        stale_negative_ref = {
+            "kind": "video_audio", "ref_audio_t": 36,
+            "latent": torch.zeros((1, 24, 7, 4, 6)), "audio_latent": torch.zeros((1, 32, 2, 36)),
+        }
+        audio_context = torch.zeros((1, 32, 2, 8))
+        conds = nodes._conditioning_for_chunk(
+            {"positive": [{"minimax_refs": [positive_ref]}],
+             "negative": [{"minimax_refs": [stale_negative_ref]}]},
+            0, 22, (torch.zeros((1, 1, 1)), {}), audio_context=audio_context,
+        )
+        self.assertIs(conds["negative"][0]["minimax_refs"], conds["positive"][0]["minimax_refs"])
+        self.assertIs(conds["negative"][0]["minimax_keyframes"], conds["positive"][0]["minimax_keyframes"])
+        self.assertEqual(conds["positive"][0]["minimax_refs"][0]["ref_audio_t"], 0)
+        self.assertEqual(conds["positive"][0]["minimax_keyframes"][0]["audio_latent"].shape[-1], 8)
+
+    def test_video_reference_audio_metadata_follows_actual_tensor(self):
+        without_audio = nodes._normalize_h3_video_ref({
+            "kind": "video_audio", "ref_audio_t": 36,
+            "latent": torch.zeros((1, 24, 7, 4, 6)), "audio_latent": None,
+        })
+        self.assertEqual(without_audio["kind"], "video")
+        self.assertEqual(without_audio["ref_audio_t"], 0)
+
+        audio = torch.zeros((1, 32, 2, 8))
+        with_audio = nodes._normalize_h3_video_ref({
+            "kind": "video", "ref_audio_t": 0,
+            "latent": torch.zeros((1, 24, 7, 4, 6)), "audio_latent": audio,
+        })
+        self.assertEqual(with_audio["kind"], "video_audio")
+        self.assertEqual(with_audio["ref_audio_t"], 8)
+
+    def test_stale_h3_layout_is_dropped_for_88_to_16_audio_rows(self):
+        from comfy.ldm.minimax.model import PackedLayout, pack_audio
+
+        audio = torch.zeros((1, 32, 2, 8))
+        reference = {
+            "kind": "video_audio", "latent_t": 7, "latent_h": 4, "latent_w": 6,
+            "ref_audio_t": 36, "latent": torch.zeros((1, 24, 7, 4, 6)), "audio_latent": None,
+        }
+        keyframes = [{"resolved_frame_index": 0, "audio_latent": audio}]
+        layout = PackedLayout(10, 12, 4, 6, 80, keyframes=keyframes, refs=[reference])
+        self.assertEqual(int((~layout.audio_update).sum()), 88)
+        self.assertEqual(pack_audio(audio).shape[0], 16)
+
+        payload = {"layout": layout, "refs": [reference], "keyframes": keyframes,
+                   "cond_audio_latents": [audio]}
+        kwargs = {"minimax_payload": payload, "other": 1}
+        updated = nodes._rebuild_h3_layout(kwargs, None, None)
+        rebuilt = PackedLayout(10, 12, 4, 6, 80,
+                               keyframes=updated["minimax_payload"]["keyframes"],
+                               refs=updated["minimax_payload"]["refs"])
+        actual = torch.cat([pack_audio(item) for item in updated["minimax_payload"]["cond_audio_latents"]])
+        self.assertEqual(int((~rebuilt.audio_update).sum()), actual.shape[0])
+        self.assertEqual(actual.shape[0], 16)
+        self.assertEqual(updated["other"], 1)
+        self.assertIn("layout", kwargs["minimax_payload"])
+
+    def test_apply_model_wrapper_passes_rebuilt_payload_to_executor(self):
+        from comfy.ldm.minimax.model import PackedLayout
+        audio = torch.zeros((1, 32, 2, 8))
+        stale_ref = {"kind": "video_audio", "latent_t": 7, "latent_h": 4, "latent_w": 6,
+                     "ref_audio_t": 36, "latent": torch.zeros((1, 24, 7, 4, 6)), "audio_latent": None}
+        layout = PackedLayout(10, 12, 4, 6, 80,
+                              keyframes=[{"resolved_frame_index": 0, "audio_latent": audio}], refs=[stale_ref])
+        received = {}
+        class Timing:
+            def observe_memory(self, **_kwargs):
+                pass
+        class Executor:
+            def __call__(self, *_args, **kwargs):
+                received.update(kwargs)
+                return "ok"
+        monitor = nodes._VRAMMonitor(Timing(), torch.device("cpu"), [], 1)
+        result = monitor(
+            Executor(), None, None, None, None, None, {},
+            minimax_payload={"layout": layout, "refs": [stale_ref], "cond_audio_latents": [audio],
+                             "keyframes": [{"resolved_frame_index": 0, "audio_latent": audio}]},
+        )
+        self.assertEqual(result, "ok")
+        self.assertEqual(int((~received["minimax_payload"]["layout"].audio_update).sum()), 16)
+
+    def test_matching_h3_layout_is_rebuilt_consistently(self):
+        from comfy.ldm.minimax.model import PackedLayout
+        audio = torch.zeros((1, 32, 2, 8))
+        keyframes = [{"resolved_frame_index": 0, "audio_latent": audio}]
+        layout = PackedLayout(10, 12, 4, 6, 80, keyframes=keyframes)
+        kwargs = {"minimax_payload": {"layout": layout, "cond_audio_latents": [audio],
+                                        "keyframes": keyframes}}
+        updated = nodes._rebuild_h3_layout(kwargs, None, None)
+        self.assertEqual(int((~updated["minimax_payload"]["layout"].audio_update).sum()), 16)
+
+    def test_external_bridge_skips_generic_debug_memory_preflight(self):
+        plan = [{}, {}]
+        self.assertTrue(nodes._should_run_debug_memory_preflight(True, 0, plan, True, False))
+        self.assertFalse(nodes._should_run_debug_memory_preflight(True, 0, plan, True, True))
 
     def test_debug_memory_preflight_uses_at_most_three_real_sigma_steps(self):
         sigmas = torch.arange(21, dtype=torch.float32)

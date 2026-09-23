@@ -40,7 +40,8 @@ from .gemma4 import (
 from .preview import begin_preview_execution
 from .prompt_skill import (
     active_prompt_plan_pictures, filter_prompt_plan_picture_items,
-    localize_prompt_from_plan, normalize_prompt_plan, prompt_plan_shots,
+    localize_prompt_from_plan, normalize_prompt_plan, project_prompt_plan_interval,
+    prompt_plan_shots, validate_h3_identity_contract,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images, reference_presentation_items
@@ -89,6 +90,8 @@ REPLAY_CACHE_FORMAT = 3
 REPLAY_HISTORY_DIRNAME = "history"
 REPLAY_HISTORY_LIMIT = 5
 _REPLAY_RUN_ID = re.compile(r"^[a-f0-9]{32}$")
+_REPLAY_GENERATION_LOCK = threading.Lock()
+_REPLAY_GENERATION = 0
 DETAILED_DESCRIPTION_FIELD = re.compile(r"detailed_description\s*:", re.IGNORECASE)
 INTEGRATED_DESCRIPTION_FIELD = re.compile(r"integrated_multimodal_description\s*:", re.IGNORECASE)
 SHOT_MARKER = re.compile(r"\[Shot\s+(\d+)\](?:\s+At\s+(\d+):(\d{2})\.(\d{3}),)?", re.IGNORECASE)
@@ -243,16 +246,48 @@ def _replay_history_runs():
 
 
 def _replay_control_path():
-    return _replay_cache_root() / "control.json"
+    return _replay_cache_root().parent / "replay_control.json"
+
+
+def _replay_epoch_path():
+    return _replay_cache_root().parent / "replay_epoch.json"
+
+
+def _read_replay_epoch():
+    try:
+        value = json.loads(_replay_epoch_path().read_text(encoding="utf-8"))
+        return max(0, int(value.get("epoch", 0)))
+    except (FileNotFoundError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return 0
+
+
+def _advance_replay_epoch():
+    epoch = _read_replay_epoch() + 1
+    _replay_write_json(_replay_epoch_path(), {"epoch": epoch, "created": time.time()})
+    return epoch
 
 
 def _set_replay_control(action):
+    global _REPLAY_GENERATION
     if action not in {"keep", "delete", "restart"}:
         raise ValueError("Unknown replay control action")
+    if action in {"delete", "restart"}:
+        with _REPLAY_GENERATION_LOCK:
+            _REPLAY_GENERATION += 1
+            _advance_replay_epoch()
+    if action in {"delete", "restart"}:
+        manifest_path = _replay_cache_root() / "manifest.json"
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["status"] = f"{action}_requested"
+            manifest["control_requested"] = time.time()
+            _replay_write_json(manifest_path, manifest)
     _replay_write_json(_replay_control_path(), {"action": action, "created": time.time()})
+    if action in {"delete", "restart"}:
+        _remove_replay_cache()
 
 
-def _consume_replay_control():
+def _read_replay_control(consume=False):
     path = _replay_control_path()
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -260,12 +295,17 @@ def _consume_replay_control():
         return "keep"
     except (OSError, json.JSONDecodeError):
         return "keep"
-    try:
-        path.unlink()
-    except OSError:
-        pass
+    if consume:
+        try:
+            path.unlink()
+        except OSError:
+            pass
     action = value.get("action")
     return action if action in {"keep", "delete", "restart"} else "keep"
+
+
+def _consume_replay_control():
+    return _read_replay_control(consume=True)
 
 
 def _remove_replay_cache():
@@ -280,6 +320,8 @@ def _remove_replay_cache():
                     shutil.rmtree(child) if child.is_dir() else child.unlink()
     except OSError as error:
         logging.warning("HR Endless Sampler could not clear replay cache %s: %s", path, error)
+    if (path / "manifest.json").exists():
+        raise RuntimeError(f"HR Endless Sampler replay cache still exists after deletion: {path}")
 
 
 def _replay_cpu_copy(value):
@@ -407,6 +449,17 @@ class _LastRunReplayCache:
     def __init__(self, run_id=None):
         self.run_id = None if run_id is None else str(run_id)
         self.root = _replay_cache_root(self.run_id)
+        self.generation = _REPLAY_GENERATION
+        self.epoch = None if self.run_id is not None else _read_replay_epoch()
+
+    def _is_current(self):
+        return self.run_id is not None or (
+            self.generation == _REPLAY_GENERATION and self.epoch == _read_replay_epoch()
+        )
+
+    def _require_current(self):
+        if not self._is_current():
+            raise RuntimeError("replay run was invalidated by delete/restart")
 
     @property
     def manifest_path(self):
@@ -446,10 +499,12 @@ class _LastRunReplayCache:
         _remove_replay_cache()
 
     def create(self, fingerprint, source_prompt, initial_tensors):
+        self._require_current()
         self.clear()
         self.root.mkdir(parents=True, exist_ok=True)
         manifest = {
             "format": REPLAY_CACHE_FORMAT,
+            "replay_epoch": self.epoch,
             "created": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "fingerprint": fingerprint,
             "source_prompt_sha256": hashlib.sha256(source_prompt.encode("utf-8")).hexdigest(),
@@ -461,6 +516,7 @@ class _LastRunReplayCache:
         logging.info("HR Endless Sampler is recording replay state in %s", self.root)
 
     def _update_manifest(self, **changes):
+        self._require_current()
         try:
             manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -486,6 +542,8 @@ class _LastRunReplayCache:
             manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
             if manifest.get("format") != REPLAY_CACHE_FORMAT:
                 return None, "cache format is obsolete"
+            if self.run_id is None and int(manifest.get("replay_epoch", 0)) != self.epoch:
+                return None, "replay run was invalidated by delete/restart"
             if manifest.get("fingerprint") != fingerprint:
                 return None, "latent/chunk layout or continuation settings changed"
             initial = _replay_load_tensor_file(self.initial_path)
@@ -536,6 +594,7 @@ class _LastRunReplayCache:
         return _timing_plan_from_payload(payload)
 
     def save_timing_plan(self, timing_plan, *, source_prompt=None):
+        self._require_current()
         _replay_write_json(self.timing_path, _timing_plan_payload(timing_plan))
         if source_prompt is not None:
             self._update_manifest(
@@ -543,6 +602,7 @@ class _LastRunReplayCache:
             )
 
     def save_chunk(self, chunk_number, state, metadata=None, observation_image_directory=None):
+        self._require_current()
         number = int(chunk_number)
         _replay_write_tensor_file(self.chunk_path(number), state)
         chunk_metadata = dict(metadata or {})
@@ -562,6 +622,7 @@ class _LastRunReplayCache:
                               chunks=sorted(chunks, key=lambda item: int(item["chunk"])))
 
     def save_revision(self, chunk_number, state, *, mode, prompt):
+        self._require_current()
         number = int(chunk_number)
         metadata_path = self.chunk_metadata_path(number)
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -944,6 +1005,27 @@ def _debug_chunk_prompt(index, chunk, content_start, chunk_prompt, gemma_report=
     return f"{_debug_chunk_header(index, chunk, content_start)}{report}\n{chunk_prompt}"
 
 
+def _log_chunk_prompt_zh(index, chunk_count, chunk, picture_indices, mandatory_coverage,
+                         directed_description, chunk_prompt):
+    pictures = "、".join(f"Picture {number}" for number in picture_indices) or "无"
+    coverage = json.dumps(mandatory_coverage or [], ensure_ascii=False, indent=2)
+    logging.info(
+        "HR Endless Sampler 分段提示词 %d/%d\n"
+        "保留帧范围：[%d, %d)\n"
+        "本段启用人物/素材图片：%s\n"
+        "本段必须覆盖的事件与对白：\n%s\n"
+        "导演最终分段描述：\n%s\n"
+        "实际送入 H3 的完整提示词：\n%s",
+        index + 1, chunk_count,
+        chunk["frame_start"] + chunk.get("output_trim_frames", 0), chunk["frame_end"],
+        pictures, coverage, directed_description or "未使用分段导演描述", chunk_prompt,
+    )
+
+
+def _needs_chunk_director(typed_prompt_plan, shots, continuation_state, external_active):
+    return typed_prompt_plan is None and bool(shots) and continuation_state is None and not external_active
+
+
 def _director_segment_values(segment):
     shot_index, shot_start, shot_end, body = segment[:4]
     return shot_index, shot_start, shot_end, body, bool(segment[4]) if len(segment) > 4 else True
@@ -1261,6 +1343,17 @@ def _reference_video_canvas(width, height):
     return target_width, target_height
 
 
+def _prompt_plan_positive(positive, active_picture_indices):
+    result = []
+    for metadata in positive:
+        local_metadata = dict(metadata)
+        local_metadata["minimax_refs"] = filter_prompt_plan_picture_items(
+            metadata.get("minimax_refs", ()), active_picture_indices, kind_key="kind"
+        )
+        result.append(local_metadata)
+    return result
+
+
 def _prompt_tokens(clip, prompt, image_list, positive, width, height, continuation, video_items=(), base_reference_items=None):
     refs = positive[0].get("minimax_refs") if positive else None
     if refs:
@@ -1463,6 +1556,60 @@ def _validate_h3_audio_conditioning(conds):
                         f"HR Endless Sampler {group}[{cond_index}] keyframe[{keyframe_index}] "
                         f"audio latent must be [B,C,T,L], got {tuple(audio_latent.shape)}"
                     )
+
+
+def _append_audio_with_overlap(parts, current, overlap_steps):
+    overlap = int(overlap_steps)
+    if overlap < 0:
+        raise ValueError("HR Endless Sampler audio overlap cannot be negative")
+    if current.ndim != 4:
+        raise ValueError(f"HR Endless Sampler audio chunk must be [B,C,T,L], got {tuple(current.shape)}")
+    if overlap == 0:
+        parts.append(current.clone())
+        return
+    if not parts:
+        raise ValueError("HR Endless Sampler cannot apply audio overlap without a previous chunk")
+    previous = parts[-1]
+    if previous.ndim != 4 or previous.shape[-1] < overlap or current.shape[-1] <= overlap:
+        raise ValueError(
+            f"HR Endless Sampler audio overlap {overlap} does not fit previous/current shapes "
+            f"{tuple(previous.shape)} and {tuple(current.shape)}"
+        )
+    parts[-1] = previous[..., :-overlap].clone()
+    parts.append(current.clone())
+
+
+def _append_saved_audio(parts, state, delivered_key, overlap_key):
+    overlap = state.get(overlap_key)
+    overlap_steps = int(state.get("audio_overlap_steps", 0) or 0)
+    if overlap is None or overlap_steps == 0:
+        parts.append(state[delivered_key])
+    else:
+        _append_audio_with_overlap(parts, overlap, overlap_steps)
+
+
+def _continuation_audio_context(previous_audio, previous_frame_count, chunk):
+    if previous_audio is None or not chunk.get("synthetic_prefix"):
+        return None, 0.0
+    context_audio_t = int(chunk.get("context_audio_t", 0) or 0)
+    if context_audio_t <= 0:
+        return None, 0.0
+    if previous_audio.ndim != 4 or previous_audio.shape[-1] < context_audio_t:
+        raise ValueError(
+            f"HR Endless Sampler audio continuation needs {context_audio_t} previous latent steps, "
+            f"got shape {tuple(previous_audio.shape)}"
+        )
+    previous_frames = int(previous_frame_count)
+    if previous_frames <= 0:
+        raise ValueError("HR Endless Sampler audio continuation requires a positive previous frame count")
+    overhang = int(previous_audio.shape[-1]) - FRAME_RESCALE * previous_frames
+    if not (-0.5 < overhang < 0.5):
+        raise ValueError(
+            f"HR Endless Sampler previous audio grid is inconsistent: "
+            f"{previous_audio.shape[-1]} steps for {previous_frames} frames"
+        )
+    audio_end_frame = float(chunk.get("output_trim_frames", 0)) + overhang / FRAME_RESCALE
+    return previous_audio[..., -context_audio_t:].clone(), audio_end_frame
 
 
 def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prompt, video_context=None,
@@ -2741,6 +2888,14 @@ class _SamplerTiming:
 
 
 class HREndlessSampler(SamplerCustomAdvanced):
+    # V3 compatibility caches must be owned by this subclass. Otherwise the
+    # core validator sees SamplerCustomAdvanced's two cached outputs instead of
+    # this node's STRING and HRENDLESS_TIMELINE tail outputs.
+    _RETURN_TYPES = None
+    _RETURN_NAMES = None
+    _OUTPUT_IS_LIST = None
+    _OUTPUT_TOOLTIPS = None
+
     @classmethod
     def define_schema(cls):
         return io.Schema(
@@ -2862,6 +3017,11 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 continuation_plan=None, external_continuation=None, initial_event_ledger=None, prompt_plan=None,
                 **_deprecated_inputs):
         _set_pytorch_memory_fraction(DEFAULT_PYTORCH_MEMORY_FRACTION, guider.model_patcher.load_device)
+        startup_control = _consume_replay_control()
+        if startup_control in {"delete", "restart"}:
+            _LastRunReplayCache().clear()
+            logging.warning("HR Endless Sampler honored pending %s control before replay lookup; starting from Chunk 1.", startup_control)
+            debug_start_chunk = 0
         if retake_plan is not None and continuation_plan is not None:
             raise ValueError("retake_plan and continuation_plan cannot be used together")
         if external_continuation is not None and (retake_plan is not None or continuation_plan is not None):
@@ -3034,7 +3194,12 @@ class HREndlessSampler(SamplerCustomAdvanced):
             _gemma_description_end = None
         else:
             _gemma_markers, gemma_shots, _gemma_description_end = _parse_prompt_shots(prompt, plan[-1]["frame_end"], fps)
-        gemma_director_needed = bool(gemma_shots) and continuation_state is None and not external_active
+        # A connected typed prompt plan is already the validated semantic and camera contract.
+        # Physical sampler chunks may project it by frame range, but must not ask a second
+        # director to rewrite subjects, dialogue, actions, or camera language.
+        gemma_director_needed = _needs_chunk_director(
+            typed_prompt_plan, gemma_shots, continuation_state, external_active
+        )
 
         original_conds = guider.original_conds
         if external_active and external_continuation.get("visual_references_only"):
@@ -3074,11 +3239,11 @@ class HREndlessSampler(SamplerCustomAdvanced):
         if typed_prompt_plan is not None:
             localized_prompts = []
             for index, (chunk, (chunk_prompt, _debug_prompt)) in enumerate(zip(active_plan, planned_prompts)):
+                content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
                 localized = localize_prompt_from_plan(
                     chunk_prompt, typed_prompt_plan,
-                    frame_start=chunk["frame_start"], frame_end=chunk["frame_end"],
+                    frame_start=content_start, frame_end=chunk["frame_end"],
                 )
-                content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
                 localized_prompts.append((localized, _debug_chunk_prompt(index, chunk, content_start, localized)))
             planned_prompts = localized_prompts
         if debug:
@@ -3403,9 +3568,9 @@ class HREndlessSampler(SamplerCustomAdvanced):
             try:
                 for state in replay_prior_chunks:
                     output_video.append(state["output_video"])
-                    output_audio.append(state["output_audio"])
+                    _append_saved_audio(output_audio, state, "output_audio", "output_audio_with_overlap")
                     denoised_video.append(state["denoised_video"])
-                    denoised_audio.append(state["denoised_audio"])
+                    _append_saved_audio(denoised_audio, state, "denoised_audio", "denoised_audio_with_overlap")
                     if state.get("debug_prompt"):
                         debug_prompts.append(str(state["debug_prompt"]))
                 previous_state = replay_prior_chunks[-1]
@@ -3897,6 +4062,9 @@ class HREndlessSampler(SamplerCustomAdvanced):
                             "mandatory_coverage": gemma_preproduction_timing_plan.mandatory_coverage(
                                 target_shots,
                             ),
+                            "completed_coverage": gemma_preproduction_timing_plan.completed_coverage(
+                                target_shots,
+                            ),
                             "character_name_table": gemma_preproduction_timing_plan.character_name_table_text(),
                             "conditioning_context": _gemma_conditioning_context(
                                 continuation,
@@ -4047,6 +4215,16 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 audio_context = None if previous_audio is None or not guide_enabled else previous_audio[..., -guide_audio_t:].clone()
                 video_context_start = 0
                 audio_end_frame = float(keyframe_duration_frames)
+                if audio_context is None and continuation and not (external_active and index == 0):
+                    audio_context, audio_end_frame = _continuation_audio_context(
+                        previous_audio, previous_frame_count, chunk
+                    )
+                    if debug and audio_context is not None:
+                        logging.info(
+                            "HR Endless Sampler chunk %d/%d audio continuation: "
+                            "%d real previous latent steps end-aligned at local frame %.3f.",
+                            index + 1, len(active_plan), audio_context.shape[-1], audio_end_frame,
+                        )
                 if external_active and index == 0:
                     video_context = previous_video.clone()
                     audio_context = previous_audio.clone() if external_audio_mode == "continue" else None
@@ -4240,18 +4418,31 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     )
                     if active_picture_indices and active_picture_indices[-1] > len(image_list):
                         raise ValueError("prompt_plan picture mapping exceeds the connected reference images")
-                    chunk_images = [image_list[picture - 1] for picture in active_picture_indices]
-                    chunk_positive = []
-                    for embedding, metadata in positive:
-                        local_metadata = dict(metadata)
-                        local_metadata["minimax_refs"] = filter_prompt_plan_picture_items(
-                            metadata.get("minimax_refs", ()), active_picture_indices, kind_key="kind"
-                        )
-                        chunk_positive.append([embedding, local_metadata])
-                    if base_reference_items is not None:
-                        chunk_reference_items = filter_prompt_plan_picture_items(
-                            base_reference_items, active_picture_indices, kind_key="type"
-                        )
+                    # Keep every connected image in its original global Picture N slot. Filtering
+                    # and locally renumbering references changed Picture/Subject identity between
+                    # chunks and let scenes become speaking characters.
+                if typed_prompt_plan is not None:
+                    validate_h3_identity_contract(chunk_prompt, typed_prompt_plan)
+                    projection = project_prompt_plan_interval(
+                        typed_prompt_plan,
+                        frame_start=chunk["frame_start"] + chunk.get("output_trim_frames", 0),
+                        frame_end=chunk["frame_end"],
+                    )
+                    previous_event_ledger = {
+                        name: [dict(item) for item in projection[name]]
+                        for name in ("completed", "active", "pending")
+                    }
+                    previous_event_ledger["forbidden"] = [
+                        {"id": item["id"], "summary": text}
+                        for item, text in zip(projection["completed"], projection["forbidden"])
+                    ]
+                logged_picture_indices = active_picture_indices if active_picture_indices is not None else list(range(1, len(image_list) + 1))
+                _log_chunk_prompt_zh(
+                    index, len(active_plan), chunk, logged_picture_indices,
+                    (previous_event_ledger.get("active", ()) if typed_prompt_plan is not None
+                     else request.get("mandatory_coverage", ()) if gemma_director is not None else ()),
+                    gemma_description, chunk_prompt,
+                )
                 timer_started = time.perf_counter()
                 try:
                     encoded_prompt = _encode_prompt(
@@ -4387,16 +4578,33 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     if retake_mode == "video_only":
                         assembled_audio = original_state["output_audio"]
                         assembled_denoised_audio = original_state["denoised_audio"]
+                owns_audio_overlap = index > 0 and audio_trim > 0 and not retake_chunks
+                output_audio_with_overlap = previous_audio.clone() if owns_audio_overlap else None
+                denoised_audio_with_overlap = denoised_chunk_audio.clone() if owns_audio_overlap else None
                 if replay_output_on_cpu:
                     output_video.append(assembled_video.to(device="cpu"))
-                    output_audio.append(assembled_audio.to(device="cpu"))
+                    if owns_audio_overlap:
+                        output_audio_with_overlap = output_audio_with_overlap.to(device="cpu")
+                        _append_audio_with_overlap(output_audio, output_audio_with_overlap, audio_trim)
+                    else:
+                        output_audio.append(assembled_audio.to(device="cpu"))
                     denoised_video.append(assembled_denoised_video.to(device="cpu"))
-                    denoised_audio.append(assembled_denoised_audio.to(device="cpu"))
+                    if owns_audio_overlap:
+                        denoised_audio_with_overlap = denoised_audio_with_overlap.to(device="cpu")
+                        _append_audio_with_overlap(denoised_audio, denoised_audio_with_overlap, audio_trim)
+                    else:
+                        denoised_audio.append(assembled_denoised_audio.to(device="cpu"))
                 else:
                     output_video.append(assembled_video)
-                    output_audio.append(assembled_audio)
+                    if owns_audio_overlap:
+                        _append_audio_with_overlap(output_audio, output_audio_with_overlap, audio_trim)
+                    else:
+                        output_audio.append(assembled_audio)
                     denoised_video.append(assembled_denoised_video)
-                    denoised_audio.append(assembled_denoised_audio)
+                    if owns_audio_overlap:
+                        _append_audio_with_overlap(denoised_audio, denoised_audio_with_overlap, audio_trim)
+                    else:
+                        denoised_audio.append(assembled_denoised_audio)
                 chunk_progress.finish(index)
                 completed_chunks = index + 1
                 chunk_total_seconds = timing.finish_chunk(index) or 0.0
@@ -4457,8 +4665,11 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 "previous_frame_count": previous_frame_count,
                                 "output_video": assembled_video,
                                 "output_audio": assembled_audio,
+                                "output_audio_with_overlap": output_audio_with_overlap,
                                 "denoised_video": assembled_denoised_video,
                                 "denoised_audio": assembled_denoised_audio,
+                                "denoised_audio_with_overlap": denoised_audio_with_overlap,
+                                "audio_overlap_steps": audio_trim if owns_audio_overlap else 0,
                                 "output_template": output_template,
                                 "denoised_template": denoised_template,
                                 "source_prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
@@ -4566,11 +4777,11 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 },
             )
             if not sampling_completed and replay_cache is not None:
-                control = _consume_replay_control()
-                if control in {"delete", "restart"}:
-                    replay_cache.clear()
+                control = _read_replay_control()
+                if control in {"delete", "restart"} or not replay_cache._is_current():
+                    _remove_replay_cache()
                     logging.warning("HR Endless Sampler deleted the interrupted render%s.",
-                                    " before restarting" if control == "restart" else "")
+                                    " before starting fresh from Chunk 1" if control == "restart" else "")
                 else:
                     resume_chunk = min(completed_chunks + 1, len(active_plan))
                     try:

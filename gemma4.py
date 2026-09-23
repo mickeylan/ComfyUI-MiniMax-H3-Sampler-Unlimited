@@ -31,6 +31,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
 
+try:
+    from .dialogue_timing import dialogue_frame_count, slice_dialogue_for_interval
+except ImportError:  # Direct test/worker execution.
+    from dialogue_timing import dialogue_frame_count, slice_dialogue_for_interval
+
 import torch
 from PIL import Image
 
@@ -329,20 +334,53 @@ class GemmaShotTimingPlan:
                     overlap_end = min(target_end, entry_end)
                     if overlap_start >= overlap_end:
                         continue
+                    relative_overlap_start = overlap_start - shot.shot_start_frame
+                    relative_overlap_end = overlap_end - shot.shot_start_frame
+                    action = entry.action if kind == "V" else entry.content
+                    if kind == "O" and entry.overlay_type == "dialogue":
+                        action = slice_dialogue_for_interval(
+                            action, entry.start_frame, entry.end_frame,
+                            relative_overlap_start, relative_overlap_end,
+                        )
                     item: dict[str, Any] = {
                         "id": self._beat_identifier(shot.source_shot, kind, index),
                         "kind": "visual" if kind == "V" else "overlay",
                         "source_shot": shot.source_shot,
                         "source_start_frame": entry.start_frame,
                         "source_end_frame": entry.end_frame,
-                        "overlap_start_frame": overlap_start - shot.shot_start_frame,
-                        "overlap_end_frame": overlap_end - shot.shot_start_frame,
-                        "action": entry.action if kind == "V" else entry.content,
+                        "overlap_start_frame": relative_overlap_start,
+                        "overlap_end_frame": relative_overlap_end,
+                        "action": action,
                     }
                     if kind == "O":
                         item["overlay_type"] = entry.overlay_type
                     required.append(item)
         return required
+
+    def completed_coverage(self, target_shots: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        targets = {int(target["shot_number"]): target for target in target_shots}
+        completed = []
+        for shot in self.shots:
+            target = targets.get(shot.source_shot)
+            if target is None or "target_start" not in target:
+                continue
+            retained_start = int(target["target_start"]) - shot.shot_start_frame
+            for kind, entries in (("V", shot.visual_beats), ("O", shot.overlays)):
+                for index, entry in enumerate(entries, 1):
+                    if entry.end_frame > retained_start:
+                        continue
+                    item = {
+                        "id": self._beat_identifier(shot.source_shot, kind, index),
+                        "kind": "visual" if kind == "V" else "overlay",
+                        "source_shot": shot.source_shot,
+                        "source_start_frame": entry.start_frame,
+                        "source_end_frame": entry.end_frame,
+                        "action": entry.action if kind == "V" else entry.content,
+                    }
+                    if kind == "O":
+                        item["overlay_type"] = entry.overlay_type
+                    completed.append(item)
+        return completed
 
     def for_target_shots(self, target_shots: Sequence[dict[str, Any]], fps: float) -> str:
         """Render relevant full schedules plus mandatory current-slice beats.
@@ -425,6 +463,11 @@ class GemmaShotTimingPlan:
             "A listed beat may remain unfinished beyond this slice, but its start or continuation in the listed "
             "frames must be explicitly described now.\n\n"
             + "\n\n".join(required_blocks)
+            + "\n\nCOMPLETED BEFORE THIS SLICE — NEVER RESTAGE, RE-ENTER, REPEAT, OR RE-SPEAK\n"
+            + ("\n".join(
+                f"- FORBIDDEN REPLAY [{item['id']}]: {item['action']}"
+                for item in self.completed_coverage(target_shots)
+            ) or "- none")
             + "\n\nCOMPLETE RELEVANT PREPRODUCTION SCHEDULE (for pacing context)\n"
             + "\n\n".join(blocks)
         )
@@ -1406,6 +1449,7 @@ def _contract_validation_warnings(warnings: Sequence[str]) -> tuple[str, ...]:
             or "mandatory coverage" in warning.lower()
             or "dialogue speaker form" in warning.lower()
             or "last-seen character state" in warning.lower()
+            or "completed beat" in warning.lower()
         )
     )
 
@@ -1523,6 +1567,21 @@ def _normalized_prompt_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
+def _completed_replay_warnings(request: dict[str, Any], description: str) -> list[str]:
+    normalized = _normalized_prompt_text(description)
+    output_dialogues = {_dialogue_text(item).casefold() for item in _DIALOGUE.findall(description)}
+    warnings = []
+    for item in request.get("completed_coverage", ()):
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action", ""))
+        dialogues = {_dialogue_text(text).casefold() for text in _DIALOGUE.findall(action)}
+        action_text = _normalized_prompt_text(_DIALOGUE.sub("", action))
+        if dialogues & output_dialogues or (len(action_text) >= 24 and action_text in normalized):
+            warnings.append(f"Gemma 4 completed beat {item.get('id', 'unknown')} is replayed in this chunk")
+    return warnings
+
+
 def _mandatory_coverage_warnings(value: dict[str, Any], request: dict[str, Any], description: str) -> list[str]:
     """Check Gemma's own attestation of the current planned beat intersections.
 
@@ -1634,6 +1693,12 @@ def _chunk_contract_correction_request(request: dict[str, Any], warnings: Sequen
         f"{_last_seen_character_state_contract(request)}\n\n"
         "Mandatory current-slice coverage:\n"
         + required_coverage
+        + "\n\nCompleted beats forbidden from replay in this slice:\n"
+        + ("\n".join(
+            f"- {item.get('id')}: {item.get('action')}"
+            for item in request.get("completed_coverage", ()) if isinstance(item, dict)
+        ) or "- none")
+        + "\n\nBegin from the established previous end state. If entrance, approach, or meeting is complete, keep the characters already together and continue only the current action/dialogue."
         + "\n\nThe source/global timestamps in the original prompt describe the full video and must not be used as markers "
         "inside this physical chunk. Do not add, remove, renumber, or move cuts.\n\n"
         "Detected validation errors in the preceding JSON:\n"
@@ -1846,6 +1911,7 @@ def _validate_chunk_prompt(value: dict[str, Any], request: dict[str, Any], raw_j
             warnings.append("Gemma 4 modified or invented dialogue instead of preserving source words")
     warnings.extend(_dialogue_speaker_form_warnings(request, description))
     warnings.extend(_mandatory_coverage_warnings(value, request, description))
+    warnings.extend(_completed_replay_warnings(request, description))
 
     return GemmaChunkPrompt(
         confidence=confidence,
@@ -2157,6 +2223,7 @@ def _validate_timing_plan(value: dict[str, Any], request: dict[str, Any], raw_js
                 f"Source Shot {expected_number} overlays must be an array", raw_json
             )
         overlays: list[GemmaShotTimingOverlay] = []
+        dialogue_cursor = 0
         for overlay_index, raw_overlay in enumerate(raw_overlays, 1):
             if not isinstance(raw_overlay, dict):
                 raise _timing_plan_validation_error(
@@ -2184,6 +2251,10 @@ def _validate_timing_plan(value: dict[str, Any], request: dict[str, Any], raw_js
             # interval with the only frames where that overlay can exist.
             start = max(0, start)
             end = min(duration, end)
+            if overlay_type == "dialogue":
+                start = max(start, dialogue_cursor)
+                end = min(duration, start + dialogue_frame_count(content, float(request["fps"])))
+                dialogue_cursor = end
             if start >= end:
                 continue
             overlays.append(GemmaShotTimingOverlay(start, end, overlay_type, content.strip()))

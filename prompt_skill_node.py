@@ -86,6 +86,10 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             "subjects": len(plan.get("image_subjects", ())),
             "shots": len(plan.get("shots", ())),
             "events": sum(len(item.get("events", ())) for item in plan.get("shots", ())),
+            "requested_duration_seconds": request["requested_duration_seconds"],
+            "minimum_spoken_duration_seconds": request["minimum_spoken_duration_seconds"],
+            "planned_duration_seconds": request["duration_seconds"],
+            "duration_source": request["duration_source"],
             "warnings": list(warnings),
         }
         typed_plan = build_typed_prompt_plan(result, fps=fps)
