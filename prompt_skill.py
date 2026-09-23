@@ -581,6 +581,14 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             result = re.sub(rf"<Entity\s+{re.escape(marker)}>", replacement, result, flags=re.IGNORECASE)
         return result
 
+    character_entities = {
+        str(item.get(field, "")).strip()
+        for shot in value.get("shots", ()) if isinstance(shot, dict)
+        for collection, field in ((shot.get("events", ()), "actor"), (shot.get("dialogues", ()), "speaker"))
+        for item in (collection if isinstance(collection, list) else ()) if isinstance(item, dict)
+        if str(item.get(field, "")).strip()
+    }
+
     def subject_object(raw: Any, index: int) -> dict[str, Any]:
         candidate = raw
         for _ in range(2):
@@ -605,6 +613,12 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
                     if kind_match:
                         kind = {"角色": "character", "场景": "scene", "道具": "prop"}.get(
                             kind_match.group(1), kind_match.group(1).lower()
+                        )
+                    if not kind and text.casefold() == entity_id.casefold():
+                        kind = "character" if entity_id in character_entities else "scene"
+                        warnings.append(
+                            f"Normalized bare image_subjects[{index}]={entity_id!r} to kind={kind} "
+                            "from its actual actor/speaker use; non-performing references remain non-speaking scenes."
                         )
                     if kind:
                         return {

@@ -147,7 +147,26 @@ class PromptSkillTests(unittest.TestCase):
         subject = compiled["shot_plan"]["image_subjects"][0]
         self.assertEqual((subject["entity_id"], subject["kind"]), ("asset_1", "character"))
 
-    def test_rejects_ambiguous_bare_image_subject_string_with_actual_value(self):
+    def test_normalizes_bare_entity_ids_from_actor_and_non_speaking_use(self):
+        request = {
+            **self.request(), "image_count": 2,
+            "source_image_contract": [
+                {"entity_id": "asset_1", "picture": 1, "name": "Hero", "kind": None},
+                {"entity_id": "asset_2", "picture": 2, "name": "梵心桃花林", "kind": None},
+            ],
+        }
+        value = self.result()
+        value["image_subjects"] = ["asset_1", "asset_2"]
+        for shot in value["shots"]:
+            shot["pictures"] = ["asset_1", "asset_2"]
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        subjects = compiled["shot_plan"]["image_subjects"]
+        self.assertEqual([(item["entity_id"], item["kind"]) for item in subjects], [
+            ("asset_1", "character"), ("asset_2", "scene"),
+        ])
+        self.assertTrue(any("image_subjects[2]='asset_2' to kind=scene" in item for item in compiled["warnings"]))
+
+    def test_rejects_ambiguous_bare_image_subject_name_with_actual_value(self):
         value = self.result()
         value["image_subjects"] = ["Hero"]
         with self.assertRaisesRegex(ValueError, "unambiguous serialized object; got 'Hero'"):
