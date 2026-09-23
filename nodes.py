@@ -1489,16 +1489,22 @@ def _pad_h3_keyframe_video(latent, target_video):
     target_h = (int(target_video.shape[-2]) + 1) // 2 * 2
     target_w = (int(target_video.shape[-1]) + 1) // 2 * 2
     source_h, source_w = int(latent.shape[-2]), int(latent.shape[-1])
-    if abs(target_h - source_h) > 1 or abs(target_w - source_w) > 1:
+    if abs(target_h - source_h) > 2 or abs(target_w - source_w) > 2:
         raise ValueError(
             "MiniMax H3 continuation keyframe spatial shape does not match the target: "
             f"keyframe={source_w}x{source_h}, target={target_w}x{target_h} latent pixels"
         )
     aligned = latent[..., :target_h, :target_w]
     if aligned.shape[-1] < target_w:
-        aligned = torch.cat((aligned, aligned[..., -1:]), dim=-1)
+        aligned = torch.cat((
+            aligned,
+            aligned[..., -1:].expand(*aligned.shape[:-1], target_w - aligned.shape[-1]),
+        ), dim=-1)
     if aligned.shape[-2] < target_h:
-        aligned = torch.cat((aligned, aligned[..., -1:, :]), dim=-2)
+        aligned = torch.cat((
+            aligned,
+            aligned[..., -1:, :].expand(*aligned.shape[:-2], target_h - aligned.shape[-2], aligned.shape[-1]),
+        ), dim=-2)
     return aligned
 
 

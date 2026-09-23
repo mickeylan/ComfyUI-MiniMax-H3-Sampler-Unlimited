@@ -1079,6 +1079,15 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             self.assertTrue(torch.equal(keyframe, boundary[..., :38, :]))
             self.assertTrue(torch.equal(ref["latent"], reference[..., :38, :]))
 
+    def test_continuation_conditions_align_one_complete_cross_axis_patch(self):
+        boundary = torch.arange(2 * 38 * 70, dtype=torch.float32).reshape(1, 1, 2, 38, 70)
+        target = torch.zeros((1, 1, 7, 40, 68), dtype=torch.float32)
+        aligned = nodes._pad_h3_keyframe_video(boundary, target)
+        self.assertEqual(tuple(aligned.shape[-2:]), (40, 68))
+        self.assertTrue(torch.equal(aligned[..., :38, :], boundary[..., :, :68]))
+        self.assertTrue(torch.equal(aligned[..., 38:39, :], aligned[..., 37:38, :]))
+        self.assertTrue(torch.equal(aligned[..., 39:40, :], aligned[..., 37:38, :]))
+
     def test_continuation_keyframe_rejects_a_different_spatial_grid(self):
         with self.assertRaisesRegex(ValueError, "spatial shape does not match"):
             nodes._pad_h3_keyframe_video(
