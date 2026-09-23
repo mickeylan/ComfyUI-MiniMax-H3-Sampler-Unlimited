@@ -150,6 +150,24 @@ class PromptSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Ruolin.*Subject 4, not Subject 2"):
             prompt_skill.validate_h3_identity_contract(prompt, plan)
 
+    def test_final_identity_gate_ignores_names_spoken_inside_verbatim_dialogue(self):
+        plan = {
+            "image_subjects": [
+                {"subject": 3, "picture": 3, "kind": "character", "name": "上官若彤"},
+                {"subject": 4, "picture": 4, "kind": "character", "name": "上官若琳"},
+            ]
+        }
+        prompt = (
+            "subject_definitions:\n<Subject 3> 上官若彤\n<Subject 4> 上官若琳\n"
+            "detailed_description:\n<Subject 4> (S2) says: "
+            "<d>[Chinese] 上官若彤，你终于来了。</d> with synchronized visible lip movement."
+        )
+        prompt_skill.validate_h3_identity_contract(prompt, plan)
+
+    def test_final_identity_gate_does_not_infer_binding_from_a_bare_name(self):
+        plan = {"image_subjects": [{"subject": 3, "picture": 3, "kind": "character", "name": "上官若彤"}]}
+        prompt_skill.validate_h3_identity_contract("summary:\n上官若彤 enters.", plan)
+
     def test_rejects_model_owned_subject_labels_before_h3_compilation(self):
         value = self.result()
         value["shots"][0]["start_state"] = "<Subject 1> is incorrectly assigned by the model"

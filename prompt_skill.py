@@ -975,15 +975,18 @@ def validate_h3_identity_contract(prompt: str, plan: dict[str, Any]) -> None:
     unknown = sorted(referenced - set(subjects))
     if unknown:
         raise ValueError("H3 prompt references undeclared Subject(s): " + ", ".join(map(str, unknown)))
+    visual_text = re.sub(r"<d>.*?</d>", "", str(prompt), flags=re.IGNORECASE | re.DOTALL)
     for number, item in subjects.items():
         name = str(item.get("name", "")).strip()
         if name:
-            for match in re.finditer(re.escape(name), str(prompt), re.IGNORECASE):
-                prefix = str(prompt)[max(0, match.start() - 96):match.start()]
-                nearby = re.findall(r"<Subject\s+(\d+)>", prefix, re.IGNORECASE)
-                if nearby and int(nearby[-1]) != number:
+            for match in re.finditer(re.escape(name), visual_text, re.IGNORECASE):
+                prefix = visual_text[:match.start()]
+                marker = re.search(r"<Subject\s+(\d+)>\s*[\(\[]?\s*$", prefix, re.IGNORECASE)
+                if marker is None:
+                    continue
+                if int(marker.group(1)) != number:
                     raise ValueError(
-                        f"H3 identity contract violation: {name!r} is bound to Subject {number}, not Subject {nearby[-1]}"
+                        f"H3 identity contract violation: {name!r} is bound to Subject {number}, not Subject {marker.group(1)}"
                     )
     kinds = {number: str(item.get("kind", "")).strip().lower() for number, item in subjects.items()}
     for number in re.findall(r"<Subject\s+(\d+)>\s*\(S\d+\)", str(prompt), re.IGNORECASE):
