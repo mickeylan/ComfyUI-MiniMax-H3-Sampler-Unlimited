@@ -1057,6 +1057,28 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(tuple(padded.shape), (1, 1, 2, 4, 6))
         self.assertTrue(torch.equal(padded[..., :3, :5], boundary))
 
+    def test_continuation_conditions_crop_one_extra_vae_row_to_target_patch_grid(self):
+        boundary = torch.arange(2 * 39 * 68, dtype=torch.float32).reshape(1, 1, 2, 39, 68)
+        reference = torch.arange(7 * 39 * 68, dtype=torch.float32).reshape(1, 1, 7, 39, 68)
+        target = torch.zeros((1, 1, 7, 38, 68), dtype=torch.float32)
+        conds = nodes._conditioning_for_chunk(
+            {"positive": [{}], "negative": [{}]},
+            0,
+            22,
+            (torch.zeros((1, 1, 1)), {}),
+            video_context=boundary,
+            video_refs=[nodes._video_ref_block(reference)],
+            target_video=target,
+        )
+        for group in ("positive", "negative"):
+            keyframe = conds[group][0]["minimax_keyframes"][0]["latent"]
+            ref = conds[group][0]["minimax_refs"][0]
+            self.assertEqual(tuple(keyframe.shape[-2:]), (38, 68))
+            self.assertEqual(tuple(ref["latent"].shape[-2:]), (38, 68))
+            self.assertEqual((ref["latent_h"], ref["latent_w"]), (38, 68))
+            self.assertTrue(torch.equal(keyframe, boundary[..., :38, :]))
+            self.assertTrue(torch.equal(ref["latent"], reference[..., :38, :]))
+
     def test_continuation_keyframe_rejects_a_different_spatial_grid(self):
         with self.assertRaisesRegex(ValueError, "spatial shape does not match"):
             nodes._pad_h3_keyframe_video(

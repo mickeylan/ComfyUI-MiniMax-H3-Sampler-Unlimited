@@ -1489,19 +1489,17 @@ def _pad_h3_keyframe_video(latent, target_video):
     target_h = (int(target_video.shape[-2]) + 1) // 2 * 2
     target_w = (int(target_video.shape[-1]) + 1) // 2 * 2
     source_h, source_w = int(latent.shape[-2]), int(latent.shape[-1])
-    if source_h > target_h or source_w > target_w or target_h - source_h > 1 or target_w - source_w > 1:
+    if abs(target_h - source_h) > 1 or abs(target_w - source_w) > 1:
         raise ValueError(
             "MiniMax H3 continuation keyframe spatial shape does not match the target: "
             f"keyframe={source_w}x{source_h}, target={target_w}x{target_h} latent pixels"
         )
-    if (source_h, source_w) == (target_h, target_w):
-        return latent
-    padded = latent
-    if source_w < target_w:
-        padded = torch.cat((padded, padded[..., :1]), dim=-1)
-    if source_h < target_h:
-        padded = torch.cat((padded, padded[..., :1, :]), dim=-2)
-    return padded
+    aligned = latent[..., :target_h, :target_w]
+    if aligned.shape[-1] < target_w:
+        aligned = torch.cat((aligned, aligned[..., -1:]), dim=-1)
+    if aligned.shape[-2] < target_h:
+        aligned = torch.cat((aligned, aligned[..., -1:, :]), dim=-2)
+    return aligned
 
 
 def _normalize_h3_video_ref(block):
@@ -1637,8 +1635,17 @@ def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prom
             existing_refs = filter_prompt_plan_picture_items(
                 existing_refs, active_picture_indices, kind_key="kind"
             )
-        if existing_refs or video_refs:
-            cond["minimax_refs"] = [*existing_refs, *(_normalize_h3_video_ref(ref) for ref in video_refs)]
+        combined_refs = [*existing_refs, *(_normalize_h3_video_ref(ref) for ref in video_refs)]
+        if target_video is not None:
+            combined_refs = [
+                _normalize_h3_video_ref({
+                    **ref,
+                    "latent": _pad_h3_keyframe_video(ref.get("latent"), target_video),
+                }) if ref.get("latent") is not None else ref
+                for ref in combined_refs
+            ]
+        if combined_refs:
+            cond["minimax_refs"] = combined_refs
         keyframes = []
         for keyframe in cond.get("minimax_keyframes", ()):
             position = keyframe["resolved_frame_index"]
@@ -2316,6 +2323,7 @@ def _run_debug_memory_preflight(*, guider, sampler, sigmas, chunk_latent, chunk_
             video_context=payload["boundary_video"],
             video_refs=preflight_refs,
             video_context_start=0,
+            target_video=target_video,
         )
         guider.original_conds = preflight_conds
         _log_continuation_payload(
