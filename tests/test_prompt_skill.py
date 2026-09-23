@@ -164,12 +164,50 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual([(item["entity_id"], item["kind"]) for item in subjects], [
             ("asset_1", "character"), ("asset_2", "scene"),
         ])
-        self.assertTrue(any("image_subjects[2]='asset_2' to kind=scene" in item for item in compiled["warnings"]))
+        self.assertTrue(any("Resolved asset_2 kind=scene as a non-speaking visual reference" in item for item in compiled["warnings"]))
+
+    def test_rebuilds_duplicate_omitted_and_out_of_order_subjects_from_source_contract(self):
+        request = {
+            **self.request(), "image_count": 3,
+            "source_image_contract": [
+                {"entity_id": "asset_1", "picture": 1, "name": "Hero", "kind": "character"},
+                {"entity_id": "asset_2", "picture": 2, "name": "Peach Grove", "kind": None},
+                {"entity_id": "asset_3", "picture": 3, "name": "Sword", "kind": "prop"},
+            ],
+        }
+        value = self.result()
+        value["image_subjects"] = [
+            {"entity_id": "asset_2", "kind": "scene", "name": "Peach Grove", "observable_features": "pink trees"},
+            "asset_2",
+            {"entity_id": "asset_1", "kind": "scene", "name": "Hero", "observable_features": "black hair"},
+        ]
+        for shot in value["shots"]:
+            shot["pictures"] = ["asset_1", "asset_2", "asset_3"]
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        subjects = compiled["shot_plan"]["image_subjects"]
+        self.assertEqual(
+            [(item["entity_id"], item["picture"], item["name"], item["kind"]) for item in subjects],
+            [
+                ("asset_1", 1, "Hero", "character"),
+                ("asset_2", 2, "Peach Grove", "scene"),
+                ("asset_3", 3, "Sword", "prop"),
+            ],
+        )
+        self.assertEqual(subjects[1]["observable_features"], "pink trees")
+        self.assertTrue(any("Merged 2 Qwen image_subjects entries for asset_2" in item for item in compiled["warnings"]))
+        self.assertTrue(any("Restored omitted image_subjects entry asset_3" in item for item in compiled["warnings"]))
+        self.assertTrue(any("resolved kind=character" in item for item in compiled["warnings"]))
+
+    def test_rejects_unknown_subject_even_when_other_entries_are_recoverable(self):
+        value = self.result()
+        value["image_subjects"] = ["asset_1", "asset_9"]
+        with self.assertRaisesRegex(ValueError, "unknown entity_id 'asset_9'"):
+            prompt_skill.compile_prompt_skill(value, self.request())
 
     def test_rejects_ambiguous_bare_image_subject_name_with_actual_value(self):
         value = self.result()
         value["image_subjects"] = ["Hero"]
-        with self.assertRaisesRegex(ValueError, "unambiguous serialized object; got 'Hero'"):
+        with self.assertRaisesRegex(ValueError, "must identify a source asset; got 'Hero'"):
             prompt_skill.compile_prompt_skill(value, self.request())
 
     def test_allows_dialogue_only_shot_without_fabricating_visual_events(self):

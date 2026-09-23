@@ -632,67 +632,84 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
                     candidate = decoded
                     continue
                 entity_match = re.search(r"\basset_\d+\b", text, re.IGNORECASE)
-                kind_match = re.search(r"(?:^|[\s,:;|])(character|scene|prop|角色|场景|道具)(?:$|[\s,:;|])", text, re.IGNORECASE)
                 if entity_match:
-                    entity_id = entity_match.group().lower()
-                    source = entity(entity_id, f"image_subjects[{index}]")
-                    kind = str(source.get("kind") or "").strip().lower()
-                    if kind_match:
-                        kind = {"角色": "character", "场景": "scene", "道具": "prop"}.get(
-                            kind_match.group(1), kind_match.group(1).lower()
-                        )
-                    if not kind and text.casefold() == entity_id.casefold():
-                        kind = "character" if entity_id in character_entities else "scene"
-                        warnings.append(
-                            f"Normalized bare image_subjects[{index}]={entity_id!r} to kind={kind} "
-                            "from its actual actor/speaker use; non-performing references remain non-speaking scenes."
-                        )
-                    if kind:
-                        return {
-                            "entity_id": entity_id,
-                            "kind": kind,
-                            "name": str(source.get("name", "")).strip(),
-                            "observable_features": text,
-                        }
+                    kind_match = re.search(r"(?:^|[\s,:;|])(character|scene|prop|角色|场景|道具)(?:$|[\s,:;|])", text, re.IGNORECASE)
+                    kind = "" if kind_match is None else {"角色": "character", "场景": "scene", "道具": "prop"}.get(
+                        kind_match.group(1), kind_match.group(1).lower()
+                    )
+                    return {
+                        "entity_id": entity_match.group().lower(),
+                        "kind": kind,
+                        "observable_features": "" if text.casefold() == entity_match.group().casefold() else text,
+                    }
                 break
             break
         if not isinstance(candidate, dict):
             raise ValueError(
-                f"image_subjects[{index}] must be an object or an unambiguous serialized object; got {raw!r}"
+                f"image_subjects[{index}] must identify a source asset; got {raw!r}"
             )
         return candidate
 
-    normalized = dict(value)
-    normalized_subjects = []
-    seen = set()
+    candidates = {entity_id: [] for entity_id in contract}
     for index, item in enumerate(value["image_subjects"], 1):
         raw = subject_object(item, index)
         if "picture" in raw or "subject" in raw:
             raise ValueError(f"image_subjects[{index}] must use entity_id; Picture/Subject numbers are compiler-owned")
         source = entity(raw.get("entity_id"), f"image_subjects[{index}]")
-        entity_id = str(source["entity_id"])
-        if entity_id in seen:
-            raise ValueError(f"image_subjects repeats entity_id {entity_id}")
-        seen.add(entity_id)
+        candidates[str(source["entity_id"])].append((index, raw))
+
+    normalized = dict(value)
+    normalized_subjects = []
+    valid_kinds = {"character", "scene", "prop"}
+    for entity_id, source in contract.items():
+        entries = candidates[entity_id]
         source_name = str(source.get("name", "")).strip()
-        model_name = str(raw.get("name", "")).strip()
-        if source_name and model_name.casefold() != source_name.casefold():
+        model_names = [str(raw.get("name", "")).strip() for _index, raw in entries if str(raw.get("name", "")).strip()]
+        wrong_names = [name for name in model_names if source_name and name.casefold() != source_name.casefold()]
+        if wrong_names:
             raise ValueError(
-                f"image_subjects[{index}] renamed immutable {entity_id} from {source_name!r} to {model_name!r}"
+                f"image_subjects renamed immutable {entity_id} from {source_name!r} to {wrong_names[0]!r}"
             )
-        kind = str(source.get("kind") or raw.get("kind", "")).strip().lower()
-        if source.get("kind") and str(raw.get("kind", "")).strip().lower() != kind:
-            warnings.append(f"Restored {entity_id} kind={kind} from its source-story binding.")
+        model_kinds = {
+            str(raw.get("kind", "")).strip().lower()
+            for _index, raw in entries
+            if str(raw.get("kind", "")).strip().lower() in valid_kinds
+        }
+        source_kind = str(source.get("kind") or "").strip().lower()
+        if source_kind:
+            kind = source_kind
+        elif entity_id in character_entities:
+            if model_kinds and model_kinds != {"character"}:
+                raise ValueError(
+                    f"event actor {entity_id} is not a character: image_subjects classifies it as "
+                    f"{', '.join(sorted(model_kinds))}, while the same entity is used as an actor or speaker"
+                )
+            kind = "character"
+            if not model_kinds:
+                warnings.append(f"Resolved {entity_id} kind=character from its event actor/dialogue speaker use.")
+        elif len(model_kinds) == 1:
+            kind = next(iter(model_kinds))
+        else:
+            kind = "scene"
+            warnings.append(f"Resolved {entity_id} kind=scene as a non-speaking visual reference.")
+        if len(entries) > 1:
+            warnings.append(f"Merged {len(entries)} Qwen image_subjects entries for {entity_id} into its single source-contract asset.")
+        if not entries:
+            warnings.append(f"Restored omitted image_subjects entry {entity_id} from the complete source contract.")
+        if model_kinds and (len(model_kinds) > 1 or kind not in model_kinds):
+            warnings.append(f"Ignored conflicting Qwen kind values for {entity_id}; resolved kind={kind} from the source/usage contract.")
+        features = []
+        for _index, raw in entries:
+            feature = str(raw.get("observable_features", raw.get("description", ""))).strip()
+            if feature and feature not in features:
+                features.append(feature)
         normalized_subjects.append({
             "entity_id": entity_id,
             "picture": int(source["picture"]),
             "kind": kind,
-            "name": source_name or model_name,
-            "observable_features": str(raw.get("observable_features", raw.get("description", ""))).strip(),
+            "name": source_name or (model_names[0] if model_names else ""),
+            "observable_features": "; ".join(features),
         })
-    missing = sorted(set(contract) - seen)
-    if missing:
-        raise ValueError("Prompt Skill omitted source entities: " + ", ".join(missing))
     resolved_contract = {item["entity_id"]: item for item in normalized_subjects}
 
     shots = []
