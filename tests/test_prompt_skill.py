@@ -131,6 +131,30 @@ class PromptSkillTests(unittest.TestCase):
         self.assertLess(request["duration_seconds"], 21.0)
         self.assertEqual(request["duration_source"], "user")
 
+    def test_allows_dialogue_only_shot_without_fabricating_visual_events(self):
+        value = self.result()
+        value["shots"][0]["events"] = []
+        value["shots"][0].pop("forbidden_replays")
+        value["shots"][0]["dialogues"] = [{
+            "id": "S1.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
+            "language": "English", "text": "Stay here.", "delivery": "quietly",
+        }]
+        request = {**self.request(), "required_spoken_lines": ["Stay here."]}
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        first = compiled["shot_plan"]["shots"][0]
+        self.assertEqual(first["events"], [])
+        self.assertEqual(first["forbidden_replays"], [])
+        self.assertTrue(any(
+            "Normalized missing shots[1].forbidden_replays to an empty array" in warning
+            for warning in compiled["warnings"]
+        ))
+
+    def test_rejects_non_array_event_contract_fields(self):
+        value = self.result()
+        value["shots"][0]["events"] = {"id": "S1.V1"}
+        with self.assertRaisesRegex(ValueError, r"shots\[1\]\.events must be an array"):
+            prompt_skill.compile_prompt_skill(value, self.request())
+
     def test_compiles_six_fields_and_initial_event_ledger(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         for heading in ("subject_definitions:", "summary:", "retention_analysis:",

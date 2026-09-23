@@ -619,6 +619,15 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
         if not isinstance(raw, dict):
             raise ValueError(f"shots[{shot_index}] must be an object")
         shot = dict(raw)
+        for field in ("events", "forbidden_replays"):
+            items = raw.get(field)
+            if items is None:
+                shot[field] = []
+                warnings.append(f"Normalized missing shots[{shot_index}].{field} to an empty array.")
+            elif not isinstance(items, list):
+                raise ValueError(f"shots[{shot_index}].{field} must be an array")
+        if not isinstance(raw.get("dialogues", []), list):
+            raise ValueError(f"shots[{shot_index}].dialogues must be an array")
         shot["pictures"] = [int(entity(item, f"shots[{shot_index}].pictures")["picture"]) for item in raw.get("pictures", ())]
         shot["camera"] = compile_text(raw.get("camera", ""), f"shots[{shot_index}].camera")
         shot["start_state"] = compile_text(raw.get("start_state", ""), f"shots[{shot_index}].start_state")
@@ -757,7 +766,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         events = raw.get("events")
         dialogues = raw.get("dialogues", [])
         forbidden = raw.get("forbidden_replays")
-        if not isinstance(events, list) or not events or not isinstance(forbidden, list):
+        if not isinstance(events, list) or not isinstance(forbidden, list):
             raise ValueError(f"shots[{index}] needs events and forbidden_replays arrays")
         if not isinstance(dialogues, list):
             raise ValueError(f"shots[{index}].dialogues must be an array")
