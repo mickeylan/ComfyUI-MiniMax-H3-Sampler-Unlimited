@@ -308,7 +308,8 @@ def _normalize_shot_intervals(value: Any, total_frames: int) -> tuple[Any, list[
     return normalized, warnings
 
 
-def _restore_required_dialogues(value: Any, required: tuple[str, ...]) -> tuple[Any, list[str]]:
+def _restore_required_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
+    required = tuple(str(item).strip() for item in request.get("required_spoken_lines", ()) if str(item).strip())
     if not required or not isinstance(value, dict) or not isinstance(value.get("shots"), list):
         return value, []
     slots = []
@@ -322,7 +323,33 @@ def _restore_required_dialogues(value: Any, required: tuple[str, ...]) -> tuple[
     if returned == list(required) or "".join(returned) == "".join(required):
         return value, []
     if len(slots) < len(required):
-        return value, []
+        subjects = [str(item).strip() for item in request.get("required_spoken_subjects", ())]
+        if len(subjects) != len(required) or any(not subject for subject in subjects):
+            return value, []
+        speaker_ids = {
+            str(subject).casefold(): str(speaker_id)
+            for speaker_id, subject in request.get("required_speaker_subjects", {}).items()
+        }
+        if any(subject.casefold() not in speaker_ids for subject in subjects):
+            return value, []
+        normalized = dict(value)
+        normalized["shots"] = [dict(shot, dialogues=[]) for shot in value["shots"]]
+        normalized["shots"][0]["dialogues"] = [
+            {
+                "id": f"S1.D{index}",
+                "kind": "dialogue",
+                "speaker": subject,
+                "speaker_id": speaker_ids[subject.casefold()],
+                "language": "Chinese" if re.search(r"[\u3400-\u9fff]", text) else "English",
+                "text": text,
+                "delivery": "自然清晰地" if re.search(r"[\u3400-\u9fff]", text) else "naturally and clearly",
+            }
+            for index, (text, subject) in enumerate(zip(required, subjects), 1)
+        ]
+        return normalized, [
+            "Rebuilt omitted mandatory dialogue occurrences from the authoritative source-story text and speaker bindings; "
+            "Qwen dialogue slots were not trusted."
+        ]
     normalized = dict(value)
     normalized["shots"] = [dict(shot, dialogues=[dict(item) for item in shot.get("dialogues", [])]) for shot in value["shots"]]
     for required_index, text in enumerate(required):
@@ -762,7 +789,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
     value, interval_warnings = _normalize_shot_intervals(value, total_frames)
     value, boundary_state_warnings = _normalize_boundary_states(value)
     required_spoken = tuple(str(item).strip() for item in request.get("required_spoken_lines", ()) if str(item).strip())
-    value, dialogue_restore_warnings = _restore_required_dialogues(value, required_spoken)
+    value, dialogue_restore_warnings = _restore_required_dialogues(value, request)
     value, dialogue_order_warnings = _normalize_dialogue_order(value, required_spoken)
     value, dialogue_timing_warnings = _redistribute_dialogues(value, request)
     plan = validate_storyboard_plan(value, image_count=image_count, total_frames=total_frames)

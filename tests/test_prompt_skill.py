@@ -602,6 +602,27 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(returned, ["前半句后半句"])
         self.assertTrue(any("Restored mandatory spoken lines verbatim" in warning for warning in compiled["warnings"]))
 
+    def test_rebuilds_omitted_mandatory_line_from_source_speaker_contract(self):
+        line = "姐姐，自从你跟太运宗使者比试之后，这十年你都没有怎么好好闭关修炼过。还有不到四十年，太运宗就会派更强的弟子，这样真的来得及吗？"
+        request = prompt_skill.build_prompt_skill_request(
+            f"<Picture 1>是上官若彤四视图；上官若彤说：“{line}”",
+            duration_seconds=2.0, fps=24.0, image_count=1, style="cinematic",
+            shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
+        )
+        value = self.result()
+        value["image_subjects"][0]["name"] = "上官若彤"
+        value["shots"][0]["end_frame"] = 22
+        value["shots"][1]["start_frame"] = 22
+        value["shots"][1]["end_frame"] = request["total_frames"]
+        value["shots"][0]["dialogues"] = []
+        value["shots"][1]["dialogues"] = []
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        dialogues = [item for shot in compiled["shot_plan"]["shots"] for item in shot["dialogues"]]
+        self.assertEqual("".join(item["text"] for item in dialogues), line)
+        self.assertTrue(all(item["speaker"] == "<Subject 1>" for item in dialogues))
+        self.assertTrue(all(item["speaker_id"] == "S1" for item in dialogues))
+        self.assertTrue(any("Rebuilt omitted mandatory dialogue occurrences" in item for item in compiled["warnings"]))
+
     def test_rejects_omitted_mandatory_spoken_line(self):
         request = {**self.request(), "required_spoken_lines": ["Do not leave me."]}
         with self.assertRaisesRegex(ValueError, "exact story order"):
