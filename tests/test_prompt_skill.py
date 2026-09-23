@@ -336,6 +336,47 @@ class PromptSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "renamed immutable asset_1"):
             prompt_skill.compile_prompt_skill(value, request)
 
+    def test_restores_missing_canonical_marker_for_unique_source_name_without_retry(self):
+        request = {
+            **self.request(), "image_count": 2,
+            "source_image_contract": [
+                {"entity_id": "asset_1", "picture": 1, "name": "Hero", "kind": "character"},
+                {"entity_id": "asset_2", "picture": 2, "name": "梵心桃花林", "kind": None},
+            ],
+        }
+        value = self.result()
+        value["image_subjects"] = [
+            {"entity_id": "asset_1", "kind": "character", "name": "Hero", "observable_features": "black hair"},
+            {"entity_id": "asset_2", "kind": "scene", "name": "梵心桃花林", "observable_features": "pink blossoms"},
+        ]
+        for shot in value["shots"]:
+            shot["pictures"] = ["asset_1", "asset_2"]
+        value["shots"][1]["start_state"] = "Hero pauses in 梵心桃花林."
+        value["shots"][1]["description"] = "Hero pauses in 梵心桃花林."
+        normalized, warnings = prompt_skill._resolve_entity_contract(value, request)
+        self.assertIn("<Subject 2> 梵心桃花林", normalized["shots"][1]["description"])
+        self.assertTrue(any(
+            "Restored canonical <Entity asset_2> marker before '梵心桃花林' in shots[2].description" in warning
+            for warning in warnings
+        ))
+
+    def test_rejects_source_name_bound_to_the_wrong_entity_marker(self):
+        request = {
+            **self.request(), "image_count": 2,
+            "source_image_contract": [
+                {"entity_id": "asset_1", "picture": 1, "name": "Hero", "kind": "character"},
+                {"entity_id": "asset_2", "picture": 2, "name": "梵心桃花林", "kind": None},
+            ],
+        }
+        value = self.result()
+        value["image_subjects"] = [
+            {"entity_id": "asset_1", "kind": "character", "name": "Hero", "observable_features": "black hair"},
+            {"entity_id": "asset_2", "kind": "scene", "name": "梵心桃花林", "observable_features": "pink blossoms"},
+        ]
+        value["shots"][1]["description"] = "<Entity asset_1> 梵心桃花林 remains still."
+        with self.assertRaisesRegex(ValueError, "binds '梵心桃花林' to <Entity asset_1>"):
+            prompt_skill._resolve_entity_contract(value, request)
+
     def test_unknown_dialogue_entity_is_rejected_without_subject_guessing(self):
         value = self.result()
         value["shots"][0]["dialogues"] = [

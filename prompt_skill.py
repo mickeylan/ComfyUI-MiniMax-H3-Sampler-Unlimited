@@ -541,6 +541,13 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             raise ValueError(f"{label} references unknown entity_id {key!r}")
         return contract[key]
 
+    warnings = []
+    names = {}
+    for entity_id, source in contract.items():
+        name = str(source.get("name", "")).strip()
+        if name:
+            names.setdefault(name.casefold(), []).append(entity_id)
+
     def compile_text(text: Any, label: str) -> str:
         result = str(text).strip()
         if re.search(r"<(?:Subject|Picture)\s+\d+>", result, re.IGNORECASE):
@@ -549,10 +556,23 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             name = str(source.get("name", "")).strip()
             if not name:
                 continue
-            for match in re.finditer(re.escape(name), result, re.IGNORECASE):
-                prefix = result[max(0, match.start() - 48):match.start()]
-                if re.search(rf"<Entity\s+{re.escape(entity_id)}>", prefix, re.IGNORECASE) is None:
-                    raise ValueError(f"{label} names {name!r} without its canonical <Entity {entity_id}> marker")
+            matches = list(re.finditer(re.escape(name), result, re.IGNORECASE))
+            for match in reversed(matches):
+                prefix = result[:match.start()]
+                marker = re.search(r"<Entity\s+([^>]+)>\s*$", prefix, re.IGNORECASE)
+                if marker:
+                    marked_id = marker.group(1).strip()
+                    if marked_id != entity_id:
+                        raise ValueError(
+                            f"{label} binds {name!r} to <Entity {marked_id}> instead of <Entity {entity_id}>"
+                        )
+                    continue
+                if len(names[name.casefold()]) != 1:
+                    raise ValueError(f"{label} contains ambiguous bare source name {name!r}")
+                result = result[:match.start()] + f"<Entity {entity_id}> " + result[match.start():]
+                warning = f"Restored canonical <Entity {entity_id}> marker before {name!r} in {label}."
+                if warning not in warnings:
+                    warnings.append(warning)
         for marker in re.findall(r"<Entity\s+([^>]+)>", result, re.IGNORECASE):
             source = entity(marker, label)
             replacement = f"<Subject {int(source['picture'])}>"
@@ -563,7 +583,6 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
 
     normalized = dict(value)
     normalized_subjects = []
-    warnings = []
     seen = set()
     for index, raw in enumerate(value["image_subjects"], 1):
         if not isinstance(raw, dict):
