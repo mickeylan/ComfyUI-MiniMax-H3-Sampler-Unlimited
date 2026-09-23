@@ -416,8 +416,7 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     used = [0] * len(shots)
     current_shot = 0
     split_count = 0
-    for original_shot, dialogue in dialogues:
-        current_shot = max(current_shot, original_shot)
+    for _original_shot, dialogue in dialogues:
         remaining = str(dialogue["text"]).strip()
         while remaining:
             while current_shot < len(shots):

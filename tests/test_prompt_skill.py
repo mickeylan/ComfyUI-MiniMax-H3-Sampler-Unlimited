@@ -43,6 +43,30 @@ class PromptSkillTests(unittest.TestCase):
             "warnings": [],
         }
 
+    def test_redistributes_dialogue_from_late_qwen_shot_across_complete_timeline(self):
+        story = '<Subject 1> (S1) says: <d>[Chinese] 这是第一句很长的对白，需要使用前面镜头的时间。</d>'
+        request = prompt_skill.build_prompt_skill_request(
+            story, duration_seconds=2.0, fps=24.0, image_count=1, style="cinematic",
+            shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
+        )
+        value = self.result()
+        midpoint = 22
+        value["shots"][0]["end_frame"] = midpoint
+        value["shots"][1]["start_frame"] = midpoint
+        value["shots"][1]["end_frame"] = request["total_frames"]
+        value["shots"][0]["dialogues"] = []
+        value["shots"][1]["dialogues"] = [{
+            "id": "S2.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
+            "language": "Chinese", "text": "这是第一句很长的对白，需要使用前面镜头的时间。", "delivery": "自然地",
+        }]
+        normalized, warnings = prompt_skill._redistribute_dialogues(value, request)
+        self.assertTrue(normalized["shots"][0]["dialogues"])
+        self.assertEqual(
+            "".join(item["text"] for shot in normalized["shots"] for item in shot["dialogues"]),
+            request["required_spoken_lines"][0],
+        )
+        self.assertTrue(any("Redistributed mandatory dialogue" in warning for warning in warnings))
+
     def test_redistributes_two_long_lines_out_of_one_overloaded_shot(self):
         required = [
             "姐姐，自从你跟太运宗使者比试之后，这十年你都没有怎么好好闭关修炼过。还有不到四十年，太运宗就会派更强的弟子，这样真的来得及吗？",
