@@ -1575,60 +1575,6 @@ def _validate_h3_audio_conditioning(conds):
                     )
 
 
-def _append_audio_with_overlap(parts, current, overlap_steps):
-    overlap = int(overlap_steps)
-    if overlap < 0:
-        raise ValueError("HR Endless Sampler audio overlap cannot be negative")
-    if current.ndim != 4:
-        raise ValueError(f"HR Endless Sampler audio chunk must be [B,C,T,L], got {tuple(current.shape)}")
-    if overlap == 0:
-        parts.append(current.clone())
-        return
-    if not parts:
-        raise ValueError("HR Endless Sampler cannot apply audio overlap without a previous chunk")
-    previous = parts[-1]
-    if previous.ndim != 4 or previous.shape[-1] < overlap or current.shape[-1] <= overlap:
-        raise ValueError(
-            f"HR Endless Sampler audio overlap {overlap} does not fit previous/current shapes "
-            f"{tuple(previous.shape)} and {tuple(current.shape)}"
-        )
-    parts[-1] = previous[..., :-overlap].clone()
-    parts.append(current.clone())
-
-
-def _append_saved_audio(parts, state, delivered_key, overlap_key):
-    overlap = state.get(overlap_key)
-    overlap_steps = int(state.get("audio_overlap_steps", 0) or 0)
-    if overlap is None or overlap_steps == 0:
-        parts.append(state[delivered_key])
-    else:
-        _append_audio_with_overlap(parts, overlap, overlap_steps)
-
-
-def _continuation_audio_context(previous_audio, previous_frame_count, chunk):
-    if previous_audio is None or not chunk.get("synthetic_prefix"):
-        return None, 0.0
-    context_audio_t = int(chunk.get("context_audio_t", 0) or 0)
-    if context_audio_t <= 0:
-        return None, 0.0
-    if previous_audio.ndim != 4 or previous_audio.shape[-1] < context_audio_t:
-        raise ValueError(
-            f"HR Endless Sampler audio continuation needs {context_audio_t} previous latent steps, "
-            f"got shape {tuple(previous_audio.shape)}"
-        )
-    previous_frames = int(previous_frame_count)
-    if previous_frames <= 0:
-        raise ValueError("HR Endless Sampler audio continuation requires a positive previous frame count")
-    overhang = int(previous_audio.shape[-1]) - FRAME_RESCALE * previous_frames
-    if not (-0.5 < overhang < 0.5):
-        raise ValueError(
-            f"HR Endless Sampler previous audio grid is inconsistent: "
-            f"{previous_audio.shape[-1]} steps for {previous_frames} frames"
-        )
-    audio_end_frame = float(chunk.get("output_trim_frames", 0)) + overhang / FRAME_RESCALE
-    return previous_audio[..., -context_audio_t:].clone(), audio_end_frame
-
-
 def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prompt, video_context=None,
                             audio_context=None, audio_end_frame=5.0, video_refs=(), video_context_start=0,
                             target_video=None, active_picture_indices=None):
@@ -3587,9 +3533,9 @@ class HREndlessSampler(SamplerCustomAdvanced):
             try:
                 for state in replay_prior_chunks:
                     output_video.append(state["output_video"])
-                    _append_saved_audio(output_audio, state, "output_audio", "output_audio_with_overlap")
+                    output_audio.append(state["output_audio"])
                     denoised_video.append(state["denoised_video"])
-                    _append_saved_audio(denoised_audio, state, "denoised_audio", "denoised_audio_with_overlap")
+                    denoised_audio.append(state["denoised_audio"])
                     if state.get("debug_prompt"):
                         debug_prompts.append(str(state["debug_prompt"]))
                 previous_state = replay_prior_chunks[-1]
@@ -4234,16 +4180,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 audio_context = None if previous_audio is None or not guide_enabled else previous_audio[..., -guide_audio_t:].clone()
                 video_context_start = 0
                 audio_end_frame = float(keyframe_duration_frames)
-                if audio_context is None and continuation and not (external_active and index == 0):
-                    audio_context, audio_end_frame = _continuation_audio_context(
-                        previous_audio, previous_frame_count, chunk
-                    )
-                    if debug and audio_context is not None:
-                        logging.info(
-                            "HR Endless Sampler chunk %d/%d audio continuation: "
-                            "%d real previous latent steps end-aligned at local frame %.3f.",
-                            index + 1, len(active_plan), audio_context.shape[-1], audio_end_frame,
-                        )
                 if external_active and index == 0:
                     video_context = previous_video.clone()
                     audio_context = previous_audio.clone() if external_audio_mode == "continue" else None
@@ -4597,33 +4533,16 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     if retake_mode == "video_only":
                         assembled_audio = original_state["output_audio"]
                         assembled_denoised_audio = original_state["denoised_audio"]
-                owns_audio_overlap = index > 0 and audio_trim > 0 and not retake_chunks
-                output_audio_with_overlap = previous_audio.clone() if owns_audio_overlap else None
-                denoised_audio_with_overlap = denoised_chunk_audio.clone() if owns_audio_overlap else None
                 if replay_output_on_cpu:
                     output_video.append(assembled_video.to(device="cpu"))
-                    if owns_audio_overlap:
-                        output_audio_with_overlap = output_audio_with_overlap.to(device="cpu")
-                        _append_audio_with_overlap(output_audio, output_audio_with_overlap, audio_trim)
-                    else:
-                        output_audio.append(assembled_audio.to(device="cpu"))
+                    output_audio.append(assembled_audio.to(device="cpu"))
                     denoised_video.append(assembled_denoised_video.to(device="cpu"))
-                    if owns_audio_overlap:
-                        denoised_audio_with_overlap = denoised_audio_with_overlap.to(device="cpu")
-                        _append_audio_with_overlap(denoised_audio, denoised_audio_with_overlap, audio_trim)
-                    else:
-                        denoised_audio.append(assembled_denoised_audio.to(device="cpu"))
+                    denoised_audio.append(assembled_denoised_audio.to(device="cpu"))
                 else:
                     output_video.append(assembled_video)
-                    if owns_audio_overlap:
-                        _append_audio_with_overlap(output_audio, output_audio_with_overlap, audio_trim)
-                    else:
-                        output_audio.append(assembled_audio)
+                    output_audio.append(assembled_audio)
                     denoised_video.append(assembled_denoised_video)
-                    if owns_audio_overlap:
-                        _append_audio_with_overlap(denoised_audio, denoised_audio_with_overlap, audio_trim)
-                    else:
-                        denoised_audio.append(assembled_denoised_audio)
+                    denoised_audio.append(assembled_denoised_audio)
                 chunk_progress.finish(index)
                 completed_chunks = index + 1
                 chunk_total_seconds = timing.finish_chunk(index) or 0.0
@@ -4684,11 +4603,8 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 "previous_frame_count": previous_frame_count,
                                 "output_video": assembled_video,
                                 "output_audio": assembled_audio,
-                                "output_audio_with_overlap": output_audio_with_overlap,
                                 "denoised_video": assembled_denoised_video,
                                 "denoised_audio": assembled_denoised_audio,
-                                "denoised_audio_with_overlap": denoised_audio_with_overlap,
-                                "audio_overlap_steps": audio_trim if owns_audio_overlap else 0,
                                 "output_template": output_template,
                                 "denoised_template": denoised_template,
                                 "source_prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
