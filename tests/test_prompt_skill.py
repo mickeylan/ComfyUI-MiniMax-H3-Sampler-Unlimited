@@ -131,6 +131,28 @@ class PromptSkillTests(unittest.TestCase):
         self.assertLess(request["duration_seconds"], 21.0)
         self.assertEqual(request["duration_source"], "user")
 
+    def test_normalizes_qwen38_serialized_image_subject_objects(self):
+        value = self.result()
+        value["image_subjects"] = [
+            ['{"entity_id":"asset_1","kind":"character","name":"Hero","observable_features":"black hair"}']
+        ]
+        compiled = prompt_skill.compile_prompt_skill(value, self.request())
+        self.assertEqual(compiled["shot_plan"]["image_subjects"][0]["entity_id"], "asset_1")
+        self.assertEqual(compiled["shot_plan"]["image_subjects"][0]["kind"], "character")
+
+    def test_normalizes_unambiguous_compact_image_subject_string(self):
+        value = self.result()
+        value["image_subjects"] = ["asset_1 | character | black hair"]
+        compiled = prompt_skill.compile_prompt_skill(value, self.request())
+        subject = compiled["shot_plan"]["image_subjects"][0]
+        self.assertEqual((subject["entity_id"], subject["kind"]), ("asset_1", "character"))
+
+    def test_rejects_ambiguous_bare_image_subject_string_with_actual_value(self):
+        value = self.result()
+        value["image_subjects"] = ["Hero"]
+        with self.assertRaisesRegex(ValueError, "unambiguous serialized object; got 'Hero'"):
+            prompt_skill.compile_prompt_skill(value, self.request())
+
     def test_allows_dialogue_only_shot_without_fabricating_visual_events(self):
         value = self.result()
         value["shots"][0]["events"] = []

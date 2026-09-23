@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Any
@@ -580,12 +581,51 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             result = re.sub(rf"<Entity\s+{re.escape(marker)}>", replacement, result, flags=re.IGNORECASE)
         return result
 
+    def subject_object(raw: Any, index: int) -> dict[str, Any]:
+        candidate = raw
+        for _ in range(2):
+            if isinstance(candidate, list) and len(candidate) == 1:
+                candidate = candidate[0]
+                continue
+            if isinstance(candidate, str):
+                text = candidate.strip()
+                try:
+                    decoded = json.loads(text)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, (dict, list)):
+                    candidate = decoded
+                    continue
+                entity_match = re.search(r"\basset_\d+\b", text, re.IGNORECASE)
+                kind_match = re.search(r"(?:^|[\s,:;|])(character|scene|prop|角色|场景|道具)(?:$|[\s,:;|])", text, re.IGNORECASE)
+                if entity_match:
+                    entity_id = entity_match.group().lower()
+                    source = entity(entity_id, f"image_subjects[{index}]")
+                    kind = str(source.get("kind") or "").strip().lower()
+                    if kind_match:
+                        kind = {"角色": "character", "场景": "scene", "道具": "prop"}.get(
+                            kind_match.group(1), kind_match.group(1).lower()
+                        )
+                    if kind:
+                        return {
+                            "entity_id": entity_id,
+                            "kind": kind,
+                            "name": str(source.get("name", "")).strip(),
+                            "observable_features": text,
+                        }
+                break
+            break
+        if not isinstance(candidate, dict):
+            raise ValueError(
+                f"image_subjects[{index}] must be an object or an unambiguous serialized object; got {raw!r}"
+            )
+        return candidate
+
     normalized = dict(value)
     normalized_subjects = []
     seen = set()
-    for index, raw in enumerate(value["image_subjects"], 1):
-        if not isinstance(raw, dict):
-            raise ValueError(f"image_subjects[{index}] must be an object")
+    for index, item in enumerate(value["image_subjects"], 1):
+        raw = subject_object(item, index)
         if "picture" in raw or "subject" in raw:
             raise ValueError(f"image_subjects[{index}] must use entity_id; Picture/Subject numbers are compiler-owned")
         source = entity(raw.get("entity_id"), f"image_subjects[{index}]")
