@@ -27,7 +27,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             category="model/sampling/custom",
             description=(
                 "Compile an ordinary story into a repetition-resistant MiniMax H3 prompt and event-owned shot plan. "
-                "Requires a Qwen3.5/3.6/3.8 config; use a separate config set to Gemma 4 for Sampler chunk directing."
+                "Requires the Qwen3.5/3.6/3.8 backend selected by its connected HR Qwen Director Config."
             ),
             inputs=[
                 io.String.Input("story", multiline=True, dynamic_prompts=True),
@@ -60,10 +60,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             raise ValueError("HR H3 Prompt Skill Compiler requires at least one identity/reference picture")
         config = normalize_qwen38_config(director_config)
         if config["backend"] not in QWEN_DIRECTOR_BACKENDS:
-            raise ValueError(
-                "HR H3 Prompt Skill Compiler supports Qwen3.5/3.6/3.8 only. "
-                "Connect a Qwen HR Director Config here and use a separate Gemma 4 config for HR Endless Sampler."
-            )
+            raise ValueError("HR H3 Prompt Skill Compiler requires a Qwen3.5/3.6/3.8 Director Config")
         selection = resolve_director_selection(config["backend"], config["model"], config["mmproj"])
         if selection.model_path is None or selection.mmproj_path is None:
             raise ValueError("Prompt Skill Compiler requires a local matching Qwen model and mmproj")

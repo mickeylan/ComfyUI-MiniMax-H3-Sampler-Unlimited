@@ -31,11 +31,14 @@ class ExampleWorkflowTests(unittest.TestCase):
         self.assertEqual(ledger[1:4], [2602, 2, 2576])
         self.assertEqual(plan[1:4], [2602, 6, 2576])
 
-    def test_chunk_director_is_explicitly_enabled_by_default(self):
+    def test_sampler_uses_its_own_gemma_director_controls(self):
         sampler = self.nodes[2576]
         names = [item["name"] for item in sampler["inputs"]]
         self.assertIn("chunk_director_enabled", names)
         self.assertTrue(sampler["widgets_values_named"]["chunk_director_enabled"])
+        self.assertEqual(sampler["widgets_values_named"]["director_backend"], "gemma4")
+        self.assertIsNone(self.input_link(2576, "director_config"))
+        self.assertEqual(self.nodes[2601]["outputs"][0]["links"], [12])
 
     def test_example_contains_only_active_connected_workflow_nodes(self):
         self.assertTrue(all(node.get("mode", 0) == 0 for node in self.nodes.values()))
