@@ -155,6 +155,8 @@ Hard rules:
 - Preserve every user-provided spoken line verbatim; never translate, paraphrase, shorten, or invent dialogue. A long line may be split into consecutive dialogue fragments across adjacent shots only when those fragments concatenate to the exact original line.
 - The numbered mandatory spoken-line list is chronological and authoritative. dialogues across shots and within each shot must follow that exact global order; never swap speakers or reorder fragments for dramatic effect.
 - Each dialogue contains id, kind, speaker, speaker_id, language, text, and delivery. kind is dialogue, monologue, or voiceover. Use stable speaker IDs S1, S2, ... across all shots.
+- One source utterance may span consecutive real shots. Keep it as one continuous utterance: the compiler assigns one stable utterance_id to all fragments, the first fragment starts speaking, later fragments continue speaking, and a real cut uses <scenetrans>. Never restart the speaker or repeat earlier words.
+- Physical sampler chunk boundaries are not real cuts and never use <scenetrans>. Use <cutoff> only when the complete video's final frame genuinely truncates unfinished source speech, never for a shot or physical chunk boundary.
 - dialogue.text contains only the exact spoken words without quotation marks or <d> tags. dialogue.language names the spoken language, regardless of prompt_lang.
 - Visible referenced speakers use speaker="asset_N". That entity must be classified as kind=character and included in the same shot's pictures list. A scene or prop can never speak.
 - For kind=voiceover, the compiled prompt will state that the corresponding on-screen speaker's lips remain completely closed.
@@ -222,7 +224,7 @@ Return JSON with:
     "camera": "specific camera setup",
     "start_state": "visible opening state",
     "events": [{{"id":"S1.V1","actor":"asset_1","action":"one observable event using <Entity asset_1>","phase":"start"}}],
-    "dialogues": [{{"id":"S1.D1","kind":"dialogue","speaker":"asset_1","speaker_id":"S1","language":"Chinese","text":"exact user-provided words","delivery":"quietly with a warm voice"}}],
+    "dialogues": [{{"id":"S1.D1","utterance_id":"U1","kind":"dialogue","speaker":"asset_1","speaker_id":"S1","language":"Chinese","text":"exact user-provided words","delivery":"quietly with a warm voice"}}],
     "end_state": "visible final state usable by the next shot",
     "forbidden_replays": ["completed event or old composition that must not return"],
     "audio": "ambient, physical, and non-verbal synchronized sound only; exclude dialogue",
@@ -444,8 +446,10 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     used = [0] * len(shots)
     current_shot = 0
     split_count = 0
-    for _original_shot, dialogue in dialogues:
+    for utterance_index, (_original_shot, dialogue) in enumerate(dialogues, 1):
         remaining = str(dialogue["text"]).strip()
+        utterance_id = str(dialogue.get("utterance_id", "")).strip() or f"U{utterance_index}"
+        fragment_index = 0
         while remaining:
             while current_shot < len(shots):
                 capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
@@ -468,12 +472,24 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
                     continue
                 fragment = remaining[:cut]
                 split_count += 1
+            fragment_index += 1
+            next_remaining = remaining[len(fragment):]
             item = dict(dialogue)
             item["text"] = fragment
             item["id"] = f"S{current_shot + 1}.D{len(normalized_shots[current_shot]['dialogues']) + 1}"
+            item["utterance_id"] = utterance_id
+            item["utterance_fragment"] = fragment_index
+            item["utterance_phase"] = (
+                "start_complete" if fragment_index == 1 and not next_remaining
+                else "start" if fragment_index == 1
+                else "complete" if not next_remaining
+                else "continue"
+            )
+            item["continues_from_previous_shot"] = fragment_index > 1
+            item["continues_into_next_shot"] = bool(next_remaining)
             normalized_shots[current_shot]["dialogues"].append(item)
             used[current_shot] += math.ceil(_line_spoken_duration_seconds(fragment) * fps)
-            remaining = remaining[len(fragment):]
+            remaining = next_remaining
             if remaining:
                 current_shot += 1
     returned = "".join(
@@ -545,12 +561,22 @@ def _dialogue_description(item: dict[str, str]) -> str:
     speaker = item["speaker"]
     speaker_id = item["speaker_id"]
     delivery = item["delivery"]
+    continues_from_cut = bool(item.get("continues_from_previous_shot", False))
+    continues_into_cut = bool(item.get("continues_into_next_shot", False))
     tagged = f"<d>[{item['language']}] {item['text']}</d>"
+    if continues_from_cut:
+        lead = f"{speaker} ({speaker_id}) continues speaking seamlessly across the cut, {delivery}: <scenetrans> {tagged}"
+    elif item["kind"] == "voiceover":
+        lead = f"{speaker} ({speaker_id}) says in an off-screen voiceover, {delivery}: {tagged}"
+    elif item["kind"] == "monologue":
+        lead = f"{speaker} ({speaker_id}) speaks an audible monologue, {delivery}: {tagged}"
+    else:
+        lead = f"{speaker} ({speaker_id}) says, {delivery}: {tagged}"
+    if continues_into_cut:
+        lead += " <scenetrans> The same utterance continues uninterrupted into the next shot."
     if item["kind"] == "voiceover":
-        return f"{speaker} ({speaker_id}) says in an off-screen voiceover, {delivery}: {tagged} while the corresponding on-screen character's lips remain completely closed."
-    if item["kind"] == "monologue":
-        return f"{speaker} ({speaker_id}) speaks an audible monologue, {delivery}: {tagged} with synchronized visible lip movement."
-    return f"{speaker} ({speaker_id}) says, {delivery}: {tagged} with synchronized visible lip movement."
+        return lead + " while the corresponding on-screen character's lips remain completely closed."
+    return lead + " with synchronized visible lip movement."
 
 
 def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
@@ -908,6 +934,13 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
             item = {name: str(dialogue.get(name, "")).strip() for name in (
                 "id", "kind", "speaker", "speaker_id", "language", "text", "delivery"
             )}
+            item.update({
+                "utterance_id": str(dialogue.get("utterance_id", "")).strip(),
+                "utterance_fragment": int(dialogue.get("utterance_fragment", 1) or 1),
+                "utterance_phase": str(dialogue.get("utterance_phase", "start_complete")).strip(),
+                "continues_from_previous_shot": bool(dialogue.get("continues_from_previous_shot", False)),
+                "continues_into_next_shot": bool(dialogue.get("continues_into_next_shot", False)),
+            })
             repaired_fields = []
             if not item["id"]:
                 item["id"] = f"S{index}.D{dialogue_index}"
@@ -1190,6 +1223,48 @@ def active_prompt_plan_pictures(plan: dict[str, Any], *, frame_start: int, frame
         for shot in plan["shots"] if shot["start_frame"] < frame_end and shot["end_frame"] > frame_start
         for picture in shot.get("pictures", ()) if isinstance(picture, int) or str(picture).isdigit()
     }))
+
+
+def chunk_dialogue_contract(prompt: str) -> dict[str, Any]:
+    """Extract the sampler-owned exact dialogue contract from one local prompt."""
+    fragments = []
+    for match in _DIALOGUE_TAG.finditer(str(prompt)):
+        prefix = str(prompt)[max(0, match.start() - 500):match.start()]
+        speaker_matches = list(re.finditer(r"\((S\d+(?:\s*,\s*S\d+)*)\)", prefix, re.IGNORECASE))
+        speaker_id = speaker_matches[-1].group(1).replace(" ", "").upper() if speaker_matches else ""
+        fragments.append({
+            "text": match.group(1),
+            "speaker_id": speaker_id,
+            "continues": bool(re.search(r"continues speaking", prefix, re.IGNORECASE)),
+        })
+    return {
+        "fragments": fragments,
+        "scenetrans_count": len(re.findall(r"<scenetrans>", str(prompt), re.IGNORECASE)),
+        "cutoff_count": len(re.findall(r"<cutoff>", str(prompt), re.IGNORECASE)),
+    }
+
+
+def dialogue_contract_warnings(description: str, contract: Any, *, director_name: str) -> list[str]:
+    """Require a director to preserve sampler-owned dialogue verbatim and once."""
+    if not isinstance(contract, dict):
+        return []
+    actual = chunk_dialogue_contract(description)
+    expected = contract.get("fragments", ())
+    warnings = []
+    if [item.get("text") for item in actual["fragments"]] != [item.get("text") for item in expected]:
+        warnings.append(
+            f"{director_name} dialogue contract changed, omitted, reordered, completed, or repeated the exact current-slice <d> fragments"
+        )
+    if [item.get("speaker_id") for item in actual["fragments"]] != [item.get("speaker_id") for item in expected]:
+        warnings.append(f"{director_name} dialogue contract changed the current-slice speaker ID sequence")
+    if actual["scenetrans_count"] != int(contract.get("scenetrans_count", 0)):
+        warnings.append(f"{director_name} dialogue contract changed the real-cut <scenetrans> count")
+    if actual["cutoff_count"] != int(contract.get("cutoff_count", 0)):
+        warnings.append(f"{director_name} dialogue contract changed the final-video <cutoff> count")
+    expected_continuations = [bool(item.get("continues")) for item in expected]
+    if [item["continues"] for item in actual["fragments"]] != expected_continuations:
+        warnings.append(f"{director_name} dialogue contract restarted or stopped an ongoing utterance")
+    return warnings
 
 
 def filter_prompt_plan_picture_items(items: Any, active_pictures: tuple[int, ...], *, kind_key: str) -> list[Any]:

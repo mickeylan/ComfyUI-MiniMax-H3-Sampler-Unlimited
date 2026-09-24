@@ -914,6 +914,61 @@ class PromptSkillTests(unittest.TestCase):
         filtered = prompt_skill.filter_prompt_plan_picture_items(items, (3,), kind_key="kind")
         self.assertEqual([item["id"] for item in filtered], [3, 4])
 
+    def test_long_dialogue_split_across_real_shots_keeps_one_utterance(self):
+        text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
+        value = self.result()
+        value["shots"][0]["dialogues"] = [{
+            "id": "S1.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
+            "language": "Chinese", "text": text, "delivery": "自然地",
+        }]
+        value["shots"][0]["start_frame"], value["shots"][0]["end_frame"] = 0, 80
+        value["shots"][1]["start_frame"], value["shots"][1]["end_frame"] = 80, 160
+        value["shots"][1]["dialogues"] = []
+        request = self.request()
+        request["required_spoken_lines"] = (text,)
+        request["required_spoken_subjects"] = ("<Subject 1>",)
+        request["required_speaker_subjects"] = {"S1": "<Subject 1>"}
+        request["minimum_spoken_duration_seconds"] = 7.0
+        normalized, _warnings = prompt_skill._redistribute_dialogues(value, request)
+        fragments = [item for shot in normalized["shots"] for item in shot["dialogues"]]
+        self.assertGreater(len(fragments), 1)
+        self.assertEqual("".join(item["text"] for item in fragments), text)
+        self.assertEqual(len({item["utterance_id"] for item in fragments}), 1)
+        self.assertEqual([item["utterance_phase"] for item in fragments], ["start", "complete"])
+        first = prompt_skill._dialogue_description(fragments[0])
+        second = prompt_skill._dialogue_description(fragments[1])
+        self.assertIn("says", first)
+        self.assertIn("<scenetrans>", first)
+        self.assertIn("continues speaking seamlessly across the cut", second)
+        self.assertIn("<scenetrans>", second)
+        self.assertNotIn("<cutoff>", first + second)
+
+    def test_chunk_dialogue_contract_rejects_completion_repetition_and_speaker_change(self):
+        authoritative = "<Subject 1> (S1) continues speaking: <d>[Chinese] 后半句</d>"
+        contract = prompt_skill.chunk_dialogue_contract(authoritative)
+        self.assertEqual(prompt_skill.dialogue_contract_warnings(
+            authoritative, contract, director_name="Director"
+        ), [])
+        warnings = prompt_skill.dialogue_contract_warnings(
+            "<Subject 1> (S2) says: <d>[Chinese] 完整句子</d> <d>[Chinese] 后半句</d>",
+            contract, director_name="Director",
+        )
+        self.assertTrue(any("changed, omitted, reordered, completed, or repeated" in item for item in warnings))
+        self.assertTrue(any("speaker ID" in item for item in warnings))
+        self.assertTrue(any("restarted" in item for item in warnings))
+
+    def test_real_cut_marker_appears_only_at_the_real_shot_boundary(self):
+        dialogue = {
+            "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
+            "language": "Chinese", "text": "这句话跨越真实镜头切换", "delivery": "自然地",
+            "continues_into_next_shot": True,
+        }
+        description = prompt_skill._dialogue_description(dialogue)
+        early = prompt_skill.slice_dialogue_for_interval(description, 0, 40, 0, 20)
+        boundary = prompt_skill.slice_dialogue_for_interval(description, 0, 40, 20, 40)
+        self.assertNotIn("<scenetrans>", early)
+        self.assertIn("<scenetrans>", boundary)
+
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
         plan = {
@@ -943,6 +998,8 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual("".join(fragments), text)
         self.assertIn("[Shot 1]", prompts[0])
         self.assertTrue(all("[Shot 1]" not in prompt for prompt in prompts[1:]))
+        self.assertTrue(all("<scenetrans>" not in prompt for prompt in prompts))
+        self.assertTrue(all("continues speaking" in prompt for prompt in prompts[1:]))
         self.assertNotIn("without a cut, reframing, zoom", prompts[0])
         self.assertTrue(all("without a cut, reframing, zoom" in prompt for prompt in prompts[1:]))
         self.assertIn("turns once", prompts[0])

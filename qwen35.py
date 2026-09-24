@@ -22,12 +22,12 @@ from PIL import Image
 try:
     from .director_errors import DirectorDependencyError, DirectorObservationError, DirectorWorkerError
     from .story_format import compile_h3_prompt, validate_storyboard_plan
-    from .prompt_skill import compile_prompt_skill, prompt_skill_messages
+    from .prompt_skill import compile_prompt_skill, dialogue_contract_warnings, prompt_skill_messages
     from .dialogue_timing import dialogue_frame_count, slice_dialogue_for_interval
 except ImportError:  # Direct worker execution.
     from director_errors import DirectorDependencyError, DirectorObservationError, DirectorWorkerError
     from story_format import compile_h3_prompt, validate_storyboard_plan
-    from prompt_skill import compile_prompt_skill, prompt_skill_messages
+    from prompt_skill import compile_prompt_skill, dialogue_contract_warnings, prompt_skill_messages
     from dialogue_timing import dialogue_frame_count, slice_dialogue_for_interval
 
 
@@ -316,6 +316,12 @@ def _chunk_messages(request: dict[str, Any]) -> tuple[str, str]:
         "previous_characters": json.dumps(request.get("previous_last_seen_character_state", ()), ensure_ascii=False),
     }
     prompt = _render(templates["CHUNK_USER"], values)
+    prompt += (
+        "\n\nSampler-owned exact dialogue contract for this retained slice. Copy every <d> fragment exactly once, "
+        "in order, with exact speaker IDs and continuation state. Do not complete, paraphrase, omit, or repeat "
+        "speech; preserve exact <scenetrans>/<cutoff> counts:\n"
+        + json.dumps(request.get("dialogue_contract", {}), ensure_ascii=False, indent=2)
+    )
     if request.get("missing_prompt_repair"):
         prompt += ("\n\nCORRECTION: Your previous JSON omitted the required H3 prompt text. Return exactly one JSON object "
                    "using this schema: {\"confidence\":\"high|medium|low\",\"analysis\":\"brief factual check\","
@@ -323,6 +329,14 @@ def _chunk_messages(request: dict[str, Any]) -> tuple[str, str]:
                    "\"timing_plan\":\"brief timing summary\",\"end_state\":\"visible final state\","
                    "\"last_seen_character_state\":[]}. detailed_description must not be empty. "
                    "Do not return {}, markdown, or prose outside the JSON object.")
+    if request.get("dialogue_contract_repair"):
+        prompt += (
+            "\n\nCORRECTION: Your previous chunk prompt violated the sampler-owned exact dialogue contract. "
+            "Return a complete replacement JSON object. Copy every permitted <d> fragment exactly once, in order, "
+            "with the exact speaker IDs and continuation state. Do not complete, paraphrase, omit, or repeat speech; "
+            "preserve the exact <scenetrans>/<cutoff> counts. Contract:\n"
+            + json.dumps(request.get("dialogue_contract", {}), ensure_ascii=False, indent=2)
+        )
     if request.get("completed_replay_repair"):
         forbidden = "\n".join(
             f"- {item.get('id')}: {item.get('action')}"
@@ -569,6 +583,13 @@ def _chunk_prompt(value: dict[str, Any], raw: str, system: str, prompt: str, req
         raise Qwen35ObservationError(
             f"Qwen response contains no usable H3 prompt text; returned keys: {keys}",
             raw_json=raw,
+        )
+    contract_warnings = dialogue_contract_warnings(
+        description, (request or {}).get("dialogue_contract"), director_name="Qwen"
+    )
+    if contract_warnings:
+        raise Qwen35ObservationError(
+            "Qwen dialogue contract violation: " + "; ".join(contract_warnings), raw_json=raw
         )
     description, stripped_replays = _strip_completed_replays(description, request or {})
     repeated = _completed_replay_ids(description, request or {})
@@ -1228,6 +1249,12 @@ def _run_worker(request: dict[str, Any], timing: bool):
         repair_attempts += 1
         payload["missing_prompt_repair"] = repair_attempts
         logging.warning("HR Endless Sampler Qwen omitted the H3 chunk prompt; correction attempt %d/2.", repair_attempts)
+        process, value = _run_worker_once(payload)
+    if (not timing and not value.get("ok")
+            and value.get("error_type") == "Qwen35ObservationError"
+            and str(value.get("message", "")).startswith("Qwen dialogue contract violation:")):
+        payload["dialogue_contract_repair"] = True
+        logging.warning("HR Endless Sampler Qwen violated the exact dialogue contract; requesting one corrected chunk prompt.")
         process, value = _run_worker_once(payload)
     if (not timing and not value.get("ok")
             and value.get("error_type") == "Qwen35ObservationError"

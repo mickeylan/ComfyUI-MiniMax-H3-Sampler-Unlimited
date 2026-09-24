@@ -39,7 +39,7 @@ from .gemma4 import (
 )
 from .preview import begin_preview_execution
 from .prompt_skill import (
-    active_prompt_plan_pictures, filter_prompt_plan_picture_items,
+    active_prompt_plan_pictures, chunk_dialogue_contract, filter_prompt_plan_picture_items,
     localize_prompt_from_plan, normalize_prompt_plan, project_prompt_plan_interval,
     prompt_plan_shots, validate_h3_identity_contract,
 )
@@ -3570,6 +3570,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
         previous_gemma_timing_plan = None
         previous_gemma_end_state = None
         previous_gemma_last_seen_character_state = None
+        previous_dialogue_contract = None
         if initial_event_ledger is None:
             previous_event_ledger = {"completed": [], "active": [], "pending": [], "forbidden": []}
         else:
@@ -3606,6 +3607,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 previous_gemma_timing_plan = previous_state.get("gemma_timing_plan")
                 previous_gemma_end_state = previous_state.get("gemma_end_state")
                 previous_gemma_last_seen_character_state = previous_state.get("gemma_last_seen_character_state")
+                previous_dialogue_contract = previous_state.get("dialogue_contract")
                 previous_event_ledger = previous_state.get("gemma_event_ledger") or {
                     "completed": [], "active": [], "pending": [], "forbidden": [],
                 }
@@ -3621,6 +3623,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     previous_gemma_timing_plan = None
                     previous_gemma_end_state = None
                     previous_gemma_last_seen_character_state = None
+                    previous_dialogue_contract = None
                     previous_event_ledger = {"completed": [], "active": [], "pending": [], "forbidden": []}
                     logging.info(
                         "HR Endless Sampler replay: discarded stale prior Gemma text; "
@@ -4001,6 +4004,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 gemma_observation_prompt = None
                 gemma_response = None
                 gemma_validation_warnings = ()
+                current_dialogue_contract = chunk_dialogue_contract(planned_prompts[index][0])
                 if gemma_director is not None:
                     observation_frames = None
                     try:
@@ -4079,6 +4083,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                             "previous_gemma_end_state": previous_gemma_end_state,
                             "previous_last_seen_character_state": previous_gemma_last_seen_character_state,
                             "previous_event_ledger": previous_event_ledger,
+                            "previous_dialogue_contract": previous_dialogue_contract,
                             "target_shots": target_shots,
                             "preproduction_timing_plan": gemma_preproduction_timing_plan.for_target_shots(
                                 target_shots,
@@ -4101,6 +4106,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 include_video1_reference,
                             ),
                             "original_prompt": planned_prompts[index][0],
+                            "dialogue_contract": current_dialogue_contract,
                         }
                         if gemma_preproduction_cache_ready and gemma_preproduction_cache is not None:
                             request["preproduction_cache"] = gemma_preproduction_cache.worker_spec()
@@ -4259,6 +4265,28 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 if audio_context is not None and not audio_end_includes_grid_offset:
                     overhang = previous_audio.shape[-1] - FRAME_RESCALE * previous_frame_count
                     audio_end_frame += overhang / FRAME_RESCALE
+                audio_context_steps = int(audio_context.shape[-1]) if audio_context is not None else 0
+                audio_context_start_frame = (
+                    audio_end_frame - audio_context_steps / FRAME_RESCALE
+                    if audio_context is not None else None
+                )
+                logging.info(
+                    "HR Endless Sampler audio timeline chunk %d/%d: "
+                    "frames=[%d,%d), audio=[%d,%d), context_audio_t=%d, "
+                    "audio_keyframe=%s, chunk_input_audio_t=%d.",
+                    index + 1,
+                    len(active_plan),
+                    int(chunk["frame_start"]),
+                    int(chunk["frame_end"]),
+                    int(chunk["audio_start"]),
+                    int(chunk["audio_end"]),
+                    int(context_audio_t),
+                    (
+                        f"[{audio_context_start_frame:.3f},{audio_end_frame:.3f}) frames/{audio_context_steps} steps"
+                        if audio_context is not None else "none"
+                    ),
+                    int(chunk_audio.shape[-1]),
+                )
                 video_items = []
                 video_refs = []
                 boundary_video_context = None
@@ -4632,6 +4660,20 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         _append_audio_with_overlap(denoised_audio, denoised_audio_with_overlap, audio_trim)
                     else:
                         denoised_audio.append(assembled_denoised_audio)
+                cumulative_audio_t = sum(int(part.shape[-1]) for part in output_audio)
+                logging.info(
+                    "HR Endless Sampler audio assembly chunk %d/%d: raw_audio_t=%d, trim_audio_t=%d, "
+                    "overlap_owner=%s, assembled_chunk_audio_t=%d, cumulative_audio_t=%d, "
+                    "expected_cumulative_audio_t=%d.",
+                    index + 1,
+                    len(active_plan),
+                    int(previous_audio.shape[-1]),
+                    int(audio_trim),
+                    "later_chunk" if owns_audio_overlap else "none",
+                    int(assembled_audio.shape[-1]),
+                    cumulative_audio_t,
+                    _audio_steps(int(chunk["frame_end"])),
+                )
                 chunk_progress.finish(index)
                 completed_chunks = index + 1
                 chunk_total_seconds = timing.finish_chunk(index) or 0.0
@@ -4667,6 +4709,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                             name: [dict(item) for item in ledger.get(name, ()) if isinstance(item, dict)]
                             for name in ("completed", "active", "pending", "forbidden")
                         }
+                    previous_dialogue_contract = current_dialogue_contract
                 if replay_cache is not None and retake_chunks:
                     try:
                         replay_cache.save_revision(index + 1, {
@@ -4705,6 +4748,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 "gemma_end_state": previous_gemma_end_state,
                                 "gemma_last_seen_character_state": previous_gemma_last_seen_character_state,
                                 "gemma_event_ledger": previous_event_ledger,
+                                "dialogue_contract": previous_dialogue_contract,
                                 "h3_render_seconds": h3_render_seconds,
                                 "gemma_seconds": chunk_gemma_seconds,
                                 "gemma_preproduction_seconds": chunk_preproduction_seconds,
@@ -4732,6 +4776,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 "director_end_state": previous_gemma_end_state,
                                 "director_last_seen_character_state": previous_gemma_last_seen_character_state,
                                 "director_event_ledger": previous_event_ledger,
+                                "dialogue_contract": previous_dialogue_contract,
                             },
                             observation_image_directory=gemma_image_log,
                         )
@@ -4848,6 +4893,16 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 f"HR Endless Sampler assembled video length mismatch: expected {expected_video_t} latent steps, "
                 f"got output={final_output_video.shape[2]}, denoised={final_denoised_video.shape[2]}"
             )
+        logging.info(
+            "HR Endless Sampler final AV timeline: rendered_frames=%d, expected_video_t=%d, "
+            "output_video_t=%d, expected_audio_t=%d, output_audio_t=%d, denoised_audio_t=%d.",
+            rendered_frames,
+            expected_video_t,
+            int(final_output_video.shape[2]),
+            expected_audio_t,
+            int(final_output_audio.shape[-1]),
+            int(final_denoised_audio.shape[-1]),
+        )
         if final_output_audio.shape[-1] != expected_audio_t or final_denoised_audio.shape[-1] != expected_audio_t:
             raise RuntimeError(
                 f"HR Endless Sampler assembled audio length mismatch: expected {expected_audio_t} latent steps, "

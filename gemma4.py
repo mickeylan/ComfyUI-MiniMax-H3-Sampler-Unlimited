@@ -34,10 +34,10 @@ from typing import Any, Sequence
 
 try:
     from .dialogue_timing import dialogue_frame_count, slice_dialogue_for_interval
-    from .prompt_skill import compile_prompt_skill, prompt_skill_messages
+    from .prompt_skill import compile_prompt_skill, dialogue_contract_warnings, prompt_skill_messages
 except ImportError:  # Direct test/worker execution.
     from dialogue_timing import dialogue_frame_count, slice_dialogue_for_interval
-    from prompt_skill import compile_prompt_skill, prompt_skill_messages
+    from prompt_skill import compile_prompt_skill, dialogue_contract_warnings, prompt_skill_messages
 
 import torch
 from PIL import Image
@@ -1441,6 +1441,7 @@ def _contract_validation_warnings(warnings: Sequence[str]) -> tuple[str, ...]:
             "marker" in warning.lower()
             or "mandatory coverage" in warning.lower()
             or "dialogue speaker form" in warning.lower()
+            or "dialogue contract" in warning.lower()
             or "last-seen character state" in warning.lower()
             or "completed beat" in warning.lower()
         )
@@ -1680,6 +1681,8 @@ def _chunk_contract_correction_request(request: dict[str, Any], warnings: Sequen
         "official form <Subject N> (Sx) before that line, not Name (<Subject N>) (Sx). Use evidence copied exactly "
         "from your rewritten detailed_description.\n\nMapped dialogue speaker form:\n"
         + speaker_forms
+        + "\n\nSampler-owned exact dialogue contract (copy every fragment once, in order; do not complete or paraphrase it):\n"
+        + json.dumps(request.get("dialogue_contract", {}), ensure_ascii=False, indent=2)
         + "\n\nH3 local marker contract:\n"
         f"{_required_local_markers(shots)}\n\n"
         "Persistent last-seen character state contract:\n"
@@ -1903,6 +1906,9 @@ def _validate_chunk_prompt(value: dict[str, Any], request: dict[str, Any], raw_j
         if not text or not any(text in source or source in text for source in source_dialogue):
             warnings.append("Gemma 4 modified or invented dialogue instead of preserving source words")
     warnings.extend(_dialogue_speaker_form_warnings(request, description))
+    warnings.extend(dialogue_contract_warnings(
+        description, request.get("dialogue_contract"), director_name="Gemma 4"
+    ))
     warnings.extend(_mandatory_coverage_warnings(value, request, description))
     warnings.extend(_completed_replay_warnings(request, description))
 
@@ -2401,6 +2407,12 @@ def _render_observation_messages(
             "chunk_generation_request": _chunk_generation_request(target_shots, current),
             "original_prompt": str(request["original_prompt"]),
         },
+    )
+    message += (
+        "\n\nSampler-owned exact dialogue contract for this retained slice. Copy every <d> fragment exactly once, "
+        "in order, with the exact speaker IDs and continuation state. Do not complete, paraphrase, omit, or repeat "
+        "speech; preserve the exact <scenetrans>/<cutoff> counts:\n"
+        + json.dumps(request.get("dialogue_contract", {}), ensure_ascii=False, indent=2)
     )
     system = templates["SYSTEM"] + "\n\n" + _minimax_prompt_reference(str(request["prompt_mode"]))
     return system, message
