@@ -23,6 +23,22 @@ import gemma4_mtp  # noqa: E402
 
 
 class GemmaCaptureTest(unittest.TestCase):
+    def test_mtp_resolves_only_beside_selected_model_without_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "selected-gemma.gguf"
+            mtp = root / "my-selected-mtp.gguf"
+            model.touch()
+            mtp.touch()
+            self.assertEqual(gemma4._ensure_mtp_model_file(model), mtp.resolve())
+
+    def test_missing_local_mtp_reports_selected_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Path(directory) / "selected-gemma.gguf"
+            model.touch()
+            with self.assertRaisesRegex(gemma4.Gemma4DependencyError, "Automatic download is disabled"):
+                gemma4._ensure_mtp_model_file(model)
+
     def test_prompt_skill_compile_uses_gemma_worker_without_backend_substitution(self):
         director = gemma4.Gemma4ContinuityDirector(gemma4_mtp=True)
         image = torch.zeros((1, 8, 8, 3), dtype=torch.float32)

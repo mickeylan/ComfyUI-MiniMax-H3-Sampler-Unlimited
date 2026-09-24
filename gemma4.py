@@ -655,32 +655,28 @@ def _model_files_for_request(request: dict[str, Any]) -> tuple[Path, Path]:
     return model_path, mmproj_path
 
 
-def _ensure_mtp_model_file() -> Path:
-    """Return the small Gemma QAT assistant head, downloading it once."""
-    model_path, _ = _model_paths()
-    mtp_path = model_path.parent / GEMMA4_MTP_FILENAME
-    if mtp_path.is_file():
-        return mtp_path
-
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as error:
-        raise Gemma4DependencyError(
-            "Gemma 4 MTP requires huggingface-hub. Install this custom node's requirements.txt."
-        ) from error
-
-    mtp_path.parent.mkdir(parents=True, exist_ok=True)
-    logging.info(
-        "HR Endless Sampler is downloading the Gemma 4 MTP assistant to %s. "
-        "This one-time download is about 465 MB.",
-        mtp_path.parent,
+def _ensure_mtp_model_file(model_path: Path) -> Path:
+    """Resolve the local MTP head beside the user-selected Gemma model."""
+    model_path = Path(model_path).resolve()
+    directory = model_path.parent
+    exact = directory / GEMMA4_MTP_FILENAME
+    if exact.is_file():
+        return exact
+    candidates = sorted(
+        (path for path in directory.glob("*.gguf") if "mtp" in path.name.casefold()),
+        key=lambda path: path.name.casefold(),
     )
-    return Path(
-        hf_hub_download(
-            repo_id=GEMMA4_MTP_REPOSITORY,
-            filename=GEMMA4_MTP_FILENAME,
-            local_dir=mtp_path.parent,
+    if len(candidates) == 1:
+        return candidates[0].resolve()
+    if len(candidates) > 1:
+        names = ", ".join(path.name for path in candidates)
+        raise Gemma4DependencyError(
+            f"Multiple local Gemma 4 MTP GGUF files were found beside the selected model {model_path.name}: {names}. "
+            f"Keep only the intended MTP file or name it {GEMMA4_MTP_FILENAME}."
         )
+    raise Gemma4DependencyError(
+        f"Gemma 4 MTP is enabled, but no local MTP GGUF was found beside the selected model: {directory}. "
+        f"Place {GEMMA4_MTP_FILENAME} in that directory or disable MTP. Automatic download is disabled."
     )
 
 
@@ -1022,10 +1018,9 @@ def _create_runtime_llm(
         "verbose": False,
     }
     if gemma4_mtp and real_runtime:
-        # Download before allocating the target. Unlike the retired adapter,
-        # failure is fatal: an enabled comparison toggle must never silently
-        # run the ordinary decoder and report it as MTP.
-        mtp_path = _ensure_mtp_model_file()
+        # Resolve only beside the user-selected target model. Never download or
+        # silently substitute a draft model from another directory.
+        mtp_path = _ensure_mtp_model_file(model_path)
         import llama_cpp
 
         if hasattr(llama_cpp, "SpecConfig") and hasattr(llama_cpp, "SpeculativeType"):
