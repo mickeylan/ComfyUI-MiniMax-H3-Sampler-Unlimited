@@ -118,8 +118,6 @@ class PromptSkillTests(unittest.TestCase):
         self.assertGreater(request["minimum_spoken_duration_seconds"], 6.0)
         self.assertGreater(request["duration_seconds"], 6.0)
         self.assertEqual((request["total_frames"] - 5) % 17, 0)
-        natural_grid_frames = prompt_skill.planned_frame_count(request["minimum_spoken_duration_seconds"], request["fps"])
-        self.assertEqual(request["total_frames"], natural_grid_frames + 17)
         self.assertEqual(request["duration_source"], "dialogue")
         _system, user = prompt_skill.prompt_skill_messages(request)
         self.assertIn("Estimated duration for the exact spoken content", user)

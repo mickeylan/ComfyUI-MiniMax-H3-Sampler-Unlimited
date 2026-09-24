@@ -1434,8 +1434,6 @@ def build_prompt_skill_request(story: str, *, duration_seconds: float, fps: floa
     duration_source = "dialogue" if spoken_lines else "user"
     effective_duration = minimum_spoken_duration if spoken_lines else float(duration_seconds)
     total_frames = planned_frame_count(effective_duration, fps)
-    if spoken_lines:
-        total_frames += 17
     return {
         "story": story.strip(),
         "requested_duration_seconds": float(duration_seconds),
