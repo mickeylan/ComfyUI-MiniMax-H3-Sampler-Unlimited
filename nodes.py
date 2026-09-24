@@ -86,7 +86,7 @@ GEMMA_PROMPT_LOG_DIRNAME = "comfyui-hr-endless-sampler"
 GEMMA_PROMPT_LOG_FILENAME = "last_gemma_chunk_prompts.txt"
 GEMMA_IMAGE_LOG_DIRNAME = "last_gemma_images"
 REPLAY_CACHE_DIRNAME = "last_run_replay"
-REPLAY_CACHE_FORMAT = 3
+REPLAY_CACHE_FORMAT = 4
 REPLAY_HISTORY_DIRNAME = "history"
 REPLAY_HISTORY_LIMIT = 5
 _REPLAY_RUN_ID = re.compile(r"^[a-f0-9]{32}$")
@@ -1022,8 +1022,8 @@ def _log_chunk_prompt_zh(index, chunk_count, chunk, picture_indices, mandatory_c
     )
 
 
-def _needs_chunk_director(typed_prompt_plan, shots, continuation_state, external_active):
-    return typed_prompt_plan is None and bool(shots) and continuation_state is None and not external_active
+def _needs_chunk_director(enabled, shots, continuation_state, external_active):
+    return bool(enabled) and bool(shots) and continuation_state is None and not external_active
 
 
 def _director_segment_values(segment):
@@ -1573,6 +1573,60 @@ def _validate_h3_audio_conditioning(conds):
                         f"HR Endless Sampler {group}[{cond_index}] keyframe[{keyframe_index}] "
                         f"audio latent must be [B,C,T,L], got {tuple(audio_latent.shape)}"
                     )
+
+
+def _append_audio_with_overlap(parts, current, overlap_steps):
+    overlap = int(overlap_steps)
+    if overlap < 0:
+        raise ValueError("HR Endless Sampler audio overlap cannot be negative")
+    if current.ndim != 4:
+        raise ValueError(f"HR Endless Sampler audio chunk must be [B,C,T,L], got {tuple(current.shape)}")
+    if overlap == 0:
+        parts.append(current.clone())
+        return
+    if not parts:
+        raise ValueError("HR Endless Sampler cannot apply audio overlap without a previous chunk")
+    previous = parts[-1]
+    if previous.ndim != 4 or previous.shape[-1] < overlap or current.shape[-1] <= overlap:
+        raise ValueError(
+            f"HR Endless Sampler audio overlap {overlap} does not fit previous/current shapes "
+            f"{tuple(previous.shape)} and {tuple(current.shape)}"
+        )
+    parts[-1] = previous[..., :-overlap].clone()
+    parts.append(current.clone())
+
+
+def _append_saved_audio(parts, state, delivered_key, overlap_key):
+    overlap = state.get(overlap_key)
+    overlap_steps = int(state.get("audio_overlap_steps", 0) or 0)
+    if overlap is None or overlap_steps == 0:
+        parts.append(state[delivered_key])
+    else:
+        _append_audio_with_overlap(parts, overlap, overlap_steps)
+
+
+def _continuation_audio_context(previous_audio, previous_frame_count, chunk):
+    if previous_audio is None or not chunk.get("synthetic_prefix"):
+        return None, 0.0
+    context_audio_t = int(chunk.get("context_audio_t", 0) or 0)
+    if context_audio_t <= 0:
+        return None, 0.0
+    if previous_audio.ndim != 4 or previous_audio.shape[-1] < context_audio_t:
+        raise ValueError(
+            f"HR Endless Sampler audio continuation needs {context_audio_t} previous latent steps, "
+            f"got shape {tuple(previous_audio.shape)}"
+        )
+    previous_frames = int(previous_frame_count)
+    if previous_frames <= 0:
+        raise ValueError("HR Endless Sampler audio continuation requires a positive previous frame count")
+    overhang = int(previous_audio.shape[-1]) - FRAME_RESCALE * previous_frames
+    if not (-0.5 < overhang < 0.5):
+        raise ValueError(
+            f"HR Endless Sampler previous audio grid is inconsistent: "
+            f"{previous_audio.shape[-1]} steps for {previous_frames} frames"
+        )
+    audio_end_frame = float(chunk.get("output_trim_frames", 0)) + overhang / FRAME_RESCALE
+    return previous_audio[..., -context_audio_t:].clone(), audio_end_frame
 
 
 def _conditioning_for_chunk(original_conds, frame_start, frame_end, encoded_prompt, video_context=None,
@@ -2935,6 +2989,12 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                  tooltip="Qwen3.6/Qwen3.8: offload all MoE expert weights to CPU memory. This reduces VRAM but is usually slower."),
                 io.Int.Input("director_n_cpu_moe", default=0, min=0, max=256, step=1,
                              tooltip="Qwen3.6/Qwen3.8: offload experts in the first N layers. Ignored when director_cpu_moe is enabled."),
+                io.Boolean.Input(
+                    "chunk_director_enabled", default=True,
+                    tooltip=("Run the selected Gemma/Qwen visual director for every physical chunk. "
+                             "When prompt_plan is connected, the plan remains the hard timing, subject, camera, "
+                             "dialogue, and reference boundary while the director observes rendered continuity."),
+                ),
                 HRDirectorConfig.Input(
                     "director_config",
                     optional=True,
@@ -2976,7 +3036,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 source_images=None, video_continuation=22, video_continuation_res="full", vae=None, retake_plan=None,
                 cache_gemma_preproduction=False, gemma4_mtp=True, director_mtp_draft_tokens=2,
                 director_reasoning_effort="xhigh", director_cpu_moe=False, director_n_cpu_moe=0,
-                pytorch_memory_fraction=DEFAULT_PYTORCH_MEMORY_FRACTION,
+                chunk_director_enabled=True, pytorch_memory_fraction=DEFAULT_PYTORCH_MEMORY_FRACTION,
                 debug=False, debug_stop_chunk=0, debug_start_chunk=0, director_backend="gemma4",
                 director_model="auto", director_mmproj="auto", director_config=None, reference_set=None,
                 continuation_plan=None, external_continuation=None, initial_event_ledger=None, prompt_plan=None,
@@ -3159,11 +3219,11 @@ class HREndlessSampler(SamplerCustomAdvanced):
             _gemma_description_end = None
         else:
             _gemma_markers, gemma_shots, _gemma_description_end = _parse_prompt_shots(prompt, plan[-1]["frame_end"], fps)
-        # A connected typed prompt plan is already the validated semantic and camera contract.
-        # Physical sampler chunks may project it by frame range, but must not ask a second
-        # director to rewrite subjects, dialogue, actions, or camera language.
+        # The typed plan owns timing, subjects, references, dialogue, events, and camera cuts.
+        # The optional chunk director still observes rendered evidence and writes the bounded
+        # local description; connecting a plan must never disable that continuity pass.
         gemma_director_needed = _needs_chunk_director(
-            typed_prompt_plan, gemma_shots, continuation_state, external_active
+            chunk_director_enabled, gemma_shots, continuation_state, external_active
         )
 
         original_conds = guider.original_conds
@@ -3533,9 +3593,9 @@ class HREndlessSampler(SamplerCustomAdvanced):
             try:
                 for state in replay_prior_chunks:
                     output_video.append(state["output_video"])
-                    output_audio.append(state["output_audio"])
+                    _append_saved_audio(output_audio, state, "output_audio", "output_audio_with_overlap")
                     denoised_video.append(state["denoised_video"])
-                    denoised_audio.append(state["denoised_audio"])
+                    _append_saved_audio(denoised_audio, state, "denoised_audio", "denoised_audio_with_overlap")
                     if state.get("debug_prompt"):
                         debug_prompts.append(str(state["debug_prompt"]))
                 previous_state = replay_prior_chunks[-1]
@@ -4180,11 +4240,23 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 audio_context = None if previous_audio is None or not guide_enabled else previous_audio[..., -guide_audio_t:].clone()
                 video_context_start = 0
                 audio_end_frame = float(keyframe_duration_frames)
+                audio_end_includes_grid_offset = False
+                if audio_context is None and continuation and not (external_active and index == 0):
+                    audio_context, audio_end_frame = _continuation_audio_context(
+                        previous_audio, previous_frame_count, chunk
+                    )
+                    audio_end_includes_grid_offset = audio_context is not None
+                    if debug and audio_context is not None:
+                        logging.info(
+                            "HR Endless Sampler chunk %d/%d audio continuation: "
+                            "%d real previous latent steps end-aligned at local frame %.3f.",
+                            index + 1, len(active_plan), audio_context.shape[-1], audio_end_frame,
+                        )
                 if external_active and index == 0:
                     video_context = previous_video.clone()
                     audio_context = previous_audio.clone() if external_audio_mode == "continue" else None
                     audio_end_frame = float(external_frame_count)
-                if audio_context is not None:
+                if audio_context is not None and not audio_end_includes_grid_offset:
                     overhang = previous_audio.shape[-1] - FRAME_RESCALE * previous_frame_count
                     audio_end_frame += overhang / FRAME_RESCALE
                 video_items = []
@@ -4533,16 +4605,33 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     if retake_mode == "video_only":
                         assembled_audio = original_state["output_audio"]
                         assembled_denoised_audio = original_state["denoised_audio"]
+                owns_audio_overlap = index > 0 and audio_trim > 0 and not retake_chunks
+                output_audio_with_overlap = previous_audio.clone() if owns_audio_overlap else None
+                denoised_audio_with_overlap = denoised_chunk_audio.clone() if owns_audio_overlap else None
                 if replay_output_on_cpu:
                     output_video.append(assembled_video.to(device="cpu"))
-                    output_audio.append(assembled_audio.to(device="cpu"))
+                    if owns_audio_overlap:
+                        output_audio_with_overlap = output_audio_with_overlap.to(device="cpu")
+                        _append_audio_with_overlap(output_audio, output_audio_with_overlap, audio_trim)
+                    else:
+                        output_audio.append(assembled_audio.to(device="cpu"))
                     denoised_video.append(assembled_denoised_video.to(device="cpu"))
-                    denoised_audio.append(assembled_denoised_audio.to(device="cpu"))
+                    if owns_audio_overlap:
+                        denoised_audio_with_overlap = denoised_audio_with_overlap.to(device="cpu")
+                        _append_audio_with_overlap(denoised_audio, denoised_audio_with_overlap, audio_trim)
+                    else:
+                        denoised_audio.append(assembled_denoised_audio.to(device="cpu"))
                 else:
                     output_video.append(assembled_video)
-                    output_audio.append(assembled_audio)
+                    if owns_audio_overlap:
+                        _append_audio_with_overlap(output_audio, output_audio_with_overlap, audio_trim)
+                    else:
+                        output_audio.append(assembled_audio)
                     denoised_video.append(assembled_denoised_video)
-                    denoised_audio.append(assembled_denoised_audio)
+                    if owns_audio_overlap:
+                        _append_audio_with_overlap(denoised_audio, denoised_audio_with_overlap, audio_trim)
+                    else:
+                        denoised_audio.append(assembled_denoised_audio)
                 chunk_progress.finish(index)
                 completed_chunks = index + 1
                 chunk_total_seconds = timing.finish_chunk(index) or 0.0
@@ -4603,8 +4692,11 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 "previous_frame_count": previous_frame_count,
                                 "output_video": assembled_video,
                                 "output_audio": assembled_audio,
+                                "output_audio_with_overlap": output_audio_with_overlap,
                                 "denoised_video": assembled_denoised_video,
                                 "denoised_audio": assembled_denoised_audio,
+                                "denoised_audio_with_overlap": denoised_audio_with_overlap,
+                                "audio_overlap_steps": audio_trim if owns_audio_overlap else 0,
                                 "output_template": output_template,
                                 "denoised_template": denoised_template,
                                 "source_prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
@@ -4748,6 +4840,19 @@ class HREndlessSampler(SamplerCustomAdvanced):
         final_output_audio = torch.cat(output_audio, dim=-1)
         final_denoised_video = torch.cat(denoised_video, dim=2)
         final_denoised_audio = torch.cat(denoised_audio, dim=-1)
+        rendered_frames = active_plan[completed_chunks - 1]["frame_end"] if completed_chunks else 0
+        expected_video_t = _video_steps(rendered_frames)
+        expected_audio_t = _audio_steps(rendered_frames)
+        if final_output_video.shape[2] != expected_video_t or final_denoised_video.shape[2] != expected_video_t:
+            raise RuntimeError(
+                f"HR Endless Sampler assembled video length mismatch: expected {expected_video_t} latent steps, "
+                f"got output={final_output_video.shape[2]}, denoised={final_denoised_video.shape[2]}"
+            )
+        if final_output_audio.shape[-1] != expected_audio_t or final_denoised_audio.shape[-1] != expected_audio_t:
+            raise RuntimeError(
+                f"HR Endless Sampler assembled audio length mismatch: expected {expected_audio_t} latent steps, "
+                f"got output={final_output_audio.shape[-1]}, denoised={final_denoised_audio.shape[-1]}"
+            )
         # Cached earlier chunks intentionally stay in system RAM while a
         # replayed suffix samples. Return the normal device-resident latent
         # shape expected by downstream ComfyUI nodes only after assembly.
@@ -4758,7 +4863,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
             final_denoised_audio = final_denoised_audio.to(device=audio.device)
         output_template["samples"] = comfy.nested_tensor.NestedTensor((final_output_video, final_output_audio))
         denoised_template["samples"] = comfy.nested_tensor.NestedTensor((final_denoised_video, final_denoised_audio))
-        rendered_frames = active_plan[completed_chunks - 1]["frame_end"] if completed_chunks else 0
         timeline = normalize_timeline(
             {
                 "fps": fps,

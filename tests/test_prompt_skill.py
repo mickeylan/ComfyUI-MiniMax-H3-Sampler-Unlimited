@@ -941,6 +941,8 @@ class PromptSkillTests(unittest.TestCase):
                 for match in re.findall(r"<d>(.*?)</d>", localized, re.DOTALL)
             )
         self.assertEqual("".join(fragments), text)
+        self.assertIn("[Shot 1]", prompts[0])
+        self.assertTrue(all("[Shot 1]" not in prompt for prompt in prompts[1:]))
         self.assertNotIn("without a cut, reframing, zoom", prompts[0])
         self.assertTrue(all("without a cut, reframing, zoom" in prompt for prompt in prompts[1:]))
         self.assertIn("turns once", prompts[0])

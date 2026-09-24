@@ -1295,13 +1295,17 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
     )
     local_shots = []
     localized_descriptions = []
-    for index, shot in enumerate(active, 1):
-        marker = f"[Shot {index}]"
-        if index > 1:
-            milliseconds = round(max(0, int(shot["start_frame"]) - int(frame_start)) * 1000 / float(plan["fps"]))
-            minutes, remainder = divmod(milliseconds, 60000)
-            seconds, milliseconds = divmod(remainder, 1000)
-            marker += f" At {minutes:02d}:{seconds:02d}.{milliseconds:03d},"
+    local_shot_number = 1 if active and int(active[0]["start_frame"]) < int(frame_start) else 0
+    for shot in active:
+        marker = ""
+        if bool(shot.get("cut", True)) and int(shot["start_frame"]) >= int(frame_start):
+            local_shot_number += 1
+            marker = f"[Shot {local_shot_number}]"
+            if local_shot_number > 1:
+                milliseconds = round((int(shot["start_frame"]) - int(frame_start)) * 1000 / float(plan["fps"]))
+                minutes, remainder = divmod(milliseconds, 60000)
+                seconds, milliseconds = divmod(remainder, 1000)
+                marker += f" At {minutes:02d}:{seconds:02d}.{milliseconds:03d},"
         shot_events = tuple(
             event for event in projection["active"]
             if int(shot["start_frame"]) <= int(event["start_frame"]) < int(shot["end_frame"])
