@@ -447,51 +447,31 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     current_shot = 0
     split_count = 0
     for utterance_index, (_original_shot, dialogue) in enumerate(dialogues, 1):
-        remaining = str(dialogue["text"]).strip()
+        full_text = str(dialogue["text"]).strip()
         utterance_id = str(dialogue.get("utterance_id", "")).strip() or f"U{utterance_index}"
-        fragment_index = 0
-        while remaining:
-            while current_shot < len(shots):
-                capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
-                if capacity > 0:
-                    break
-                current_shot += 1
-            if current_shot >= len(shots):
-                raise ValueError("The complete video timeline is too short for the mandatory spoken dialogue at natural speed")
-            required_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
+        while current_shot < len(shots):
             capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
+            required_frames = math.ceil(_line_spoken_duration_seconds(full_text) * fps)
             if required_frames <= capacity:
-                fragment = remaining
-            else:
-                if not re.search(r"[\u3400-\u9fff]", remaining):
-                    current_shot += 1
-                    continue
-                cut = _dialogue_prefix_for_frames(remaining, capacity, fps)
-                if cut <= 0:
-                    current_shot += 1
-                    continue
-                fragment = remaining[:cut]
-                split_count += 1
-            fragment_index += 1
-            next_remaining = remaining[len(fragment):]
-            item = dict(dialogue)
-            item["text"] = fragment
-            item["id"] = f"S{current_shot + 1}.D{len(normalized_shots[current_shot]['dialogues']) + 1}"
-            item["utterance_id"] = utterance_id
-            item["utterance_fragment"] = fragment_index
-            item["utterance_phase"] = (
-                "start_complete" if fragment_index == 1 and not next_remaining
-                else "start" if fragment_index == 1
-                else "complete" if not next_remaining
-                else "continue"
+                break
+            # Dialogue does not fit in current shot — skip this shot, do NOT split the dialogue.
+            current_shot += 1
+        if current_shot >= len(shots):
+            raise ValueError(
+                f"Mandatory spoken dialogue '{full_text[:20]}...' requires "
+                f"{required_frames} frames but no remaining shot has enough capacity. "
+                "Adjust shot timing so each dialogue fits entirely within one shot."
             )
-            item["continues_from_previous_shot"] = fragment_index > 1
-            item["continues_into_next_shot"] = bool(next_remaining)
-            normalized_shots[current_shot]["dialogues"].append(item)
-            used[current_shot] += math.ceil(_line_spoken_duration_seconds(fragment) * fps)
-            remaining = next_remaining
-            if remaining:
-                current_shot += 1
+        item = dict(dialogue)
+        item["text"] = full_text
+        item["id"] = f"S{current_shot + 1}.D{len(normalized_shots[current_shot]['dialogues']) + 1}"
+        item["utterance_id"] = utterance_id
+        item["utterance_phase"] = "start_complete"
+        item["continues_from_previous_shot"] = False
+        item["continues_into_next_shot"] = False
+        normalized_shots[current_shot]["dialogues"].append(item)
+        used[current_shot] += required_frames
+        current_shot += 1
     returned = "".join(
         str(item.get("text", ""))
         for shot in normalized_shots for item in shot["dialogues"]
@@ -502,7 +482,7 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     if normalized_shots == shots:
         return value, []
     return normalized, [
-        f"Redistributed mandatory dialogue across shot frame capacity at natural speech speed; split {split_count} fragment(s)."
+        f"Redistributed mandatory dialogue across shot frame capacity; no dialogue was split across shots."
     ]
 
 
@@ -1343,11 +1323,10 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
         overlap_start = max(dialogue_start, int(frame_start))
         overlap_end = min(dialogue_end, int(frame_end))
         if overlap_start < overlap_end:
-            fragment = slice_dialogue_for_interval(
-                _dialogue_description(dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end
-            )
-            if fragment:
-                parts.append(fragment)
+            # Always include the complete dialogue text for this shot — never slice by character.
+            # One complete utterance belongs to exactly one shot.
+            full_description = _dialogue_description(dialogue)
+            parts.append(full_description)
     return " ".join(parts)
 
 

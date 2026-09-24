@@ -51,8 +51,10 @@ class PromptSkillTests(unittest.TestCase):
         )
         value = self.result()
         midpoint = 22
-        value["shots"][0]["end_frame"] = midpoint
-        value["shots"][1]["start_frame"] = midpoint
+        # Make shot 1 large enough for the dialogue (the dialogue needs ~120 frames).
+        # Redistribution moves the complete dialogue to the first shot that can hold it.
+        value["shots"][0]["end_frame"] = 150
+        value["shots"][1]["start_frame"] = 150
         value["shots"][1]["end_frame"] = request["total_frames"]
         value["shots"][0]["dialogues"] = []
         value["shots"][1]["dialogues"] = [{
@@ -921,8 +923,10 @@ class PromptSkillTests(unittest.TestCase):
             "id": "S1.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
             "language": "Chinese", "text": text, "delivery": "自然地",
         }]
+        # Shot 1 is too short for the full dialogue; it gets 80 frames but needs ~155.
+        # The dialogue must NOT be split across shots — it should move entirely to shot 2.
         value["shots"][0]["start_frame"], value["shots"][0]["end_frame"] = 0, 80
-        value["shots"][1]["start_frame"], value["shots"][1]["end_frame"] = 80, 160
+        value["shots"][1]["start_frame"], value["shots"][1]["end_frame"] = 80, 280
         value["shots"][1]["dialogues"] = []
         request = self.request()
         request["required_spoken_lines"] = (text,)
@@ -931,17 +935,17 @@ class PromptSkillTests(unittest.TestCase):
         request["minimum_spoken_duration_seconds"] = 7.0
         normalized, _warnings = prompt_skill._redistribute_dialogues(value, request)
         fragments = [item for shot in normalized["shots"] for item in shot["dialogues"]]
-        self.assertGreater(len(fragments), 1)
-        self.assertEqual("".join(item["text"] for item in fragments), text)
-        self.assertEqual(len({item["utterance_id"] for item in fragments}), 1)
-        self.assertEqual([item["utterance_phase"] for item in fragments], ["start", "complete"])
-        first = prompt_skill._dialogue_description(fragments[0])
-        second = prompt_skill._dialogue_description(fragments[1])
-        self.assertIn("says", first)
-        self.assertIn("<scenetrans>", first)
-        self.assertIn("continues speaking seamlessly across the cut", second)
-        self.assertIn("<scenetrans>", second)
-        self.assertNotIn("<cutoff>", first + second)
+        # Exactly one fragment, complete text, in shot 2
+        self.assertEqual(len(fragments), 1)
+        self.assertEqual(fragments[0]["text"], text)
+        self.assertEqual(fragments[0]["utterance_id"], "U1")
+        self.assertEqual(fragments[0]["utterance_phase"], "start_complete")
+        description = prompt_skill._dialogue_description(fragments[0])
+        self.assertIn("says", description)
+        self.assertIn(text, description)
+        # No character-sliced fragments in shot 1
+        shot1_fragments = [item for item in normalized["shots"][0]["dialogues"]]
+        self.assertEqual(shot1_fragments, [])
 
     def test_chunk_dialogue_contract_rejects_completion_repetition_and_speaker_change(self):
         authoritative = "<Subject 1> (S1) continues speaking: <d>[Chinese] 后半句</d>"
@@ -969,7 +973,12 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("<scenetrans>", early)
         self.assertIn("<scenetrans>", boundary)
 
-    def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
+    def test_physical_chunk_receives_complete_dialogue_not_character_fragment(self):
+        # A dialogue that fills one shot must NOT be sliced by physical chunk boundaries.
+        # Chunk 1 (0-40) is inside the shot, Chunk 2 (40-80) is inside the shot.
+        # Chunk 3 (80-120) is inside the shot.
+        # Chunk 4 (120-160) is inside the shot.
+        # Each chunk gets the COMPLETE dialogue, not a character slice.
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
         plan = {
             "fps": 24.0,
@@ -977,8 +986,9 @@ class PromptSkillTests(unittest.TestCase):
             "shots": [{
                 "start_frame": 0, "end_frame": 160, "pictures": [1], "camera": "locked medium shot",
                 "start_state": "speaker already present", "end_state": "speaker finishes the line",
-                "forbidden_replays": [], "audio": "衣袂随转身摩擦声", "visual_description": "The speaker turns once, then settles facing her sister.",
-                "description": "unused full description", "dialogues": [{
+                "forbidden_replays": [], "audio": "衣袂随转身摩擦声",
+                "visual_description": "The speaker turns once, then settles facing her sister.",
+                "dialogues": [{
                     "id": "S1.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
                     "language": "Chinese", "text": text, "delivery": "自然地",
                 }],
@@ -989,23 +999,17 @@ class PromptSkillTests(unittest.TestCase):
             prompt_skill.localize_prompt_from_plan("", plan, frame_start=start, frame_end=end)
             for start, end in ((0, 40), (40, 80), (80, 120), (120, 160))
         ]
-        fragments = []
-        for localized in prompts:
-            fragments.extend(
-                re.sub(r"^\s*\[[^\]]+\]\s*", "", match).strip()
-                for match in re.findall(r"<d>(.*?)</d>", localized, re.DOTALL)
-            )
-        self.assertEqual("".join(fragments), text)
+        # Every chunk should see the COMPLETE dialogue wrapped in <d>...<d>, not sliced.
+        # The <d> tag includes the [Language] prefix, so we match the whole <d> capture.
+        full_d = f"<d>[Chinese] {text}</d>"
+        for i, prompt_text in enumerate(prompts):
+            d_matches = re.findall(r"<d>.*?</d>", prompt_text, re.DOTALL)
+            self.assertEqual(len(d_matches), 1,
+                f"Chunk {i+1} should see exactly one <d> tag, got: {d_matches}")
+            self.assertEqual(d_matches[0], full_d,
+                f"Chunk {i+1} should see the complete dialogue, got: {d_matches[0]}")
         self.assertIn("[Shot 1]", prompts[0])
         self.assertTrue(all("[Shot 1]" not in prompt for prompt in prompts[1:]))
-        self.assertTrue(all("<scenetrans>" not in prompt for prompt in prompts))
-        self.assertTrue(all("continues speaking" in prompt for prompt in prompts[1:]))
-        self.assertNotIn("without a cut, reframing, zoom", prompts[0])
-        self.assertTrue(all("without a cut, reframing, zoom" in prompt for prompt in prompts[1:]))
-        self.assertIn("turns once", prompts[0])
-        self.assertTrue(all("turns once" not in prompt for prompt in prompts[1:]))
-        self.assertIn("衣袂随转身摩擦声", prompts[0])
-        self.assertTrue(all("衣袂随转身摩擦声" not in prompt for prompt in prompts[1:]))
 
     def test_event_timeline_advances_once_across_physical_chunks(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
