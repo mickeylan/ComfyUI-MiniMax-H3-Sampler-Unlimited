@@ -17,6 +17,7 @@ import base64
 import ctypes
 import gc
 import io
+import inspect
 import json
 import logging
 import os
@@ -51,7 +52,6 @@ GEMMA4_MMPROJ_FILENAME = "mmproj-gemma-4-12b-it-qat-q4_0.gguf"
 GEMMA4_MTP_REPOSITORY = "Janvitos/gemma-4-12B-it-qat-assistant-MTP-Q8_0-GGUF"
 GEMMA4_MTP_FILENAME = "gemma-4-12B-it-qat-assistant-MTP-Q8_0.gguf"
 GEMMA4_MODEL_DIRECTORY = "llama_cpp/gemma-4-12b-it-qat-q4_0"
-GEMMA4_SUPPORTED_VERSIONS = ("0.3.35", "0.3.48")
 GEMMA4_IMAGE_MIN_TOKENS = 70
 GEMMA4_IMAGE_MAX_TOKENS = 1120
 GEMMA4_BATCH_SIZE = GEMMA4_IMAGE_MAX_TOKENS
@@ -970,23 +970,18 @@ def _load_runtime(backend="gemma4"):
         import llama_cpp.mtmd_cpp
     except ImportError as error:
         raise Gemma4DependencyError(
-            f"{director_name} continuity requires llama-cpp-python==0.3.35 with CUDA support. "
-            "Install this custom node's requirements.txt with ~/comfyui/tools/python.sh."
+            f"{director_name} continuity requires llama-cpp-python with CUDA and MTMD vision support. "
+            "Install a compatible build with this custom node's requirements."
         ) from error
 
     version = getattr(llama_cpp, "__version__", "unknown").split("+")[0]
-    if version not in GEMMA4_SUPPORTED_VERSIONS:
-        raise Gemma4DependencyError(
-            f"{director_name} continuity requires a tested llama-cpp-python version with MTMD vision support "
-            f"({', '.join(GEMMA4_SUPPORTED_VERSIONS)}); found {version}."
-        )
     if backend == "qwen3.5":
         return Llama, MTMDChatHandler
     return Llama, _gemma4_mtmd_handler_type(
         MTMDChatHandler,
         llama_cpp,
         suppress_stdout_stderr,
-        native_visual_budget=version == "0.3.48",
+        native_visual_budget="image_min_tokens" in inspect.signature(MTMDChatHandler.__init__).parameters,
     )
 
 
@@ -1033,7 +1028,7 @@ def _create_runtime_llm(
         mtp_path = _ensure_mtp_model_file()
         import llama_cpp
 
-        if getattr(llama_cpp, "__version__", "").split("+")[0] == "0.3.48":
+        if hasattr(llama_cpp, "SpecConfig") and hasattr(llama_cpp, "SpeculativeType"):
             llm = Llama(
                 model_path=str(model_path),
                 speculative=llama_cpp.SpecConfig(

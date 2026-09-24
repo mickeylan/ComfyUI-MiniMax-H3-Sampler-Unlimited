@@ -271,6 +271,12 @@ review date, versions/commits checked, and outcome below.
   not closed and no confirmed package containing the fix was found. PyPI package
   metadata still does not state a newer vendored llama.cpp commit. Preserve the
   disposable worker and operation-local non-MTP retry unchanged.
+- 2026-09-24 (llama-cpp-python 0.3.49 compatibility): issue #27439 remains open
+  with `bug-unconfirmed` and `stale`; the linked PR is not a confirmed packaged
+  fix. The reported runtime is 0.3.49, but its version-specific PyPI JSON endpoint
+  was unavailable and no vendored llama.cpp commit was confirmed. Runtime gating
+  now checks required MTMD/speculative APIs instead of rejecting newer version
+  numbers. Disposable workers and operation-local non-MTP retry remain required.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at
