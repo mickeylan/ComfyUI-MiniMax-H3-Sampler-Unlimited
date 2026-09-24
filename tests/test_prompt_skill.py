@@ -890,6 +890,30 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("opens the door", localized)
         self.assertNotIn("door creak", localized)
 
+    def test_chunk_local_summary_restores_explicit_character_actor(self):
+        plan = {
+            "type": "HR_H3_PROMPT_PLAN", "version": 1, "fps": 24.0, "total_frames": 39,
+            "image_subjects": [
+                {"entity_id": "asset_2", "picture": 2, "subject": 2, "kind": "scene", "name": "梵心桃花林", "observable_features": "桃花林"},
+                {"entity_id": "asset_3", "picture": 3, "subject": 3, "kind": "character", "name": "上官若彤", "observable_features": "淡紫色汉服"},
+                {"entity_id": "asset_4", "picture": 4, "subject": 4, "kind": "character", "name": "上官若琳", "observable_features": "深红色汉服"},
+            ],
+            "shots": [{
+                "start_frame": 0, "end_frame": 39, "pictures": [2, 3, 4], "camera": "中景缓慢跟拍",
+                "start_state": "桃林深处", "end_state": "来到石台前", "forbidden_replays": [], "audio": "脚步声",
+                "events": [{"id": "S1.V1", "actor": "asset_3", "action": "从桃林深处缓步走出，步伐轻盈，神情关切", "phase": "start", "start_frame": 0, "end_frame": 39}],
+                "dialogues": [], "visual_description": "桃林中的人物走近石台。",
+            }],
+            "non_diegetic_music": "N/A",
+        }
+        localized = prompt_skill.localize_prompt_from_plan(
+            "detailed_description:\nunused", plan, frame_start=0, frame_end=39,
+        )
+        expected = "<Subject 3> 上官若彤 从桃林深处缓步走出，步伐轻盈，神情关切"
+        self.assertIn("summary:\n" + expected, localized)
+        self.assertIn("[Shot 1] " + expected, localized)
+        self.assertNotIn("summary:\n从桃林深处", localized)
+
     def test_prompt_plan_localization_preserves_global_picture_subject_contract(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         typed_plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)

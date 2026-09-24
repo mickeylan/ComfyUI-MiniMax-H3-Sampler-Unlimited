@@ -1242,15 +1242,32 @@ def project_prompt_plan_interval(plan: dict[str, Any], *, frame_start: int, fram
     }
 
 
+def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str, dict[str, Any]]) -> str:
+    action = str(event.get("action", "")).strip()
+    if not action:
+        return ""
+    actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
+    if actor is None or str(actor.get("kind", "")).lower() != "character":
+        return action
+    label = f"<Subject {int(actor['subject'])}>"
+    if label.casefold() in action.casefold():
+        return action
+    name = str(actor.get("name", "")).strip()
+    if name and name.casefold() in action.casefold():
+        return f"{label} {action}"
+    return f"{label}{' ' + name if name else ''} {action}"
+
+
 def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
-                                active_events: tuple[dict[str, Any], ...]) -> str:
+                                active_events: tuple[dict[str, Any], ...],
+                                subjects_by_entity: dict[str, dict[str, Any]]) -> str:
     parts = []
     if frame_start > int(shot["start_frame"]):
         parts.append(
             "Continue the already established shot without a cut, reframing, zoom, or restart of completed action."
         )
     if active_events:
-        parts.extend(str(event["action"]).strip() for event in active_events if str(event.get("action", "")).strip())
+        parts.extend(filter(None, (_localized_event_action(event, subjects_by_entity) for event in active_events)))
     elif frame_start <= int(shot["start_frame"]):
         visual = str(shot.get("visual_description", shot.get("description", ""))).strip()
         if visual:
@@ -1279,6 +1296,10 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
 def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
     projection = project_prompt_plan_interval(plan, frame_start=frame_start, frame_end=frame_end)
     active = projection["shots"]
+    subjects_by_entity = {
+        str(item.get("entity_id", "")).strip(): item
+        for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
+    }
     subjects = []
     for item in plan["image_subjects"]:
         picture = int(item.get("picture", 0) or 0)
@@ -1306,13 +1327,15 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
             event for event in projection["active"]
             if int(shot["start_frame"]) <= int(event["start_frame"]) < int(shot["end_frame"])
         )
-        description = _localized_shot_description(shot, frame_start, frame_end, float(plan["fps"]), shot_events)
+        description = _localized_shot_description(
+            shot, frame_start, frame_end, float(plan["fps"]), shot_events, subjects_by_entity
+        )
         localized_descriptions.append(description)
         local_shots.append(f"{marker} {description}")
     local_description = "\n".join(local_shots)
-    summary = " ".join(
-        str(event["action"]).strip() for event in projection["active"] if str(event.get("action", "")).strip()
-    )
+    summary = " ".join(filter(None, (
+        _localized_event_action(event, subjects_by_entity) for event in projection["active"]
+    )))
     retention = []
     for shot in active:
         retention.append(f"Camera contract: {str(shot['camera']).strip()}.")
