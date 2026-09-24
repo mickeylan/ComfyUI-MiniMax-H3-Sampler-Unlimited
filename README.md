@@ -119,7 +119,7 @@ The way to use is pretty straight forward - just replace the normal "Sampler" no
 | `HR MiniMax H3 Reference Set` | 统一输入最多 9 张图片、3 个视频及对应音轨、3 条独立音频。 |
 | `HR MiniMax H3 Reference Conditioning` | 创建 MiniMax H3 Ref2VA conditioning 和 nested AV latent。 |
 
-提示词编译接线：人物图片 → `HR MiniMax H3 Reference Set`；Qwen3.5/3.6/3.8 的 `HR Qwen Director Config` 只连接 Prompt Skill Compiler；Compiler 的 `H3 prompt` 接 Reference Conditioning 与 Sampler 的 `prompt`，`prompt plan` 接 Sampler 的 `prompt_plan`，事件账本接 `initial_event_ledger`。Sampler不需要连接`director_config`，直接使用自身的`director_backend`、`director_model`、`director_mmproj`和运行参数选择Gemma4或任一Qwen；只有用户主动连接`director_config`时才覆盖Sampler自身设置。两种操作各自使用disposable worker，不会同时常驻显存。`chunk_director_enabled` 默认开启：即使连接`prompt_plan`，Sampler选定的Gemma/Qwen仍逐块观察并在计划硬边界内指导H3；关闭后才完全使用程序投影提示词。`prompt_plan`是可选输入；不连接时保留旧纯Prompt路径，并继续兼容`MiniMaxH3DirectorCS`输出的model/conditioning/latent/prompt/fps。
+提示词编译接线：人物图片 → `HR MiniMax H3 Reference Set`；`HR Qwen Director Config`选择Gemma4或Qwen3.5/3.6/3.8并连接Prompt Skill Compiler，Compiler会严格使用所选后端，不自动替换模型。Compiler的`H3 prompt`接Reference Conditioning与Sampler的`prompt`，`prompt plan`接Sampler的`prompt_plan`，事件账本接`initial_event_ledger`。Sampler可以不连接`director_config`并直接使用自身的`director_backend`、`director_model`、`director_mmproj`和运行参数独立选择导演后端；只有用户主动连接`director_config`时才覆盖Sampler自身设置。两种操作各自使用disposable worker，不会同时常驻显存。`chunk_director_enabled`默认开启：即使连接`prompt_plan`，Sampler选定的Gemma/Qwen仍逐块观察并在计划硬边界内指导H3；关闭后才完全使用程序投影提示词。`prompt_plan`是可选输入；不连接时保留旧纯Prompt路径，并继续兼容`MiniMaxH3DirectorCS`输出的model/conditioning/latent/prompt/fps。
 
 平台接入边界、typed plan schema、长镜头 continuous beat、资产映射、DirectorCS 兼容和验收矩阵见 [`new-aigc平台接入HR-Endless详细方案.md`](new-aigc平台接入HR-Endless详细方案.md)。
 

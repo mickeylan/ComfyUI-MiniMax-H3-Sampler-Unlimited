@@ -33,8 +33,10 @@ from typing import Any, Sequence
 
 try:
     from .dialogue_timing import dialogue_frame_count, slice_dialogue_for_interval
+    from .prompt_skill import compile_prompt_skill, prompt_skill_messages
 except ImportError:  # Direct test/worker execution.
     from dialogue_timing import dialogue_frame_count, slice_dialogue_for_interval
+    from prompt_skill import compile_prompt_skill, prompt_skill_messages
 
 import torch
 from PIL import Image
@@ -72,6 +74,7 @@ GEMMA4_WORKER_RETRY_LIMIT = 10
 GEMMA4_RESPONSE_REPAIR_LIMIT = 10
 GEMMA4_CHUNK_RESPONSE_TOKENS = 4096
 GEMMA4_TIMING_RESPONSE_TOKENS = 8192
+GEMMA4_PROMPT_SKILL_RESPONSE_TOKENS = 8192
 # A valid JSON response is normally produced by the unconstrained decoder. If
 # Gemma accidentally answers in its private thought channel, correct it as a
 # real next chat turn first.  That keeps the already encoded request, images,
@@ -3335,6 +3338,57 @@ def _plan_timing_in_process(request: dict[str, Any], debug: bool) -> GemmaShotTi
             torch.cuda.empty_cache()
 
 
+def _prompt_skill_in_process(request: dict[str, Any], debug: bool) -> dict[str, Any]:
+    """Compile one Prompt Skill plan with the selected Gemma runtime."""
+    Llama, MTMDChatHandler = _load_runtime("gemma4")
+    model_path, mmproj_path = _model_files_for_request(request)
+    handler = llm = None
+    try:
+        handler = MTMDChatHandler(clip_model_path=str(mmproj_path), verbose=False, use_gpu=True)
+        llm = _create_runtime_llm(
+            Llama, model_path=model_path, handler=handler, debug=debug,
+            gemma4_mtp=bool(request.get("gemma4_mtp", False)),
+            n_ctx=int(request.get("director_n_ctx", GEMMA4_CONTEXT_TOKENS)),
+            n_batch=int(request.get("director_n_batch", GEMMA4_BATCH_SIZE)),
+            track_token_progress=True,
+        )
+        latest_raw = ""
+        for attempt in range(2):
+            system, prompt = prompt_skill_messages(request)
+            content = [
+                {"type": "image_url", "image_url": {"url": url}}
+                for url in request.get("image_urls", ())
+            ]
+            content.append({"type": "text", "text": prompt})
+            payload, latest_raw = _gemma_chat_json(
+                llm,
+                [{"role": "system", "content": system}, {"role": "user", "content": content}],
+                handler=handler,
+                max_tokens=GEMMA4_PROMPT_SKILL_RESPONSE_TOKENS,
+                mtp_active=bool(request.get("gemma4_mtp", False)),
+                director_name="Gemma 4",
+                prefer_json_grammar=attempt > 0,
+            )
+            try:
+                return compile_prompt_skill(payload, request)
+            except ValueError as error:
+                if attempt:
+                    raise Gemma4ObservationError(str(error), raw_json=latest_raw) from error
+                request["prompt_skill_structure_repair"] = True
+                request["prompt_skill_validation_error"] = str(error)
+                request["prompt_skill_previous_response"] = latest_raw
+                logging.warning("HR H3 Prompt Skill Compiler rejected Gemma 4 structure; requesting one corrected JSON object.")
+        raise Gemma4ObservationError("Gemma 4 Prompt Skill compilation failed", raw_json=latest_raw)
+    finally:
+        if llm is not None:
+            llm.close()
+        llm = handler = None
+        gc.collect()
+        comfy.model_management.soft_empty_cache(force=True)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
 def _worker_environment() -> dict[str, str]:
     environment = os.environ.copy()
     comfy_root = str(Path(folder_paths.__file__).resolve().parent)
@@ -3443,6 +3497,31 @@ def _observe_in_worker(request: dict[str, Any], progress_callback: Any = None) -
             returncode=process.returncode,
         )
     return _chunk_prompt_from_payload(result["chunk_prompt"])
+
+
+def _prompt_skill_in_worker(request: dict[str, Any], progress_callback: Any = None) -> dict[str, Any]:
+    payload = json.loads(json.dumps(request, ensure_ascii=False))
+    payload["operation"] = "prompt_skill_compile"
+    command = [sys.executable, "-u", str(Path(__file__).resolve()), "--worker"]
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                               encoding="utf-8", errors="replace", env=_worker_environment())
+    stdout = _stream_worker_output(process, payload, progress_callback)
+    result_line = next((line[len(_WORKER_RESULT_PREFIX):] for line in reversed(stdout.splitlines())
+                        if line.startswith(_WORKER_RESULT_PREFIX)), None)
+    if result_line is None:
+        raise Gemma4WorkerExitError("Gemma 4 Prompt Skill worker returned no result", returncode=process.returncode)
+    result = json.loads(result_line)
+    if not result.get("ok"):
+        message = str(result.get("message") or "Gemma 4 Prompt Skill worker failed")
+        raw_json = str(result.get("raw_json") or "")
+        if result.get("error_type") in {"Gemma4MTPError", "Gemma4MTPOutputError"}:
+            raise Gemma4WorkerExitError(message, returncode=process.returncode,
+                                        worker_error_type=str(result["error_type"]), raw_json=raw_json)
+        raise Gemma4ObservationError(message, raw_json=raw_json)
+    if process.returncode != 0:
+        raise Gemma4WorkerExitError(f"Gemma 4 Prompt Skill worker exited with status {process.returncode}",
+                                    returncode=process.returncode)
+    return dict(result["prompt_skill_compile"])
 
 
 def _plan_timing_in_worker(request: dict[str, Any], progress_callback: Any = None) -> GemmaShotTimingPlan:
@@ -3700,6 +3779,24 @@ class Gemma4ContinuityDirector:
                     retry_limit,
                 )
 
+    def compile_prompt_skill(self, request: dict[str, Any], images: Sequence[torch.Tensor],
+                             progress_callback: Any = None) -> dict[str, Any]:
+        images = tuple(images)
+        if len(images) < 1 or len(images) > 9 or any(
+            not isinstance(image, torch.Tensor) or image.ndim != 4 or image.shape[0] != 1
+            for image in images
+        ):
+            raise Gemma4ObservationError("Prompt Skill Compiler requires 1 to 9 single-image NHWC batches")
+        request = json.loads(json.dumps(request, ensure_ascii=False))
+        request["image_count"] = len(images)
+        request["image_urls"] = [_image_data_url(image[0]) for image in images]
+        request["director_backend"] = "gemma4"
+        self._configure_request(request)
+        return self._run_worker_with_mtp_fallback(
+            "Prompt Skill compilation", request,
+            lambda payload: _prompt_skill_in_worker(payload, progress_callback),
+        )
+
     def plan_timing(self, request: dict[str, Any], progress_callback: Any = None) -> GemmaShotTimingPlan:
         """Create the immutable Gemma action schedule before any H3 chunk runs."""
         request = json.loads(json.dumps(request, ensure_ascii=False))
@@ -3838,7 +3935,10 @@ class Gemma4ContinuityDirector:
 def _worker_main() -> int:
     try:
         request = json.load(sys.stdin)
-        if request.get("operation") == "timing_plan":
+        if request.get("operation") == "prompt_skill_compile":
+            compiled = _prompt_skill_in_process(request, debug=bool(request.get("debug", False)))
+            result = {"ok": True, "prompt_skill_compile": compiled}
+        elif request.get("operation") == "timing_plan":
             timing_plan = _plan_timing_in_process(
                 request=request,
                 debug=bool(request.get("debug", False)),

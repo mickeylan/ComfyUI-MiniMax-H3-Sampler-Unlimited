@@ -23,6 +23,25 @@ import gemma4_mtp  # noqa: E402
 
 
 class GemmaCaptureTest(unittest.TestCase):
+    def test_prompt_skill_compile_uses_gemma_worker_without_backend_substitution(self):
+        director = gemma4.Gemma4ContinuityDirector(gemma4_mtp=True)
+        image = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
+        compiled = {"prompt": "compiled by Gemma", "planned_frames": 22}
+        captured = {}
+
+        def worker(request, progress_callback=None):
+            captured.update(request)
+            return compiled
+
+        with patch.object(gemma4, "_prompt_skill_in_worker", side_effect=worker):
+            result = director.compile_prompt_skill({"story": "test"}, (image,))
+
+        self.assertIs(result, compiled)
+        self.assertEqual(captured["director_backend"], "gemma4")
+        self.assertTrue(captured["gemma4_mtp"])
+        self.assertEqual(len(captured["image_urls"]), 1)
+        self.assertTrue(captured["image_urls"][0].startswith("data:image/jpeg;base64,"))
+
     @staticmethod
     def request():
         return {

@@ -10,6 +10,7 @@ from comfy_api.latest import io
 from .director_backend import QWEN_DIRECTOR_BACKENDS, resolve_director_selection
 from .director_config import HRDirectorConfig, normalize_qwen38_config
 from .prompt_skill import CONTINUITY_MODES, build_prompt_skill_request, build_typed_prompt_plan
+from .gemma4 import Gemma4ContinuityDirector
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images
 
@@ -27,7 +28,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             category="model/sampling/custom",
             description=(
                 "Compile an ordinary story into a repetition-resistant MiniMax H3 prompt and event-owned shot plan. "
-                "Requires the Qwen3.5/3.6/3.8 backend selected by its connected HR Qwen Director Config."
+                "Uses exactly the Gemma 4 or Qwen3.5/3.6/3.8 backend selected by its connected Director Config."
             ),
             inputs=[
                 io.String.Input("story", multiline=True, dynamic_prompts=True),
@@ -59,10 +60,8 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
         if not images:
             raise ValueError("HR H3 Prompt Skill Compiler requires at least one identity/reference picture")
         config = normalize_qwen38_config(director_config)
-        if config["backend"] not in QWEN_DIRECTOR_BACKENDS:
-            raise ValueError("HR H3 Prompt Skill Compiler requires a Qwen3.5/3.6/3.8 Director Config")
         selection = resolve_director_selection(config["backend"], config["model"], config["mmproj"])
-        if selection.model_path is None or selection.mmproj_path is None:
+        if config["backend"] in QWEN_DIRECTOR_BACKENDS and (selection.model_path is None or selection.mmproj_path is None):
             raise ValueError("Prompt Skill Compiler requires a local matching Qwen model and mmproj")
         request = build_prompt_skill_request(
             story, duration_seconds=duration_seconds, fps=fps, image_count=len(images),
@@ -71,14 +70,20 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
         )
         comfy.model_management.unload_all_models()
         comfy.model_management.soft_empty_cache()
-        director = Qwen35ContinuityDirector(
-            selection.model_path, selection.mmproj_path,
-            debug=config["debug"], mtp_enabled=config["mtp"],
-            mtp_draft_tokens=config["mtp_draft_tokens"],
-            reasoning_effort=config["reasoning_effort"],
-            cpu_moe=config["cpu_moe"], n_cpu_moe=config["n_cpu_moe"],
-            backend=config["backend"],
-        )
+        if config["backend"] == "gemma4":
+            director = Gemma4ContinuityDirector(
+                debug=config["debug"], gemma4_mtp=config["mtp"],
+                model_path=selection.model_path, mmproj_path=selection.mmproj_path,
+            )
+        else:
+            director = Qwen35ContinuityDirector(
+                selection.model_path, selection.mmproj_path,
+                debug=config["debug"], mtp_enabled=config["mtp"],
+                mtp_draft_tokens=config["mtp_draft_tokens"],
+                reasoning_effort=config["reasoning_effort"],
+                cpu_moe=config["cpu_moe"], n_cpu_moe=config["n_cpu_moe"],
+                backend=config["backend"],
+            )
         result = director.compile_prompt_skill(request, images)
         plan = result["shot_plan"]
         warnings = result.get("warnings", ())
