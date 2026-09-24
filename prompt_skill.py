@@ -444,8 +444,26 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     used = [0] * len(shots)
     current_shot = 0
     split_count = 0
-    for _original_shot, dialogue in dialogues:
+
+    def reserve_silent_frames(frame_count: int) -> None:
+        nonlocal current_shot
+        remaining_frames = max(0, int(frame_count))
+        while remaining_frames and current_shot < len(shots):
+            capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
+            consumed = min(capacity, remaining_frames)
+            used[current_shot] += consumed
+            remaining_frames -= consumed
+            if remaining_frames:
+                current_shot += 1
+        if remaining_frames:
+            raise ValueError("The complete video timeline is too short for the visible speaker lead-in and mandatory dialogue")
+
+    reserve_silent_frames(round(2.0 * fps))
+    for dialogue_index, (_original_shot, dialogue) in enumerate(dialogues):
+        if dialogue_index:
+            reserve_silent_frames(round(0.5 * fps))
         remaining = str(dialogue["text"]).strip()
+        fragment_index = 0
         while remaining:
             while current_shot < len(shots):
                 capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
@@ -471,9 +489,13 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
             item = dict(dialogue)
             item["text"] = fragment
             item["id"] = f"S{current_shot + 1}.D{len(normalized_shots[current_shot]['dialogues']) + 1}"
+            item["continues_from_previous"] = fragment_index > 0
+            item["start_frame"] = int(shots[current_shot]["start_frame"]) + used[current_shot]
+            item["end_frame"] = item["start_frame"] + math.ceil(_line_spoken_duration_seconds(fragment) * fps)
             normalized_shots[current_shot]["dialogues"].append(item)
-            used[current_shot] += math.ceil(_line_spoken_duration_seconds(fragment) * fps)
+            used[current_shot] = item["end_frame"] - int(shots[current_shot]["start_frame"])
             remaining = remaining[len(fragment):]
+            fragment_index += 1
             if remaining:
                 current_shot += 1
     returned = "".join(
@@ -546,6 +568,8 @@ def _dialogue_description(item: dict[str, str]) -> str:
     speaker_id = item["speaker_id"]
     delivery = item["delivery"]
     tagged = f"<d>[{item['language']}] {item['text']}</d>"
+    if item.get("continues_from_previous"):
+        return f"{speaker} ({speaker_id}) continues the same uninterrupted utterance: {tagged} with synchronized visible lip movement; do not pause, restart, or take a new breath at this shot boundary."
     if item["kind"] == "voiceover":
         return f"{speaker} ({speaker_id}) says in an off-screen voiceover, {delivery}: {tagged} while the corresponding on-screen character's lips remain completely closed."
     if item["kind"] == "monologue":
@@ -1000,11 +1024,23 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
             event["end_frame"] = shot_start + round(shot_frames * (event_index + 1) / event_count)
         dialogue_cursor = shot_start
         for item in normalized_dialogues:
-            item["start_frame"] = dialogue_cursor
-            item["end_frame"] = min(
-                shot_end,
-                dialogue_cursor + math.ceil(_line_spoken_duration_seconds(item["text"]) * float(request["fps"])),
-            )
+            scheduled_start = item.get("start_frame")
+            scheduled_end = item.get("end_frame")
+            if scheduled_start is not None or scheduled_end is not None:
+                if not isinstance(scheduled_start, int) or not isinstance(scheduled_end, int):
+                    raise ValueError(f"shots[{index}] dialogue frame interval must use integer boundaries")
+                if scheduled_start < dialogue_cursor or scheduled_end <= scheduled_start or scheduled_end > shot_end:
+                    raise ValueError(
+                        f"shots[{index}] has invalid dialogue frame interval [{scheduled_start},{scheduled_end})"
+                    )
+                item["start_frame"] = scheduled_start
+                item["end_frame"] = scheduled_end
+            else:
+                item["start_frame"] = dialogue_cursor
+                item["end_frame"] = min(
+                    shot_end,
+                    dialogue_cursor + math.ceil(_line_spoken_duration_seconds(item["text"]) * float(request["fps"])),
+                )
             dialogue_cursor = item["end_frame"]
         dialogue_frames = sum(item["end_frame"] - item["start_frame"] for item in normalized_dialogues)
         if float(request.get("minimum_spoken_duration_seconds", 0.0)) > 0.0 and dialogue_frames > shot_frames:
@@ -1284,6 +1320,10 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
         ))
         overlap_start = max(dialogue_start, int(frame_start))
         overlap_end = min(dialogue_end, int(frame_end))
+        if dialogue_start > int(frame_start) and dialogue_start < int(frame_end) and not dialogue.get("continues_from_previous"):
+            parts.append(
+                f"Before speaking begins, {dialogue['speaker']} must already be clearly visible on screen with closed lips; establish the speaker visually first."
+            )
         if overlap_start < overlap_end:
             fragment = slice_dialogue_for_interval(
                 _dialogue_description(dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end
