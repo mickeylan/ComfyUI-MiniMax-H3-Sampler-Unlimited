@@ -947,7 +947,7 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(keyframe["resolved_frame_index"], 0)
         self.assertIs(keyframe["latent"], boundary_latent)
 
-    def test_continuation_prompt_uses_only_synchronized_video_audio_reference_contract(self):
+    def test_continuation_prompt_describes_synchronized_reference_and_timeline_audio(self):
         prompt = nodes._video_continuation_prompt(
             "subject_definitions:\n<Subject 1> is ready.\n\nsummary:\nContinue.\n\n"
             "retention_analysis:\nKeep continuity.\n\ndetailed_description:\nAction.",
@@ -964,7 +964,8 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             True, 0, 0, 22, "<Video 2>", "<Audio 1>", True,
         )
         self.assertIn("22-frame continuation reference as <Video 2> with synchronized <Audio 1>", context)
-        self.assertIn("it has no separate audio keyframe", context)
+        self.assertIn("a separate 24-frame-equivalent real previous audio-latent tail", context)
+        self.assertIn("ends exactly at that video boundary", context)
 
     def test_video_audio_reference_preserves_synchronized_audio_tail(self):
         video = torch.zeros((1, 24, 7, 40, 68))
@@ -974,6 +975,52 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(block["ref_audio_t"], 36)
         self.assertIs(block["audio_latent"], audio)
         self.assertTrue(torch.equal(block["audio_latent"], audio))
+
+    def test_timeline_audio_context_uses_one_second_real_tail_and_grid_aligned_end(self):
+        previous = torch.arange(65, dtype=torch.float32).reshape(1, 1, 1, 65).expand(1, 32, 2, 65).clone()
+        tail, end_frame = nodes._timeline_audio_context(previous, 39, 5)
+        self.assertEqual(tail.shape[-1], 40)
+        self.assertTrue(torch.equal(tail, previous[..., -40:]))
+        self.assertNotEqual(tail.data_ptr(), previous.data_ptr())
+        self.assertEqual(end_frame, 4.8)
+        start_frame = end_frame - tail.shape[-1] / nodes.FRAME_RESCALE
+        self.assertEqual(start_frame, -19.2)
+
+    def test_timeline_audio_context_compensates_signed_overhang_before_grid_snap(self):
+        positive = torch.zeros((1, 32, 2, 207))
+        _tail, positive_end = nodes._timeline_audio_context(positive, 124, 5)
+        self.assertAlmostEqual(positive_end, 5.4)
+
+        negative = torch.zeros((1, 32, 2, 433))
+        _tail, negative_end = nodes._timeline_audio_context(negative, 260, 5)
+        self.assertAlmostEqual(negative_end, 4.8)
+
+    def test_timeline_audio_context_uses_all_available_short_audio(self):
+        previous = torch.arange(8, dtype=torch.float32).reshape(1, 1, 1, 8).expand(1, 32, 2, 8).clone()
+        tail, _end_frame = nodes._timeline_audio_context(previous, 5, 5)
+        self.assertEqual(tail.shape[-1], 8)
+        self.assertTrue(torch.equal(tail, previous))
+
+    def test_timeline_audio_layout_contract_accepts_fractional_negative_anchor_with_refs(self):
+        with patch.object(nodes, "_H3_TIMELINE_AUDIO_CONTRACT_CHECKED", False):
+            nodes._ensure_h3_timeline_audio_contract()
+            self.assertTrue(nodes._H3_TIMELINE_AUDIO_CONTRACT_CHECKED)
+
+    def test_chunk_conditioning_places_timeline_audio_before_the_join(self):
+        audio = torch.zeros((1, 32, 2, 40))
+        conds = nodes._conditioning_for_chunk(
+            {"positive": [{}], "negative": [{}]},
+            39, 73, (torch.zeros((1, 1, 1)), {}),
+            audio_context=audio, audio_end_frame=4.8,
+            video_refs=[nodes._video_ref_block(torch.zeros((1, 24, 7, 4, 6)), torch.zeros((1, 32, 2, 36)))],
+        )
+        for group in ("positive", "negative"):
+            keyframes = conds[group][0]["minimax_keyframes"]
+            audio_keyframe = next(item for item in keyframes if item.get("audio_latent") is audio)
+            self.assertEqual(audio_keyframe["resolved_frame_index"], -19.2)
+            refs = conds[group][0]["minimax_refs"]
+            self.assertEqual(refs[-1]["kind"], "video_audio")
+            self.assertEqual(refs[-1]["ref_audio_t"], 36)
 
     def test_continuation_keyframe_replaces_same_position_visual_anchor(self):
         old = torch.zeros((1, 24, 2, 2, 2))

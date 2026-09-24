@@ -1129,7 +1129,11 @@ def _gemma_conditioning_context(continuation, context_keyframes, guide_overlap, 
         if not context_keyframes:
             sources.append(
                 "one fixed five-frame video keyframe clip made from the previous chunk's exact final tail, "
-                "anchored across the discarded packing prefix; it has no separate audio keyframe"
+                "anchored across the discarded packing prefix"
+            )
+            sources.append(
+                f"a separate {TIMELINE_AUDIO_CONTEXT_FRAMES}-frame-equivalent real previous audio-latent tail "
+                "pinned backwards on this chunk's timeline so it ends exactly at that video boundary"
             )
     if guide_overlap:
         sources.append(
@@ -1552,6 +1556,74 @@ def _visual_only_reference_conds(conds):
         ]} for cond in values]
         for name, values in conds.items()
     }
+
+
+TIMELINE_AUDIO_CONTEXT_FRAMES = 24
+_H3_TIMELINE_AUDIO_CONTRACT_CHECKED = False
+
+
+def _ensure_h3_timeline_audio_contract():
+    global _H3_TIMELINE_AUDIO_CONTRACT_CHECKED
+    if _H3_TIMELINE_AUDIO_CONTRACT_CHECKED:
+        return
+
+    text_len, latent_t, latent_h, latent_w, audio_t = 7, 7, 4, 6, 16
+    audio_steps = 40
+    end_frame = 5.0
+    start_frame = end_frame - audio_steps / FRAME_RESCALE
+    audio = torch.empty((1, 32, 2, audio_steps))
+    ref = {"kind": "video_audio", "ref_audio_t": 8, "latent_t": 2, "latent_h": 4, "latent_w": 6}
+    layout = PackedLayout(
+        text_len, latent_t, latent_h, latent_w, audio_t,
+        keyframes=[{"resolved_frame_index": start_frame, "audio_latent": audio}],
+        refs=[ref],
+    )
+    cond_segments = [(start, end) for start, end, kind in layout.segments if kind == "cond_audio"]
+    if len(cond_segments) != 1:
+        raise RuntimeError("HR Endless Sampler H3 layout produced an invalid timeline audio segment count")
+    start, end = cond_segments[0]
+    if end - start != audio_steps * 2:
+        raise RuntimeError("HR Endless Sampler H3 layout produced an invalid timeline audio row count")
+    target_start = next(start for start, _end, kind in layout.segments if kind == "audio")
+    target_origin = float(layout.position_ids[target_start, 0])
+    positions = layout.position_ids[start:end, 0]
+    actual_start = float(positions.min()) - target_origin
+    actual_end = float(positions.max()) - target_origin + 1.0
+    expected_start = FRAME_RESCALE * start_frame
+    expected_end = FRAME_RESCALE * end_frame
+    if abs(actual_start - expected_start) > 1e-9 or abs(actual_end - expected_end) > 1e-9:
+        raise RuntimeError(
+            "HR Endless Sampler H3 layout does not preserve fractional negative timeline audio anchors"
+        )
+    _H3_TIMELINE_AUDIO_CONTRACT_CHECKED = True
+
+
+def _timeline_audio_context(previous_audio, previous_frame_count, boundary_frames):
+    if previous_audio is None:
+        return None, 0.0
+    if previous_audio.ndim != 4:
+        raise ValueError(
+            f"HR Endless Sampler previous audio latent must be [B,C,T,L], got {tuple(previous_audio.shape)}"
+        )
+    previous_frames = int(previous_frame_count)
+    if previous_frames <= 0:
+        raise ValueError("HR Endless Sampler timeline audio continuation requires a positive previous frame count")
+
+    total_steps = int(previous_audio.shape[-1])
+    overhang = total_steps - FRAME_RESCALE * previous_frames
+    if not (-0.5 < overhang < 0.5):
+        raise ValueError(
+            f"HR Endless Sampler previous audio grid is inconsistent: "
+            f"{total_steps} steps for {previous_frames} frames"
+        )
+    context_steps = min(total_steps, round(TIMELINE_AUDIO_CONTEXT_FRAMES * FRAME_RESCALE))
+    if context_steps < 1:
+        raise ValueError("HR Endless Sampler timeline audio continuation window is empty")
+
+    end_frame = float(boundary_frames) + overhang / FRAME_RESCALE
+    end_frame = round(FRAME_RESCALE * end_frame) / FRAME_RESCALE
+    _ensure_h3_timeline_audio_contract()
+    return previous_audio[..., -context_steps:].clone(), end_frame
 
 
 def _validate_h3_audio_conditioning(conds):
@@ -4180,11 +4252,23 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 audio_context = None if previous_audio is None or not guide_enabled else previous_audio[..., -guide_audio_t:].clone()
                 video_context_start = 0
                 audio_end_frame = float(keyframe_duration_frames)
+                if index > 0:
+                    audio_context, audio_end_frame = _timeline_audio_context(
+                        previous_audio,
+                        previous_frame_count,
+                        chunk.get("output_trim_frames", 0),
+                    )
+                    if debug:
+                        logging.info(
+                            "HR Endless Sampler chunk %d/%d timeline audio continuation: "
+                            "%d real previous latent steps end-aligned at local frame %.3f.",
+                            index + 1, len(active_plan), audio_context.shape[-1], audio_end_frame,
+                        )
                 if external_active and index == 0:
                     video_context = previous_video.clone()
                     audio_context = previous_audio.clone() if external_audio_mode == "continue" else None
                     audio_end_frame = float(external_frame_count)
-                if audio_context is not None:
+                if audio_context is not None and index == 0:
                     overhang = previous_audio.shape[-1] - FRAME_RESCALE * previous_frame_count
                     audio_end_frame += overhang / FRAME_RESCALE
                 video_items = []
