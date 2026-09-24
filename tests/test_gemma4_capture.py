@@ -23,6 +23,15 @@ import gemma4_mtp  # noqa: E402
 
 
 class GemmaCaptureTest(unittest.TestCase):
+    def test_llama_0349_negative_multimodal_token_is_native_decode_failure(self):
+        self.assertTrue(gemma4._is_native_decode_failure(
+            "Llama.eval: invalid negative token id at index 958: -10910136"
+        ))
+        self.assertTrue(gemma4._is_native_decode_failure(
+            "Llama.eval(decode): Failed completely even with batch size 1."
+        ))
+        self.assertFalse(gemma4._is_native_decode_failure("invalid Prompt Skill structure"))
+
     def test_mtp_resolves_only_beside_selected_model_without_download(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -3430,6 +3430,12 @@ def _stream_worker_output(
     return "".join(output)
 
 
+def _is_native_decode_failure(message: str) -> bool:
+    """Recognize llama.cpp decode transport failures across binding versions."""
+    text = str(message).strip()
+    return text.startswith("Llama.eval:") or text.startswith("Llama.eval(decode):")
+
+
 def _observe_in_worker(request: dict[str, Any], progress_callback: Any = None) -> GemmaChunkPrompt:
     command = [sys.executable, "-u", str(Path(__file__).resolve()), "--worker"]
     process = subprocess.Popen(
@@ -3473,7 +3479,7 @@ def _observe_in_worker(request: dict[str, Any], progress_callback: Any = None) -
                 worker_error_type=worker_error_type,
                 raw_json=raw_json,
             )
-        if message.startswith("Llama.eval(decode):"):
+        if _is_native_decode_failure(message):
             raise Gemma4WorkerExitError(
                 message,
                 returncode=process.returncode,
@@ -3507,6 +3513,9 @@ def _prompt_skill_in_worker(request: dict[str, Any], progress_callback: Any = No
         if result.get("error_type") in {"Gemma4MTPError", "Gemma4MTPOutputError"}:
             raise Gemma4WorkerExitError(message, returncode=process.returncode,
                                         worker_error_type=str(result["error_type"]), raw_json=raw_json)
+        if _is_native_decode_failure(message):
+            raise Gemma4WorkerExitError(message, returncode=process.returncode,
+                                        worker_error_type="native decode failure", raw_json=raw_json)
         raise Gemma4ObservationError(message, raw_json=raw_json)
     if process.returncode != 0:
         raise Gemma4WorkerExitError(f"Gemma 4 Prompt Skill worker exited with status {process.returncode}",
@@ -3557,7 +3566,7 @@ def _plan_timing_in_worker(request: dict[str, Any], progress_callback: Any = Non
                 worker_error_type=worker_error_type,
                 raw_json=raw_json,
             )
-        if message.startswith("Llama.eval(decode):"):
+        if _is_native_decode_failure(message):
             raise Gemma4WorkerExitError(
                 message,
                 returncode=process.returncode,
