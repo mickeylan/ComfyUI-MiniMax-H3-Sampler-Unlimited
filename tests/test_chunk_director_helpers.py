@@ -963,11 +963,27 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         context = nodes._gemma_conditioning_context(
             True, 0, 0, 22, "<Video 2>", "<Audio 1>", True,
         )
-        self.assertIn("22-frame continuation reference as <Video 2> with synchronized <Audio 1>", context)
+        self.assertIn("22-frame visual-only continuation reference as <Video 2>", context)
+        self.assertNotIn("<Audio 1>", context)
         self.assertIn("a separate 24-frame-equivalent real previous audio-latent tail", context)
         self.assertIn("ends exactly at that video boundary", context)
 
-    def test_video_audio_reference_preserves_synchronized_audio_tail(self):
+    def test_planned_continuation_prompt_does_not_advertise_reference_audio(self):
+        plan = [
+            {"frame_start": 0, "frame_end": 39, "output_trim_frames": 0},
+            {"frame_start": 34, "frame_end": 73, "output_trim_frames": 5},
+        ]
+        prompt = (
+            "subject_definitions:\n<Subject 1> is ready.\n\nsummary:\nContinue.\n\n"
+            "retention_analysis:\nKeep continuity.\n\ndetailed_description:\n[Shot 1] Action."
+        )
+        planned = nodes._planned_chunk_prompts(prompt, plan, plan, 24.0, 0, 22, True, 1, 1)
+        continuation = planned[1][0]
+        self.assertIn("<Video 1> is the continuation source", continuation)
+        self.assertNotIn("<Audio 1>", continuation)
+        self.assertNotIn("synchronized soundtrack", continuation)
+
+    def test_video_audio_reference_helper_preserves_synchronized_audio_tail(self):
         video = torch.zeros((1, 24, 7, 40, 68))
         audio = torch.arange(36, dtype=torch.float32).reshape(1, 1, 1, 36).expand(1, 32, 2, 36).clone()
         block = nodes._normalize_h3_video_ref(nodes._video_ref_block(video, audio))
@@ -1012,15 +1028,16 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             {"positive": [{}], "negative": [{}]},
             39, 73, (torch.zeros((1, 1, 1)), {}),
             audio_context=audio, audio_end_frame=4.8,
-            video_refs=[nodes._video_ref_block(torch.zeros((1, 24, 7, 4, 6)), torch.zeros((1, 32, 2, 36)))],
+            video_refs=[nodes._video_ref_block(torch.zeros((1, 24, 7, 4, 6)), None)],
         )
         for group in ("positive", "negative"):
             keyframes = conds[group][0]["minimax_keyframes"]
             audio_keyframe = next(item for item in keyframes if item.get("audio_latent") is audio)
             self.assertEqual(audio_keyframe["resolved_frame_index"], -19.2)
             refs = conds[group][0]["minimax_refs"]
-            self.assertEqual(refs[-1]["kind"], "video_audio")
-            self.assertEqual(refs[-1]["ref_audio_t"], 36)
+            self.assertEqual(refs[-1]["kind"], "video")
+            self.assertEqual(refs[-1]["ref_audio_t"], 0)
+            self.assertIsNone(refs[-1]["audio_latent"])
 
     def test_continuation_keyframe_replaces_same_position_visual_anchor(self):
         old = torch.zeros((1, 24, 2, 2, 2))

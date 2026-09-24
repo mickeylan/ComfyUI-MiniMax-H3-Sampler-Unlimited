@@ -974,7 +974,7 @@ def _planned_chunk_prompts(prompt, plan, active_plan, fps, guide_frames, video_c
         continuation = index > 0
         content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
         continuation_video_label = f"<Video {video_number}>" if continuation and video_continuation else None
-        continuation_audio_label = f"<Audio {audio_number}>" if continuation and video_continuation else None
+        continuation_audio_label = None
         chunk_prompt = _prompt_for_chunk(
             prompt,
             chunk["frame_start"],
@@ -1123,8 +1123,7 @@ def _gemma_conditioning_context(continuation, context_keyframes, guide_overlap, 
     if video_continuation:
         if include_video1_reference:
             sources.append(
-                f"a bounded {video_continuation}-frame continuation reference as {video_label} "
-                f"with synchronized {audio_label}"
+                f"a bounded {video_continuation}-frame visual-only continuation reference as {video_label}"
             )
         if not context_keyframes:
             sources.append(
@@ -4063,7 +4062,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                             ]
 
                         continuation_video_label = f"<Video {video_number}>" if include_video1_reference else None
-                        continuation_audio_label = f"<Audio {audio_number}>" if include_video1_reference else None
+                        continuation_audio_label = None
                         target_shots = _gemma_shot_records(
                             gemma_shots,
                             content_start,
@@ -4307,19 +4306,15 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     if include_video1_reference:
                         reference_latent = previous_video[:, :, -_video_steps(video_continuation):].clone()
                         full_reference_latent = reference_latent
-                        reference_audio_t = _audio_steps(content_start) - _audio_steps(content_start - video_continuation)
-                        reference_audio = previous_audio[..., -reference_audio_t:].clone()
+                        reference_audio = None
                         if vram_monitor is not None:
                             vram_monitor.report(
                                 f"chunk {index + 1}/{len(active_plan)} before continuation VAE decode",
                                 {
                                     "continuation video latent": reference_latent,
-                                    "continuation audio latent": reference_audio,
+                                    "timeline audio latent": audio_context,
                                 },
                             )
-                        # ComfyUI's native video+soundtrack presentation emits the
-                        # audio label immediately before the matching video label.
-                        video_items.append({"type": "audio"})
                         timer_started = time.perf_counter()
                         try:
                             decoded_reference_frames = _decode_video_frames(vae, reference_latent)
@@ -4364,7 +4359,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                             full_reference_latent,
                         )
                         full_reference_latent = None
-                        video_refs.append(_video_ref_block(reference_latent, reference_audio))
+                        video_refs.append(_video_ref_block(reference_latent, None))
                 if continuation and qwen_full_history:
                     history_latent = torch.cat(output_video, dim=2)
                     if vram_monitor is not None:
@@ -4393,7 +4388,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     if gemma_description is None:
                         raise RuntimeError("Gemma director completed without a detailed_description")
                     continuation_video_label = f"<Video {video_number}>" if continuation and include_video1_reference else None
-                    continuation_audio_label = f"<Audio {audio_number}>" if continuation and include_video1_reference else None
+                    continuation_audio_label = None
                     chunk_prompt = _prompt_with_gemma_description(
                         planned_prompts[index][0] if typed_prompt_plan is not None else prompt,
                         gemma_description,
