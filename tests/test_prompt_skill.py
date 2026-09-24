@@ -1011,6 +1011,32 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("[Shot 1]", prompts[0])
         self.assertTrue(all("[Shot 1]" not in prompt for prompt in prompts[1:]))
 
+    def test_authoritative_dialogue_suppresses_generic_speaking_event(self):
+        text = "这样真的来得及吗？"
+        plan = {
+            "fps": 24.0,
+            "image_subjects": [{"picture": 1, "subject": 1, "name": "Speaker", "observable_features": ""}],
+            "shots": [{
+                "start_frame": 0, "end_frame": 80, "pictures": [1], "camera": "locked medium shot",
+                "start_state": "speaker already present", "end_state": "speaker finishes the line",
+                "forbidden_replays": [], "audio": "N/A", "visual_description": "The speaker watches her sister.",
+                "events": [{
+                    "id": "S1.V1", "action": "asset_1 speaks to asset_2 about their training.", "phase": "start",
+                    "start_frame": 0, "end_frame": 80,
+                }],
+                "dialogues": [{
+                    "id": "S1.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
+                    "language": "Chinese", "text": text, "delivery": "清晰而担忧地",
+                    "start_frame": 0, "end_frame": 80,
+                }],
+            }],
+            "non_diegetic_music": "N/A",
+        }
+        localized = prompt_skill.localize_prompt_from_plan("", plan, frame_start=40, frame_end=80)
+        self.assertNotIn("speaks to asset_2", localized)
+        self.assertEqual(localized.count(text), 1)
+        self.assertIn(f"<d>[Chinese] {text}</d>", localized)
+
     def test_event_timeline_advances_once_across_physical_chunks(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)

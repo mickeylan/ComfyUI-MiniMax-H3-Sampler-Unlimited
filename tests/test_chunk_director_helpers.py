@@ -947,89 +947,37 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(keyframe["resolved_frame_index"], 0)
         self.assertIs(keyframe["latent"], boundary_latent)
 
-    def test_audio_continuation_uses_real_previous_tail_on_exact_h3_timeline(self):
-        plan = nodes._chunk_plan_without_overlap(
-            nodes._video_steps(107), nodes._audio_steps(107), 39,
+    def test_original_audio_overlap_ownership_trims_each_later_chunk_head(self):
+        plan = nodes._chunk_plan(
+            nodes._video_steps(107), nodes._audio_steps(107), 39, 5,
+        )
+        delivered_steps = sum(
+            int(chunk["audio_end"] - chunk["audio_start"])
+            - (0 if index == 0 else int(chunk["context_audio_t"]))
+            for index, chunk in enumerate(plan)
+        )
+        self.assertEqual(delivered_steps, nodes._audio_steps(107))
+
+    def test_explicit_audio_guide_uses_previous_tail_without_post_assembly_replacement(self):
+        plan = nodes._chunk_plan(
+            nodes._video_steps(73), nodes._audio_steps(73), 39, 5,
         )
         previous = torch.arange(65, dtype=torch.float32).reshape(1, 1, 1, 65).expand(1, 32, 2, 65).clone()
-        first_tail, first_end = nodes._continuation_audio_context(previous, 39, plan[1])
-        self.assertEqual(first_tail.shape[-1], plan[1]["context_audio_t"])
-        self.assertTrue(torch.equal(first_tail, previous[..., -plan[1]["context_audio_t"]:]))
-        self.assertNotEqual(first_tail.data_ptr(), previous.data_ptr())
-        self.assertEqual(first_end, 5.0)
-
-        rounded_previous = torch.arange(57, dtype=torch.float32).reshape(1, 1, 1, 57).expand(1, 32, 2, 57).clone()
-        rounded_tail, rounded_end = nodes._continuation_audio_context(rounded_previous, 34, plan[2])
-        self.assertEqual(rounded_tail.shape[-1], plan[2]["context_audio_t"])
-        self.assertAlmostEqual(rounded_end, 5.2)
-
+        tail_steps = int(plan[1]["context_audio_t"])
+        tail = previous[..., -tail_steps:].clone()
         conds = nodes._conditioning_for_chunk(
             {"positive": [{}], "negative": [{}]},
             plan[1]["frame_start"], plan[1]["frame_end"],
             (torch.zeros((1, 1, 1)), {}),
-            audio_context=first_tail, audio_end_frame=first_end,
+            audio_context=tail, audio_end_frame=5.0,
         )
         for group in ("positive", "negative"):
             keyframe = conds[group][0]["minimax_keyframes"][0]
-            self.assertIs(keyframe["audio_latent"], first_tail)
+            self.assertIs(keyframe["audio_latent"], tail)
             self.assertAlmostEqual(
                 keyframe["resolved_frame_index"],
-                first_end - first_tail.shape[-1] / nodes.FRAME_RESCALE,
+                5.0 - tail.shape[-1] / nodes.FRAME_RESCALE,
             )
-
-    def test_later_chunk_owns_complete_audio_overlap_without_length_drift(self):
-        parts = []
-        first = torch.full((1, 2, 2, 65), 1.0)
-        second = torch.cat((
-            torch.full((1, 2, 2, 8), 2.0),
-            torch.full((1, 2, 2, 57), 3.0),
-        ), dim=-1)
-        third = torch.cat((
-            torch.full((1, 2, 2, 9), 4.0),
-            torch.full((1, 2, 2, 56), 5.0),
-        ), dim=-1)
-        nodes._append_audio_with_overlap(parts, first, 0)
-        nodes._append_audio_with_overlap(parts, second, 8)
-        nodes._append_audio_with_overlap(parts, third, 9)
-        assembled = torch.cat(parts, dim=-1)
-        self.assertEqual(assembled.shape[-1], 65 + 57 + 56)
-        self.assertTrue(torch.all(assembled[..., :57] == 1.0))
-        self.assertTrue(torch.all(assembled[..., 57:65] == 2.0))
-        self.assertTrue(torch.all(assembled[..., 65:113] == 3.0))
-        self.assertTrue(torch.all(assembled[..., 113:122] == 4.0))
-        self.assertTrue(torch.all(assembled[..., 122:] == 5.0))
-
-    def test_saved_audio_overlap_reconstructs_the_same_sequence_after_resume(self):
-        states = [
-            {"output_audio": torch.full((1, 2, 2, 65), 1.0), "audio_overlap_steps": 0},
-            {
-                "output_audio": torch.full((1, 2, 2, 57), 3.0),
-                "output_audio_with_overlap": torch.cat((
-                    torch.full((1, 2, 2, 8), 2.0),
-                    torch.full((1, 2, 2, 57), 3.0),
-                ), dim=-1),
-                "audio_overlap_steps": 8,
-            },
-        ]
-        parts = []
-        for state in states:
-            nodes._append_saved_audio(parts, state, "output_audio", "output_audio_with_overlap")
-        assembled = torch.cat(parts, dim=-1)
-        self.assertEqual(assembled.shape[-1], 122)
-        self.assertTrue(torch.all(assembled[..., :57] == 1.0))
-        self.assertTrue(torch.all(assembled[..., 57:65] == 2.0))
-        self.assertTrue(torch.all(assembled[..., 65:] == 3.0))
-
-    def test_audio_overlap_requires_a_previous_chunk(self):
-        with self.assertRaisesRegex(ValueError, "without a previous chunk"):
-            nodes._append_audio_with_overlap([], torch.zeros((1, 32, 2, 65)), 8)
-
-    def test_audio_continuation_rejects_inconsistent_previous_grid(self):
-        plan = nodes._chunk_plan_without_overlap(
-            nodes._video_steps(73), nodes._audio_steps(73), 39,
-        )
-        with self.assertRaisesRegex(ValueError, "previous audio grid is inconsistent"):
-            nodes._continuation_audio_context(torch.zeros((1, 32, 2, 64)), 39, plan[1])
 
     def test_continuation_keyframe_replaces_same_position_visual_anchor(self):
         old = torch.zeros((1, 24, 2, 2, 2))

@@ -152,18 +152,18 @@ Hard rules:
 - Every event has one stable ID such as S2.V1 and may start in only one shot.
 - Every shot has camera, start_state, events, dialogues, end_state, forbidden_replays, audio, start_frame, and end_frame.
 - Each event contains id, action, and phase (start, continue, or complete).
-- Preserve every user-provided spoken line verbatim; never translate, paraphrase, shorten, or invent dialogue. A long line may be split into consecutive dialogue fragments across adjacent shots only when those fragments concatenate to the exact original line.
+- Preserve every user-provided spoken line verbatim; never translate, paraphrase, shorten, or invent dialogue; never split it. One complete source utterance belongs to exactly one real shot.
 - The numbered mandatory spoken-line list is chronological and authoritative. dialogues across shots and within each shot must follow that exact global order; never swap speakers or reorder fragments for dramatic effect.
 - Each dialogue contains id, kind, speaker, speaker_id, language, text, and delivery. kind is dialogue, monologue, or voiceover. Use stable speaker IDs S1, S2, ... across all shots.
-- One source utterance may span consecutive real shots. Keep it as one continuous utterance: the compiler assigns one stable utterance_id to all fragments, the first fragment starts speaking, later fragments continue speaking, and a real cut uses <scenetrans>. Never restart the speaker or repeat earlier words.
-- Physical sampler chunk boundaries are not real cuts and never use <scenetrans>. Use <cutoff> only when the complete video's final frame genuinely truncates unfinished source speech, never for a shot or physical chunk boundary.
+- Never divide one source utterance across real shots. Allocate one shot long enough for its complete natural delivery; if no shot can hold it, the plan is invalid and must be corrected.
+- Physical sampler chunk boundaries are not story cuts and must not divide, rewrite, or assign character ranges inside a source utterance. Use <cutoff> only when the complete video's final frame genuinely truncates unfinished source speech.
 - dialogue.text contains only the exact spoken words without quotation marks or <d> tags. dialogue.language names the spoken language, regardless of prompt_lang.
 - Visible referenced speakers use speaker="asset_N". That entity must be classified as kind=character and included in the same shot's pictures list. A scene or prop can never speak.
 - For kind=voiceover, the compiled prompt will state that the corresponding on-screen speaker's lips remain completely closed.
 - kind=dialogue is spoken to another character; kind=monologue is audible self-directed speech with visible lip movement; kind=voiceover is off-screen narration or internal narration with no lip movement.
 - Dialogue is concurrent with visual events, not a replacement visual event. Do not repeat dialogue in audio or overall_soundscape.
 - A visible speaker must already be present in that shot's start_state, pictures, and description before their first spoken fragment begins. Never schedule a character to enter in a later shot after they have already spoken.
-- Allocate enough shot duration for natural speech at approximately 4 Chinese characters per second or 2.5 English words per second, plus punctuation pauses. When dialogue exists, its complete natural delivery duration owns the total timeline even when shorter or longer than the requested duration. The sum of dialogue delivery time assigned to one shot must never exceed that shot's frame interval. Split long lines across consecutive shots instead of accelerating or overlapping them.
+- Allocate enough shot duration for natural speech at approximately 4 Chinese characters per second or 2.5 English words per second, plus punctuation pauses. When dialogue exists, its complete natural delivery duration owns the total timeline even when shorter or longer than the requested duration. The sum of dialogue delivery time assigned to one shot must never exceed that shot's frame interval. Never split a line across shots or accelerate/overlap it.
 - In a two-person conversation, classify addressed questions and replies as dialogue, not monologue. Keep the question on its actual asker and the reply on its actual respondent.
 - A later shot must use already/completed language instead of restarting an earlier action.
 - Preserve the same camera across adjacent shots when the story action or dialogue is continuous. Change camera side, scale, height, movement, or subject arrangement only for an intentional story cut; never invent a cut merely to make adjacent camera strings different.
@@ -206,7 +206,7 @@ Shot density: {request.get('shot_density', 'medium')}.
 Connected pictures:
 {inventory}
 
-Mandatory spoken lines detected verbatim in the story, in authoritative chronological order. Preserve every numbered occurrence in dialogues.text and this exact global order. A long line may be divided into consecutive fragments across adjacent shots, but concatenating all fragments must reproduce the original lines exactly. Do not omit, reorder, or rewrite any character or punctuation:
+Mandatory spoken lines detected verbatim in the story, in authoritative chronological order. Preserve every numbered occurrence as one complete dialogues.text value in this exact global order. Never split a line across shots, and do not omit, reorder, or rewrite any character or punctuation:
 {spoken_inventory}
 
 Authoritative speaker-to-character bindings extracted from the source story. Apply these bindings to every fragment and every shot; never remap a speaker ID:
@@ -445,7 +445,6 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     fps = float(request["fps"])
     used = [0] * len(shots)
     current_shot = 0
-    split_count = 0
     for utterance_index, (_original_shot, dialogue) in enumerate(dialogues, 1):
         full_text = str(dialogue["text"]).strip()
         utterance_id = str(dialogue.get("utterance_id", "")).strip() or f"U{utterance_index}"
@@ -1297,21 +1296,15 @@ def project_prompt_plan_interval(plan: dict[str, Any], *, frame_start: int, fram
     }
 
 
-def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
-                                active_events: tuple[dict[str, Any], ...]) -> str:
-    parts = []
-    if frame_start > int(shot["start_frame"]):
-        parts.append(
-            "Continue the already established shot without a cut, reframing, zoom, or restart of completed action."
-        )
-    if active_events:
-        parts.extend(str(event["action"]).strip() for event in active_events if str(event.get("action", "")).strip())
-    elif frame_start <= int(shot["start_frame"]):
-        visual = str(shot.get("visual_description", shot.get("description", ""))).strip()
-        if visual:
-            parts.append(visual)
-    else:
-        parts.append("Maintain the established post-action body orientation, positions, and composition; allow only natural breathing, lip movement, and subtle expression changes.")
+_GENERIC_SPEECH_EVENT = re.compile(
+    r"(?:\b(?:speaks?|talks?|says?|asks?|replies?|whispers?|shouts?)\b|"
+    r"(?:说话|说着|说道|开口|谈到|交谈|询问|问道|回答|答道|低语|耳语))",
+    re.IGNORECASE,
+)
+
+
+def _authoritative_dialogues_for_interval(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float) -> list[dict[str, Any]]:
+    result = []
     for dialogue in shot.get("dialogues", ()):
         if not isinstance(dialogue, dict) or not str(dialogue.get("text", "")).strip():
             continue
@@ -1320,13 +1313,32 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
             "end_frame",
             min(int(shot["end_frame"]), dialogue_start + math.ceil(_line_spoken_duration_seconds(str(dialogue["text"])) * float(fps))),
         ))
-        overlap_start = max(dialogue_start, int(frame_start))
-        overlap_end = min(dialogue_end, int(frame_end))
-        if overlap_start < overlap_end:
-            # Always include the complete dialogue text for this shot — never slice by character.
-            # One complete utterance belongs to exactly one shot.
-            full_description = _dialogue_description(dialogue)
-            parts.append(full_description)
+        if max(dialogue_start, int(frame_start)) < min(dialogue_end, int(frame_end)):
+            result.append(dialogue)
+    return result
+
+
+def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
+                                active_events: tuple[dict[str, Any], ...]) -> str:
+    parts = []
+    if frame_start > int(shot["start_frame"]):
+        parts.append(
+            "Continue the already established shot without a cut, reframing, zoom, or restart of completed action."
+        )
+    active_dialogues = _authoritative_dialogues_for_interval(shot, frame_start, frame_end, fps)
+    if active_events:
+        parts.extend(
+            action for event in active_events
+            if (action := str(event.get("action", "")).strip())
+            and not (active_dialogues and _GENERIC_SPEECH_EVENT.search(action))
+        )
+    elif frame_start <= int(shot["start_frame"]):
+        visual = str(shot.get("visual_description", shot.get("description", ""))).strip()
+        if visual:
+            parts.append(visual)
+    else:
+        parts.append("Maintain the established post-action body orientation, positions, and composition; allow only natural breathing, lip movement, and subtle expression changes.")
+    parts.extend(_dialogue_description(dialogue) for dialogue in active_dialogues)
     return " ".join(parts)
 
 
@@ -1368,8 +1380,14 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         localized_descriptions.append(description)
         local_shots.append(f"{marker} {description}")
     local_description = "\n".join(local_shots)
+    has_active_dialogue = any(
+        _authoritative_dialogues_for_interval(shot, frame_start, frame_end, float(plan["fps"]))
+        for shot in active
+    )
     summary = " ".join(
-        str(event["action"]).strip() for event in projection["active"] if str(event.get("action", "")).strip()
+        action for event in projection["active"]
+        if (action := str(event.get("action", "")).strip())
+        and not (has_active_dialogue and _GENERIC_SPEECH_EVENT.search(action))
     )
     retention = []
     for shot in active:
