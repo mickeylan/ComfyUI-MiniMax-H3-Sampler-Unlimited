@@ -37,24 +37,18 @@ spec.loader.exec_module(director_config)
 
 
 class DirectorConfigTests(unittest.TestCase):
-    def test_normalizes_gemma4_and_preserves_its_mtp_toggle(self):
-        config = director_config.normalize_qwen38_config({
-            "version": director_config.CONFIG_VERSION,
-            "backend": "gemma4",
-            "mtp": True,
-            "cpu_moe": True,
-            "n_cpu_moe": 8,
-        })
-        self.assertEqual(config["backend"], "gemma4")
-        self.assertTrue(config["mtp"])
-        self.assertFalse(config["cpu_moe"])
-        self.assertEqual(config["n_cpu_moe"], 0)
+    def test_rejects_gemma4_because_this_node_is_qwen_only(self):
+        with self.assertRaisesRegex(ValueError, "does not support gemma4"):
+            director_config.normalize_qwen38_config({
+                "version": director_config.CONFIG_VERSION,
+                "backend": "gemma4",
+            })
 
-    def test_gemma4_auto_pair_is_valid_for_sampler_default_download(self):
+    def test_qwen_backend_requires_a_complete_local_pair(self):
         selection = types.SimpleNamespace(model_path=None, mmproj_path=None)
         with patch.object(director_config, "resolve_director_selection", return_value=selection):
-            output = director_config.HRQwen38DirectorConfig.execute(backend="gemma4")
-        self.assertEqual(output[0]["backend"], "gemma4")
+            with self.assertRaisesRegex(ValueError, "requires a local qwen3.8"):
+                director_config.HRQwen38DirectorConfig.execute(backend="qwen3.8")
 
 
 if __name__ == "__main__":
