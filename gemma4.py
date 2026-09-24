@@ -3702,7 +3702,19 @@ class Gemma4ContinuityDirector:
         preserved_request = json.loads(json.dumps(request, ensure_ascii=False))
         director_name = "Qwen3.5" if preserved_request.get("director_backend") == "qwen3.5" else "Gemma 4"
         attempted_mtp = bool(preserved_request.get("gemma4_mtp", False))
-        use_mtp = attempted_mtp
+        has_mtmd_media = bool(preserved_request.get("image_urls"))
+        # llama.cpp represents MTMD media insertions as negative placeholder token
+        # ids. Native draft-MTP currently routes those ids through ordinary
+        # Llama.eval(), which rejects them before MTMD can replace them with
+        # embeddings. Use the original decoder for this media-bearing operation;
+        # text-only operations and the next independent operation retain MTP.
+        use_mtp = attempted_mtp and not has_mtmd_media
+        if attempted_mtp and has_mtmd_media:
+            logging.info(
+                "HR Endless Sampler Gemma 4 is using original non-MTP decoding for %s because the request "
+                "contains MTMD media placeholders; MTP remains enabled for independent text-only operations.",
+                operation,
+            )
         retries_used = 0
         retry_limit = 0 if director_name == "Qwen3.5" else GEMMA4_WORKER_RETRY_LIMIT
 

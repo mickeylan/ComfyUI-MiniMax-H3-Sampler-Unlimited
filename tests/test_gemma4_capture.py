@@ -48,7 +48,7 @@ class GemmaCaptureTest(unittest.TestCase):
             with self.assertRaisesRegex(gemma4.Gemma4DependencyError, "Automatic download is disabled"):
                 gemma4._ensure_mtp_model_file(model)
 
-    def test_prompt_skill_compile_uses_gemma_worker_without_backend_substitution(self):
+    def test_prompt_skill_compile_uses_gemma_without_mtp_for_mtmd_media(self):
         director = gemma4.Gemma4ContinuityDirector(gemma4_mtp=True)
         image = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
         compiled = {"prompt": "compiled by Gemma", "planned_frames": 22}
@@ -63,7 +63,7 @@ class GemmaCaptureTest(unittest.TestCase):
 
         self.assertIs(result, compiled)
         self.assertEqual(captured["director_backend"], "gemma4")
-        self.assertTrue(captured["gemma4_mtp"])
+        self.assertFalse(captured["gemma4_mtp"])
         self.assertEqual(len(captured["image_urls"]), 1)
         self.assertTrue(captured["image_urls"][0].startswith("data:image/jpeg;base64,"))
 
