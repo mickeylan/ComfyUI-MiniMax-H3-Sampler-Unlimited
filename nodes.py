@@ -2998,8 +2998,8 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 HRDirectorConfig.Input(
                     "director_config",
                     optional=True,
-                    tooltip=("Optional shared HR Qwen3.8 configuration. When connected, it overrides the legacy "
-                             "director widgets so Planner and Sampler use the same model and runtime settings."),
+                    tooltip=("Optional shared Gemma 4/Qwen director configuration. When connected, it overrides the legacy "
+                             "director widgets so compatible planners and Sampler use the same model and runtime settings."),
                 ),
                 HRReferenceSet.Input(
                     "reference_set",
