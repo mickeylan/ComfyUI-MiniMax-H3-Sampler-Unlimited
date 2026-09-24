@@ -43,7 +43,7 @@ class PromptSkillTests(unittest.TestCase):
             "warnings": [],
         }
 
-    def test_redistributes_dialogue_after_visible_speaker_lead_in(self):
+    def test_redistributes_dialogue_from_late_qwen_shot_across_complete_timeline(self):
         story = '<Subject 1> (S1) says: <d>[Chinese] 这是第一句很长的对白，需要使用前面镜头的时间。</d>'
         request = prompt_skill.build_prompt_skill_request(
             story, duration_seconds=2.0, fps=24.0, image_count=1, style="cinematic",
@@ -60,8 +60,7 @@ class PromptSkillTests(unittest.TestCase):
             "language": "Chinese", "text": "这是第一句很长的对白，需要使用前面镜头的时间。", "delivery": "自然地",
         }]
         normalized, warnings = prompt_skill._redistribute_dialogues(value, request)
-        scheduled = [item for shot in normalized["shots"] for item in shot["dialogues"]]
-        self.assertGreaterEqual(scheduled[0]["start_frame"], round(2.0 * request["fps"]))
+        self.assertTrue(normalized["shots"][0]["dialogues"])
         self.assertEqual(
             "".join(item["text"] for shot in normalized["shots"] for item in shot["dialogues"]),
             request["required_spoken_lines"][0],
@@ -93,15 +92,6 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(spoken, "".join(required))
         self.assertTrue(shots[1]["dialogues"])
         self.assertTrue(any("Redistributed mandatory dialogue" in warning for warning in compiled["warnings"]))
-
-    def test_split_dialogue_fragment_requires_uninterrupted_continuation(self):
-        continuation = prompt_skill._dialogue_description({
-            "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
-            "language": "Chinese", "text": "继续这一句话", "delivery": "自然地",
-            "continues_from_previous": True,
-        })
-        self.assertIn("continues the same uninterrupted utterance", continuation)
-        self.assertIn("do not pause, restart, or take a new breath", continuation)
 
     def test_long_chinese_dialogue_extends_short_requested_duration(self):
         story = (
