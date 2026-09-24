@@ -54,14 +54,14 @@ class HRQwen38DirectorConfig(io.ComfyNode):
             display_name="HR Qwen Director Config",
             category="model/sampling/custom",
             description=(
-                "One Gemma 4 or Qwen3.5/3.6/3.8 runtime configuration for HR chunk directing and compatible planners. "
-                "Each operation still uses a disposable worker so the model does not remain beside H3 in VRAM."
+                "One Gemma 4 or Qwen3.5/3.6/3.8 runtime configuration. Sampler accepts every backend; Prompt Skill "
+                "Compiler requires Qwen, so use separate config nodes when Sampler chunk directing uses Gemma 4."
             ),
             inputs=[
                 io.Combo.Input("model", options=director_model_options(), default="auto",
-                               tooltip="Local GGUF matching the selected Qwen family. The same file is used by Planner and Sampler."),
+                               tooltip="Local GGUF matching the selected backend. Gemma 4 also supports auto for its default download."),
                 io.Combo.Input("mmproj", options=director_model_options(projector=True), default="auto",
-                               tooltip="Same-directory multimodal projector matching the selected Qwen family."),
+                               tooltip="Matching multimodal projector. Qwen requires the same directory; Gemma 4 also supports auto."),
                 io.Boolean.Input("mtp", default=True),
                 io.Int.Input("mtp_draft_tokens", default=2, min=1, max=8, step=1),
                 io.Combo.Input("reasoning_effort", options=["xhigh", "medium", "low"], default="medium"),

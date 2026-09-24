@@ -7,7 +7,7 @@ import json
 import comfy.model_management
 from comfy_api.latest import io
 
-from .director_backend import resolve_director_selection
+from .director_backend import QWEN_DIRECTOR_BACKENDS, resolve_director_selection
 from .director_config import HRDirectorConfig, normalize_qwen38_config
 from .prompt_skill import CONTINUITY_MODES, build_prompt_skill_request, build_typed_prompt_plan
 from .qwen35 import Qwen35ContinuityDirector
@@ -27,7 +27,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             category="model/sampling/custom",
             description=(
                 "Compile an ordinary story into a repetition-resistant MiniMax H3 prompt and event-owned shot plan. "
-                "Uses exactly the Qwen3.5/3.6/3.8 backend selected by the connected HR Qwen Director Config."
+                "Requires a Qwen3.5/3.6/3.8 config; use a separate config set to Gemma 4 for Sampler chunk directing."
             ),
             inputs=[
                 io.String.Input("story", multiline=True, dynamic_prompts=True),
@@ -59,6 +59,11 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
         if not images:
             raise ValueError("HR H3 Prompt Skill Compiler requires at least one identity/reference picture")
         config = normalize_qwen38_config(director_config)
+        if config["backend"] not in QWEN_DIRECTOR_BACKENDS:
+            raise ValueError(
+                "HR H3 Prompt Skill Compiler supports Qwen3.5/3.6/3.8 only. "
+                "Connect a Qwen HR Director Config here and use a separate Gemma 4 config for HR Endless Sampler."
+            )
         selection = resolve_director_selection(config["backend"], config["model"], config["mmproj"])
         if selection.model_path is None or selection.mmproj_path is None:
             raise ValueError("Prompt Skill Compiler requires a local matching Qwen model and mmproj")
