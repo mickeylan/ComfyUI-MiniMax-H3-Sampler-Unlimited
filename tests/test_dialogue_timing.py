@@ -52,6 +52,22 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertEqual(first_text, "苦修已是无用。")
         self.assertEqual(second_text, "与其")
 
+    def test_one_character_chunk_fragment_is_deferred_without_loss(self):
+        source = "<Subject 1> (S1) says: <d>[Chinese] 已经达到顶峰</d>"
+        first = slice_dialogue_for_interval(source, 0, 10, 0, 1)
+        second = slice_dialogue_for_interval(source, 0, 10, 1, 10)
+        self.assertEqual(first, "")
+        second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
+        self.assertEqual(second_text, "已经达到顶峰")
+
+    def test_one_character_tail_is_kept_with_previous_chunk_without_loss(self):
+        source = "<Subject 1> (S1) says: <d>[Chinese] 已经达到顶峰</d>"
+        first = slice_dialogue_for_interval(source, 0, 10, 0, 9)
+        second = slice_dialogue_for_interval(source, 0, 10, 9, 10)
+        first_text = first.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
+        self.assertEqual(first_text, "已经达到顶峰")
+        self.assertEqual(second, "")
+
     def test_existing_scene_transition_markers_are_not_sliced_as_spoken_text(self):
         source = "<Subject 1> (S1) carries over: <d>[Chinese] <scenetrans>继续说话<scenetrans></d>"
         part = slice_dialogue_for_interval(source, 0, 20, 5, 15)

@@ -18,7 +18,11 @@ def _dialogue_split_index(text: str, position: int) -> int:
         elif text[index].isspace():
             candidates.append(index)
     if candidates:
-        return min(candidates, key=lambda index: (abs(index - position), index < position))
+        position = min(candidates, key=lambda index: (abs(index - position), index < position))
+    if position == 1:
+        return 0
+    if position == len(text) - 1:
+        return len(text)
     return position
 
 
