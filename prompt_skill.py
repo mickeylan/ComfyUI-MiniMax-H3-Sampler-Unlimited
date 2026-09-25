@@ -1321,6 +1321,16 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
     return " ".join(parts)
 
 
+def prompt_plan_dialogue_active(plan: dict[str, Any], frame_start: int, frame_end: int) -> bool:
+    return any(
+        max(int(frame_start), int(dialogue.get("start_frame", shot["start_frame"])))
+        < min(int(frame_end), int(dialogue.get("end_frame", shot["end_frame"])))
+        for shot in plan["shots"]
+        for dialogue in shot.get("dialogues", ())
+        if isinstance(dialogue, dict) and str(dialogue.get("text", "")).strip()
+    )
+
+
 def prompt_plan_dialogue_complete(plan: dict[str, Any], frame_start: int) -> bool:
     dialogue_ends = [
         int(dialogue.get("end_frame", shot["end_frame"]))

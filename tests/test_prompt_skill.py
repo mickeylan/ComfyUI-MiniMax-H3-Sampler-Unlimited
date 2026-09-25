@@ -976,6 +976,8 @@ class PromptSkillTests(unittest.TestCase):
             }],
             "non_diegetic_music": "N/A",
         }
+        self.assertTrue(prompt_skill.prompt_plan_dialogue_active(plan, 700, 770))
+        self.assertFalse(prompt_skill.prompt_plan_dialogue_active(plan, 770, 804))
         localized = prompt_skill.localize_prompt_from_plan("", plan, frame_start=770, frame_end=804)
         self.assertNotIn("speaks calmly", localized)
         self.assertNotIn("<d>", localized)
