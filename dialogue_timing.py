@@ -11,8 +11,14 @@ _TRAILING_PUNCTUATION = "，,。！？!?；;：:、"
 
 def _dialogue_split_index(text: str, position: int) -> int:
     position = max(0, min(len(text), int(position)))
-    while position < len(text) and text[position] in _TRAILING_PUNCTUATION:
-        position += 1
+    candidates = []
+    for index in range(max(0, position - 4), min(len(text), position + 4)):
+        if text[index] in _TRAILING_PUNCTUATION:
+            candidates.append(index + 1)
+        elif text[index].isspace():
+            candidates.append(index)
+    if candidates:
+        return min(candidates, key=lambda index: (abs(index - position), index < position))
     return position
 
 

@@ -10,12 +10,14 @@ import torch
 from comfy_api.latest import io
 
 try:
-    from .audio_seam_probe import CORR_CREDIBLE, analyze_audio_seam
+    from .audio_seam_probe import analyze_audio_seam
 except ImportError:  # Direct test execution.
-    from audio_seam_probe import CORR_CREDIBLE, analyze_audio_seam
+    from audio_seam_probe import analyze_audio_seam
 
 
 HREndlessTimeline = io.Custom("HRENDLESS_TIMELINE")
+ALIGN_CORRELATION = 0.75
+ALIGN_MAX_LAG_MS = 12.0
 
 
 def _decoded_channels(audio_vae, latent):
@@ -45,10 +47,15 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate):
     for index in range(1, len(decoded)):
         current = decoded[index]
         overlap = round(trim_frames[index] / fps * sample_rate)
-        previous_mono = assembled.mean(axis=0)
+        previous_length = round(frame_counts[index - 1] / fps * sample_rate)
+        previous_mono = _fit_length(decoded[index - 1], previous_length).mean(axis=0)
         current_mono = current.mean(axis=0)
         result = analyze_audio_seam(previous_mono, current_mono, sample_rate, overlap)
-        credible = result["mean_correlation"] >= CORR_CREDIBLE and result["mean_lag_ms"] is not None
+        credible = (
+            result["mean_correlation"] >= ALIGN_CORRELATION
+            and result["mean_lag_ms"] is not None
+            and abs(result["mean_lag_ms"]) <= ALIGN_MAX_LAG_MS
+        )
         lag_samples = round(result["mean_lag_ms"] / 1000.0 * sample_rate) if credible else 0
         cut = max(0, min(current.shape[-1], overlap + lag_samples))
         fade = round((0.03 if credible else 0.01) * sample_rate)
@@ -71,6 +78,7 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate):
             "cut_samples": cut,
             "fade_samples": fade,
             "aligned": credible,
+            "alignment_reason": "high_correlation_bounded_lag" if credible else "unaligned_short_fade",
         })
     return assembled, seams
 

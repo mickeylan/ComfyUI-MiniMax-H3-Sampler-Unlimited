@@ -43,6 +43,15 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertEqual(first_text, "无用。")
         self.assertEqual(second_text, "与其")
 
+    def test_chunk_boundary_moves_nearby_sentence_end_instead_of_splitting_word(self):
+        source = "<Subject 1> (S1) says: <d>[Chinese] 苦修已是无用。与其</d>"
+        first = slice_dialogue_for_interval(source, 0, 18, 0, 10)
+        second = slice_dialogue_for_interval(source, 0, 18, 10, 18)
+        first_text = first.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
+        second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
+        self.assertEqual(first_text, "苦修已是无用。")
+        self.assertEqual(second_text, "与其")
+
     def test_existing_scene_transition_markers_are_not_sliced_as_spoken_text(self):
         source = "<Subject 1> (S1) carries over: <d>[Chinese] <scenetrans>继续说话<scenetrans></d>"
         part = slice_dialogue_for_interval(source, 0, 20, 5, 15)
