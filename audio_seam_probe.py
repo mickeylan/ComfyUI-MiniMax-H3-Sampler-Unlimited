@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import numpy as np
 from comfy_api.latest import io
@@ -163,13 +164,22 @@ class HREndlessAudioSeamProbe(io.ComfyNode):
         if len(chunk_records) < 2:
             raise ValueError("HR Endless Audio Seam Probe requires at least two completed chunks")
         sample_rate = int(getattr(audio_vae, "audio_sample_rate", 32000))
+        logging.info(
+            "HR Endless Audio Seam Probe: run=%s chunks=%d fps=%.3f sample_rate=%d window=%.1fms search=+/-%.1fms",
+            manifest.get("run_id"), len(chunk_records), float(fps), sample_rate, float(window_ms), float(search_ms),
+        )
         decoded = []
         frame_counts = []
         trims = []
+        dialogue_flags = []
         for record in chunk_records:
             number = int(record["chunk"])
             state = _replay_load_tensor_file(root / "chunks" / f"chunk_{number:04d}.pt")
             audio = state["sampled_audio"]
+            logging.info(
+                "HR Endless Audio Seam Probe: decoding Chunk %d sampled audio latent %s",
+                number, tuple(audio.shape),
+            )
             waveform = audio_vae.decode(audio[:1])
             decoded.append(_mono(waveform))
             if "previous_frame_count" not in state:
@@ -177,6 +187,7 @@ class HREndlessAudioSeamProbe(io.ComfyNode):
             frame_counts.append(int(state["previous_frame_count"]))
             metadata = json.loads((root / record["metadata_path"]).read_text(encoding="utf-8"))
             trims.append(int(metadata.get("output_trim_frames", 0)))
+            dialogue_flags.append("<d>" in str(metadata.get("effective_h3_prompt", "")).lower())
         results = []
         for index in range(1, len(decoded)):
             wanted = round(frame_counts[index - 1] / float(fps) * sample_rate)
@@ -190,8 +201,25 @@ class HREndlessAudioSeamProbe(io.ComfyNode):
                 previous, decoded[index], sample_rate, overlap_samples,
                 window_ms=window_ms, search_ms=search_ms,
             )
-            result.update({"from_chunk": index, "to_chunk": index + 1, "overlap_frames": trims[index]})
+            result.update({
+                "from_chunk": index,
+                "to_chunk": index + 1,
+                "overlap_frames": trims[index],
+                "dialogue_before": dialogue_flags[index - 1],
+                "dialogue_after": dialogue_flags[index],
+                "dialogue_crosses_seam": dialogue_flags[index - 1] and dialogue_flags[index],
+            })
             results.append(result)
+            logging.info(
+                "HR Endless Audio Seam Probe: Chunk %d->%d dialogue=%s corr=%.3f credible=%d/%d "
+                "lag=%s ms range=%s..%s broadband_step=%.3f floor_step=%.3f reading=%s",
+                index, index + 1, result["dialogue_crosses_seam"], result["mean_correlation"],
+                result["credible_windows"], result["window_count"],
+                "n/a" if result["mean_lag_ms"] is None else f'{result["mean_lag_ms"]:+.2f}',
+                "n/a" if result["min_lag_ms"] is None else f'{result["min_lag_ms"]:+.2f}',
+                "n/a" if result["max_lag_ms"] is None else f'{result["max_lag_ms"]:+.2f}',
+                result["broadband_step"], result["floor_step"], result["reading"],
+            )
         report = {
             "run_id": manifest.get("run_id"),
             "fps": float(fps),
@@ -200,5 +228,7 @@ class HREndlessAudioSeamProbe(io.ComfyNode):
             "seams": results,
         }
         report_text = json.dumps(report, ensure_ascii=False, indent=2)
-        (root / "audio_seam_report.json").write_text(report_text, encoding="utf-8")
+        report_path = root / "audio_seam_report.json"
+        report_path.write_text(report_text, encoding="utf-8")
+        logging.info("HR Endless Audio Seam Probe: wrote %d seam measurements to %s", len(results), report_path)
         return io.NodeOutput(report_text)
