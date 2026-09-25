@@ -91,7 +91,22 @@ class PromptSkillTests(unittest.TestCase):
         spoken = "".join(item["text"] for shot in shots for item in shot["dialogues"])
         self.assertEqual(spoken, "".join(required))
         self.assertTrue(shots[1]["dialogues"])
+        fragments = [item for shot in shots for item in shot["dialogues"]]
+        for item in fragments:
+            self.assertNotRegex(item["text"], r"^[，,。！？!?；;：:]")
+        continued = next(item for item in fragments if item.get("continues_from_previous"))
+        self.assertIn("<scenetrans>", prompt_skill._dialogue_description(continued))
         self.assertTrue(any("Redistributed mandatory dialogue" in warning for warning in compiled["warnings"]))
+
+    def test_cross_shot_dialogue_uses_h3_scene_transition_contract(self):
+        description = prompt_skill._dialogue_description({
+            "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
+            "language": "Chinese", "text": "继续说话", "delivery": "自然地",
+            "continues_from_previous": True, "continues_to_next": True,
+        })
+        self.assertEqual(description.count("<scenetrans>"), 2)
+        self.assertIn("continues seamlessly across the cut", description)
+        self.assertNotIn(" says,", description)
 
     def test_long_chinese_dialogue_extends_short_requested_duration(self):
         story = (
@@ -938,6 +953,36 @@ class PromptSkillTests(unittest.TestCase):
         filtered = prompt_skill.filter_prompt_plan_picture_items(items, (3,), kind_key="kind")
         self.assertEqual([item["id"] for item in filtered], [3, 4])
 
+    def test_chunk_after_scripted_dialogue_ends_forbids_invented_speech(self):
+        plan = {
+            "fps": 24.0,
+            "image_subjects": [
+                {"entity_id": "asset_3", "picture": 3, "subject": 3, "kind": "character", "name": "上官若彤", "observable_features": "淡紫色汉服"},
+                {"entity_id": "asset_4", "picture": 4, "subject": 4, "kind": "character", "name": "上官若琳", "observable_features": "深红色汉服"},
+            ],
+            "shots": [{
+                "start_frame": 520, "end_frame": 804, "pictures": [3, 4], "camera": "static medium shot",
+                "start_state": "the sisters face each other", "end_state": "they maintain eye contact",
+                "forbidden_replays": [], "audio": "soft wind", "visual_description": "The sisters remain together.",
+                "events": [{
+                    "id": "S5.V1", "actor": "asset_4", "action": "speaks calmly to <Subject 3>, explaining her decision",
+                    "phase": "complete", "start_frame": 520, "end_frame": 804,
+                }],
+                "dialogues": [{
+                    "id": "S5.D1", "kind": "dialogue", "speaker": "<Subject 4>", "speaker_id": "S2",
+                    "language": "Chinese", "text": "我已经说完了。", "delivery": "平静地",
+                    "start_frame": 520, "end_frame": 770,
+                }],
+            }],
+            "non_diegetic_music": "N/A",
+        }
+        localized = prompt_skill.localize_prompt_from_plan("", plan, frame_start=770, frame_end=804)
+        self.assertNotIn("speaks calmly", localized)
+        self.assertNotIn("<d>", localized)
+        self.assertIn("All scripted dialogue has ended", localized)
+        self.assertIn("keep every character silent with closed lips", localized)
+        self.assertIn("overall_soundscape:\nsoft wind", localized)
+
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
         plan = {
@@ -961,7 +1006,7 @@ class PromptSkillTests(unittest.TestCase):
         fragments = []
         for localized in prompts:
             fragments.extend(
-                re.sub(r"^\s*\[[^\]]+\]\s*", "", match).strip()
+                re.sub(r"^\s*\[[^\]]+\]\s*", "", match).replace("<scenetrans>", "").strip()
                 for match in re.findall(r"<d>(.*?)</d>", localized, re.DOTALL)
             )
         self.assertEqual("".join(fragments), text)

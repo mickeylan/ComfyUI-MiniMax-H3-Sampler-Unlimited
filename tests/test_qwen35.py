@@ -191,7 +191,7 @@ class Qwen35Tests(unittest.TestCase):
                 "target_start": start, "target_end": end,
             }])
             actions.append(next(item["action"] for item in coverage if item["id"] == "S1.O1"))
-        spoken = [action.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0] for action in actions]
+        spoken = [action.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "") for action in actions]
         self.assertEqual("".join(spoken), "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗")
         self.assertNotEqual(actions[0], actions[1])
         self.assertIn("continues speaking", actions[1])

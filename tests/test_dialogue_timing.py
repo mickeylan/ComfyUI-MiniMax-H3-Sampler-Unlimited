@@ -23,13 +23,23 @@ class DialogueTimingTests(unittest.TestCase):
             slice_dialogue_for_interval(source, 0, 60, 20, 40),
             slice_dialogue_for_interval(source, 0, 60, 40, 60),
         ]
-        texts = [part.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0] for part in parts]
+        texts = [part.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "") for part in parts]
         self.assertEqual("".join(texts), "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗")
         self.assertIn("says warmly", parts[0])
         self.assertIn("continues speaking", parts[1])
         self.assertIn("continues speaking", parts[2])
         self.assertIn("continues into the next chunk", parts[0])
         self.assertNotIn("continues into the next chunk", parts[2])
+        self.assertIn("<scenetrans>", parts[0])
+        self.assertIn("<scenetrans>", parts[1])
+        self.assertIn("<scenetrans>", parts[2])
+
+    def test_existing_scene_transition_markers_are_not_sliced_as_spoken_text(self):
+        source = "<Subject 1> (S1) carries over: <d>[Chinese] <scenetrans>继续说话<scenetrans></d>"
+        part = slice_dialogue_for_interval(source, 0, 20, 5, 15)
+        self.assertEqual(part.count("<scenetrans>"), 2)
+        spoken = part.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
+        self.assertNotIn("<", spoken)
 
     def test_complete_interval_preserves_original_dialogue(self):
         source = "<Subject 1> (S1) says: <d>[English] Stay close.</d>"

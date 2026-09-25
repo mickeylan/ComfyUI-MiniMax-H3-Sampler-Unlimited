@@ -153,6 +153,7 @@ Hard rules:
 - Every shot has camera, start_state, events, dialogues, end_state, forbidden_replays, audio, start_frame, and end_frame.
 - Each event contains id, action, and phase (start, continue, or complete).
 - Preserve every user-provided spoken line verbatim; never translate, paraphrase, shorten, or invent dialogue. A long line may be split into consecutive dialogue fragments across adjacent shots only when those fragments concatenate to the exact original line.
+- When one utterance crosses a shot cut, both adjoining fragments belong to the same uninterrupted vocal event. Do not restart it with says/asks/replies, do not insert a pause or new breath, and never begin a later fragment with isolated punctuation. The compiler adds the required H3 <scenetrans> markers.
 - The numbered mandatory spoken-line list is chronological and authoritative. dialogues across shots and within each shot must follow that exact global order; never swap speakers or reorder fragments for dramatic effect.
 - Each dialogue contains id, kind, speaker, speaker_id, language, text, and delivery. kind is dialogue, monologue, or voiceover. Use stable speaker IDs S1, S2, ... across all shots.
 - dialogue.text contains only the exact spoken words without quotation marks or <d> tags. dialogue.language names the spoken language, regardless of prompt_lang.
@@ -446,6 +447,7 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     split_count = 0
     for _original_shot, dialogue in dialogues:
         remaining = str(dialogue["text"]).strip()
+        fragment_index = 0
         while remaining:
             while current_shot < len(shots):
                 capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
@@ -466,14 +468,22 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
                 if cut <= 0:
                     current_shot += 1
                     continue
+                while cut > 0 and cut < len(remaining) and remaining[cut] in "，,。！？!?；;：:":
+                    cut -= 1
+                if cut <= 0:
+                    current_shot += 1
+                    continue
                 fragment = remaining[:cut]
                 split_count += 1
             item = dict(dialogue)
             item["text"] = fragment
             item["id"] = f"S{current_shot + 1}.D{len(normalized_shots[current_shot]['dialogues']) + 1}"
+            item["continues_from_previous"] = fragment_index > 0
+            item["continues_to_next"] = len(fragment) < len(remaining)
             normalized_shots[current_shot]["dialogues"].append(item)
             used[current_shot] += math.ceil(_line_spoken_duration_seconds(fragment) * fps)
             remaining = remaining[len(fragment):]
+            fragment_index += 1
             if remaining:
                 current_shot += 1
     returned = "".join(
@@ -545,12 +555,20 @@ def _dialogue_description(item: dict[str, str]) -> str:
     speaker = item["speaker"]
     speaker_id = item["speaker_id"]
     delivery = item["delivery"]
-    tagged = f"<d>[{item['language']}] {item['text']}</d>"
-    if item["kind"] == "voiceover":
-        return f"{speaker} ({speaker_id}) says in an off-screen voiceover, {delivery}: {tagged} while the corresponding on-screen character's lips remain completely closed."
-    if item["kind"] == "monologue":
-        return f"{speaker} ({speaker_id}) speaks an audible monologue, {delivery}: {tagged} with synchronized visible lip movement."
-    return f"{speaker} ({speaker_id}) says, {delivery}: {tagged} with synchronized visible lip movement."
+    prefix = "<scenetrans>" if item.get("continues_from_previous") else ""
+    suffix = "<scenetrans>" if item.get("continues_to_next") else ""
+    tagged = f"<d>[{item['language']}] {prefix}{item['text']}{suffix}</d>"
+    if item.get("continues_from_previous"):
+        description = f"{speaker} ({speaker_id}) carries the same voice and utterance over from the previous shot: {tagged} with synchronized visible lip movement; the audio continues seamlessly across the cut without a pause, restart, or new breath."
+    elif item["kind"] == "voiceover":
+        description = f"{speaker} ({speaker_id}) says in an off-screen voiceover, {delivery}: {tagged} while the corresponding on-screen character's lips remain completely closed."
+    elif item["kind"] == "monologue":
+        description = f"{speaker} ({speaker_id}) speaks an audible monologue, {delivery}: {tagged} with synchronized visible lip movement."
+    else:
+        description = f"{speaker} ({speaker_id}) says, {delivery}: {tagged} with synchronized visible lip movement."
+    if item.get("continues_to_next"):
+        description += " The same voice and utterance continue uninterrupted into the next shot across the cut."
+    return description
 
 
 def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
@@ -908,6 +926,8 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
             item = {name: str(dialogue.get(name, "")).strip() for name in (
                 "id", "kind", "speaker", "speaker_id", "language", "text", "delivery"
             )}
+            item["continues_from_previous"] = bool(dialogue.get("continues_from_previous", False))
+            item["continues_to_next"] = bool(dialogue.get("continues_to_next", False))
             repaired_fields = []
             if not item["id"]:
                 item["id"] = f"S{index}.D{dialogue_index}"
@@ -1284,6 +1304,10 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
         ))
         overlap_start = max(dialogue_start, int(frame_start))
         overlap_end = min(dialogue_end, int(frame_end))
+        if overlap_start < overlap_end and not dialogue.get("continues_from_previous"):
+            parts.append(
+                f"{dialogue['speaker']} is already clearly visible on screen with closed lips before the first audible word; establish the speaker visually, then begin the line."
+            )
         if overlap_start < overlap_end:
             fragment = slice_dialogue_for_interval(
                 _dialogue_description(dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end
@@ -1296,6 +1320,19 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
 def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
     projection = project_prompt_plan_interval(plan, frame_start=frame_start, frame_end=frame_end)
     active = projection["shots"]
+    dialogue_ends = [
+        int(dialogue.get("end_frame", shot["end_frame"]))
+        for shot in plan["shots"]
+        for dialogue in shot.get("dialogues", ())
+        if isinstance(dialogue, dict) and str(dialogue.get("text", "")).strip()
+    ]
+    scripted_dialogue_complete = bool(dialogue_ends) and int(frame_start) >= max(dialogue_ends)
+    projected_events = projection["active"]
+    if scripted_dialogue_complete:
+        projected_events = tuple(
+            event for event in projected_events
+            if not re.search(r"\b(?:speak|speaks|speaking|say|says|saying|ask|asks|reply|replies|whisper|whispers|shout|shouts)\b", str(event.get("action", "")), re.IGNORECASE)
+        )
     subjects_by_entity = {
         str(item.get("entity_id", "")).strip(): item
         for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
@@ -1324,17 +1361,22 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
             seconds, milliseconds = divmod(remainder, 1000)
             marker += f" At {minutes:02d}:{seconds:02d}.{milliseconds:03d},"
         shot_events = tuple(
-            event for event in projection["active"]
+            event for event in projected_events
             if int(shot["start_frame"]) <= int(event["start_frame"]) < int(shot["end_frame"])
         )
         description = _localized_shot_description(
             shot, frame_start, frame_end, float(plan["fps"]), shot_events, subjects_by_entity
         )
+        if scripted_dialogue_complete:
+            description = " ".join(filter(None, (
+                description,
+                "All scripted dialogue has ended. Every character keeps their lips closed; no dialogue, voiceover, monologue, singing, or other human vocalization occurs.",
+            )))
         localized_descriptions.append(description)
         local_shots.append(f"{marker} {description}")
     local_description = "\n".join(local_shots)
     summary = " ".join(filter(None, (
-        _localized_event_action(event, subjects_by_entity) for event in projection["active"]
+        _localized_event_action(event, subjects_by_entity) for event in projected_events
     )))
     retention = []
     for shot in active:
@@ -1350,6 +1392,8 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
             for item in shot.get("forbidden_replays", ()) if str(item).strip()
         )
     retention.extend(projection["forbidden"])
+    if scripted_dialogue_complete:
+        retention.append("Spoken-audio contract: all scripted dialogue is complete; keep every character silent with closed lips and do not invent any words or vocalization.")
     retention.append(
         f"Only the active events scheduled inside frames [{frame_start},{frame_end}) may occur; "
         "pending events must not begin and completed events must not restart."
@@ -1357,8 +1401,9 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
     soundscape = " ".join(
         str(shot["audio"]).strip()
         for shot in active
-        if int(frame_start) <= int(shot["start_frame"]) < int(frame_end)
+        if (scripted_dialogue_complete or int(frame_start) <= int(shot["start_frame"]) < int(frame_end))
         and str(shot["audio"]).strip()
+        and not re.search(r"\b(?:dialogue|voiceover|monologue|singing|speech)\b", str(shot["audio"]), re.IGNORECASE)
     ) or "N/A"
     return "\n\n".join((
         "subject_definitions:\n" + ("\n".join(subjects) or "None."),
