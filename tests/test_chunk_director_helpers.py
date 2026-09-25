@@ -1014,16 +1014,6 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertTrue(torch.equal(context, previous[..., -40:]))
         self.assertEqual(end_frame, 4.8)
 
-    def test_dialogue_audio_prefix_copies_exact_previous_tail(self):
-        previous = torch.arange(65, dtype=torch.float32).reshape(1, 1, 1, 65).expand(1, 32, 2, 65).clone()
-        prefix = nodes._dialogue_audio_prefix(previous, 9, True)
-        self.assertTrue(torch.equal(prefix, previous[..., -9:]))
-        self.assertNotEqual(prefix.data_ptr(), previous.data_ptr())
-
-    def test_dialogue_audio_prefix_is_absent_outside_dialogue(self):
-        previous = torch.ones((1, 32, 2, 65))
-        self.assertIsNone(nodes._dialogue_audio_prefix(previous, 9, False))
-
     def test_timeline_audio_context_compensates_signed_overhang_before_grid_snap(self):
         positive = torch.zeros((1, 32, 2, 207))
         _tail, positive_end = nodes._timeline_audio_context(positive, 124, 5)

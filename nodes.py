@@ -41,7 +41,7 @@ from .preview import begin_preview_execution
 from .prompt_skill import (
     active_prompt_plan_pictures, filter_prompt_plan_events, filter_prompt_plan_picture_items,
     localize_prompt_from_plan, normalize_prompt_plan, project_prompt_plan_interval,
-    prompt_plan_dialogue_active, prompt_plan_dialogue_complete, prompt_plan_shots, validate_h3_identity_contract,
+    prompt_plan_dialogue_complete, prompt_plan_shots, validate_h3_identity_contract,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images, reference_presentation_items
@@ -1629,15 +1629,6 @@ def _chunk_timeline_audio_context(previous_audio, previous_frame_count, boundary
     if dialogue_complete:
         return None, float(boundary_frames)
     return _timeline_audio_context(previous_audio, previous_frame_count, boundary_frames)
-
-
-def _dialogue_audio_prefix(previous_audio, prefix_steps, dialogue_active):
-    if previous_audio is None or not dialogue_active or prefix_steps <= 0:
-        return None
-    steps = min(int(prefix_steps), int(previous_audio.shape[-1]))
-    if steps != int(prefix_steps):
-        return None
-    return previous_audio[..., -steps:].clone()
 
 
 def _validate_h3_audio_conditioning(conds):
@@ -4206,18 +4197,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 prefix_audio_noise = None
                 if chunk.get("synthetic_prefix"):
                     prefix_video = video.new_zeros((*video.shape[:2], context_video_t, *video.shape[3:]))
-                    dialogue_active = (
-                        typed_prompt_plan is not None
-                        and prompt_plan_dialogue_active(typed_prompt_plan, content_start, chunk["frame_end"])
-                    )
-                    prefix_audio = _dialogue_audio_prefix(previous_audio, context_audio_t, dialogue_active)
-                    if prefix_audio is None:
-                        prefix_audio = audio.new_zeros((*audio.shape[:-1], context_audio_t))
-                    elif debug:
-                        logging.info(
-                            "HR Endless Sampler chunk %d/%d seeds %d overlapping audio latent steps from the real previous tail for continuous dialogue.",
-                            index + 1, len(active_plan), context_audio_t,
-                        )
+                    prefix_audio = audio.new_zeros((*audio.shape[:-1], context_audio_t))
                     cached_prefix = replay_prefix_noises.get(index)
                     if cached_prefix is not None:
                         prefix_video_noise = cached_prefix[0].to(device=video.device, dtype=video.dtype)

@@ -6,6 +6,14 @@ import re
 
 _DIALOGUE = re.compile(r"<d>(.*?)</d>", re.IGNORECASE | re.DOTALL)
 _LANGUAGE = re.compile(r"^(\s*\[[^\]]+\]\s*)(.*)$", re.DOTALL)
+_TRAILING_PUNCTUATION = "，,。！？!?；;：:、"
+
+
+def _dialogue_split_index(text: str, position: int) -> int:
+    position = max(0, min(len(text), int(position)))
+    while position < len(text) and text[position] in _TRAILING_PUNCTUATION:
+        position += 1
+    return position
 
 
 def dialogue_duration_seconds(content: str) -> float:
@@ -42,8 +50,13 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     length = len(text)
     first = max(0, min(length, math.floor(length * (overlap_start - source_start) / duration)))
     last = max(first, min(length, math.floor(length * (overlap_end - source_start) / duration)))
-    if overlap_end >= source_end:
+    if overlap_start > source_start:
+        first = _dialogue_split_index(text, first)
+    if overlap_end < source_end:
+        last = _dialogue_split_index(text, last)
+    else:
         last = length
+    last = max(first, last)
     fragment = text[first:last]
     if not fragment:
         return ""
