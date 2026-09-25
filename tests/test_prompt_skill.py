@@ -980,7 +980,10 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("speaks calmly", localized)
         self.assertNotIn("<d>", localized)
         self.assertIn("All scripted dialogue has ended", localized)
-        self.assertIn("keep every character silent with closed lips", localized)
+        self.assertIn("Every character keeps their lips sealed with no mouth or jaw movement", localized)
+        self.assertIn("subject_definitions are silent identity metadata", localized)
+        self.assertIn("never pronounce subject names", localized)
+        self.assertNotIn("lip movement", localized)
         self.assertIn("overall_soundscape:\nsoft wind", localized)
 
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):

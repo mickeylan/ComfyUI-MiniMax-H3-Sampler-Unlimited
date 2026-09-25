@@ -1280,7 +1280,8 @@ def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str,
 
 def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
                                 active_events: tuple[dict[str, Any], ...],
-                                subjects_by_entity: dict[str, dict[str, Any]]) -> str:
+                                subjects_by_entity: dict[str, dict[str, Any]],
+                                scripted_dialogue_complete: bool = False) -> str:
     parts = []
     if frame_start > int(shot["start_frame"]):
         parts.append(
@@ -1293,7 +1294,10 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
         if visual:
             parts.append(visual)
     else:
-        parts.append("Maintain the established post-action body orientation, positions, and composition; allow only natural breathing, lip movement, and subtle expression changes.")
+        if scripted_dialogue_complete:
+            parts.append("Maintain the established post-action body orientation, positions, and composition; allow only subtle eye and facial-expression changes while every mouth and jaw remains completely still.")
+        else:
+            parts.append("Maintain the established post-action body orientation, positions, and composition; allow only natural breathing, lip movement, and subtle expression changes.")
     for dialogue in shot.get("dialogues", ()):
         if not isinstance(dialogue, dict) or not str(dialogue.get("text", "")).strip():
             continue
@@ -1317,22 +1321,30 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
     return " ".join(parts)
 
 
-def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
-    projection = project_prompt_plan_interval(plan, frame_start=frame_start, frame_end=frame_end)
-    active = projection["shots"]
+def prompt_plan_dialogue_complete(plan: dict[str, Any], frame_start: int) -> bool:
     dialogue_ends = [
         int(dialogue.get("end_frame", shot["end_frame"]))
         for shot in plan["shots"]
         for dialogue in shot.get("dialogues", ())
         if isinstance(dialogue, dict) and str(dialogue.get("text", "")).strip()
     ]
-    scripted_dialogue_complete = bool(dialogue_ends) and int(frame_start) >= max(dialogue_ends)
-    projected_events = projection["active"]
-    if scripted_dialogue_complete:
-        projected_events = tuple(
-            event for event in projected_events
-            if not re.search(r"\b(?:speak|speaks|speaking|say|says|saying|ask|asks|reply|replies|whisper|whispers|shout|shouts)\b", str(event.get("action", "")), re.IGNORECASE)
-        )
+    return bool(dialogue_ends) and int(frame_start) >= max(dialogue_ends)
+
+
+def filter_prompt_plan_events(plan: dict[str, Any], events, frame_start: int):
+    if not prompt_plan_dialogue_complete(plan, frame_start):
+        return tuple(events)
+    return tuple(
+        event for event in events
+        if not re.search(r"\b(?:speak|speaks|speaking|say|says|saying|ask|asks|reply|replies|whisper|whispers|shout|shouts)\b", str(event.get("action", "")), re.IGNORECASE)
+    )
+
+
+def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
+    projection = project_prompt_plan_interval(plan, frame_start=frame_start, frame_end=frame_end)
+    active = projection["shots"]
+    scripted_dialogue_complete = prompt_plan_dialogue_complete(plan, frame_start)
+    projected_events = filter_prompt_plan_events(plan, projection["active"], frame_start)
     subjects_by_entity = {
         str(item.get("entity_id", "")).strip(): item
         for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
@@ -1365,12 +1377,13 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
             if int(shot["start_frame"]) <= int(event["start_frame"]) < int(shot["end_frame"])
         )
         description = _localized_shot_description(
-            shot, frame_start, frame_end, float(plan["fps"]), shot_events, subjects_by_entity
+            shot, frame_start, frame_end, float(plan["fps"]), shot_events, subjects_by_entity,
+            scripted_dialogue_complete=scripted_dialogue_complete,
         )
         if scripted_dialogue_complete:
             description = " ".join(filter(None, (
                 description,
-                "All scripted dialogue has ended. Every character keeps their lips closed; no dialogue, voiceover, monologue, singing, or other human vocalization occurs.",
+                "All scripted dialogue has ended. Every character keeps their lips sealed with no mouth or jaw movement; no dialogue, voiceover, monologue, singing, breathing sound, or other human vocalization occurs. Subject names and all text in subject_definitions are silent identity metadata and must never be spoken aloud.",
             )))
         localized_descriptions.append(description)
         local_shots.append(f"{marker} {description}")
@@ -1393,7 +1406,7 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         )
     retention.extend(projection["forbidden"])
     if scripted_dialogue_complete:
-        retention.append("Spoken-audio contract: all scripted dialogue is complete; keep every character silent with closed lips and do not invent any words or vocalization.")
+        retention.append("Spoken-audio contract: all scripted dialogue is complete; keep every mouth and jaw motionless, do not invent any words or vocalization, and never pronounce subject names or text from subject_definitions.")
     retention.append(
         f"Only the active events scheduled inside frames [{frame_start},{frame_end}) may occur; "
         "pending events must not begin and completed events must not restart."

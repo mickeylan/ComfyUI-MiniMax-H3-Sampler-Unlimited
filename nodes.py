@@ -39,7 +39,7 @@ from .gemma4 import (
 )
 from .preview import begin_preview_execution
 from .prompt_skill import (
-    active_prompt_plan_pictures, filter_prompt_plan_picture_items,
+    active_prompt_plan_pictures, filter_prompt_plan_events, filter_prompt_plan_picture_items,
     localize_prompt_from_plan, normalize_prompt_plan, project_prompt_plan_interval,
     prompt_plan_shots, validate_h3_identity_contract,
 )
@@ -4466,6 +4466,13 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         name: [dict(item) for item in projection[name]]
                         for name in ("completed", "active", "pending")
                     }
+                    previous_event_ledger["active"] = [
+                        dict(item) for item in filter_prompt_plan_events(
+                            typed_prompt_plan,
+                            previous_event_ledger["active"],
+                            chunk["frame_start"] + chunk.get("output_trim_frames", 0),
+                        )
+                    ]
                     previous_event_ledger["forbidden"] = [
                         {"id": item["id"], "summary": text}
                         for item, text in zip(projection["completed"], projection["forbidden"])
