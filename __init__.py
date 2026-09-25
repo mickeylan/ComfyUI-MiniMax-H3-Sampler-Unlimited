@@ -1,3 +1,4 @@
+from .audio_seam_assemble import HREndlessAudioSeamAssemble
 from .audio_seam_probe import HREndlessAudioSeamProbe
 from .continuation import HREndlessContinuationAssemble, HREndlessContinuationCheckpoint, HREndlessContinuationPlan
 from .director_config import HRQwen38DirectorConfig
@@ -21,6 +22,7 @@ __version__ = "0.9.0"
 NODE_CLASS_MAPPINGS = {
     "HREndlessSampler": HREndlessSampler,
     "HREndlessAudioSeamProbe": HREndlessAudioSeamProbe,
+    "HREndlessAudioSeamAssemble": HREndlessAudioSeamAssemble,
     "HREndlessSamplerPreview": HREndlessSamplerPreview,
     "HREndlessSamplerSaveVideo": HREndlessSamplerSaveVideo,
     "HREndlessSamplerLoadVideo": HREndlessSamplerLoadVideo,
@@ -47,6 +49,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "HREndlessSampler": "HR Endless Sampler",
     "HREndlessAudioSeamProbe": "HR Endless Audio Seam Probe",
+    "HREndlessAudioSeamAssemble": "HR Endless Audio Seam Assemble",
     "HREndlessSamplerPreview": "HR Endless Sampler Preview",
     "HREndlessSamplerSaveVideo": "HR Endless Sampler Save Video",
     "HREndlessSamplerLoadVideo": "HR Endless Sampler Load Video",
