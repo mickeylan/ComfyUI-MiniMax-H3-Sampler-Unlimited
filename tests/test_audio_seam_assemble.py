@@ -51,6 +51,16 @@ class AudioSeamAssembleTests(unittest.TestCase):
         self.assertTrue(np.all(calls[0][0] == 1.0))
         self.assertTrue(np.all(calls[1][0] == 2.0))
 
+    def test_credible_seam_uses_three_db_limited_gain_release(self):
+        first = np.ones((2, 2000))
+        second = np.full((2, 1200), 0.1)
+        result = {"mean_correlation": 0.95, "mean_lag_ms": 0.0}
+        with patch.object(audio_seam_assemble, "analyze_audio_seam", return_value=result):
+            assembled, seams = assemble_audio_chunks([first, second], [10, 6], [0, 1], 20.0, 4000)
+        self.assertAlmostEqual(seams[0]["gain_match_db"], 3.0)
+        self.assertGreater(assembled[0, 2000], 0.13)
+        self.assertAlmostEqual(assembled[0, -1], 0.1)
+
     def test_large_lag_is_not_applied_even_with_high_correlation(self):
         first = np.ones((2, 2000))
         second = np.ones((2, 1200))

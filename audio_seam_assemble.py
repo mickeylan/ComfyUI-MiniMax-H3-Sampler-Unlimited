@@ -18,6 +18,8 @@ except ImportError:  # Direct test execution.
 HREndlessTimeline = io.Custom("HRENDLESS_TIMELINE")
 ALIGN_CORRELATION = 0.75
 ALIGN_MAX_LAG_MS = 12.0
+GAIN_LIMIT_DB = 3.0
+GAIN_RELEASE_MS = 150.0
 
 
 def _decoded_channels(audio_vae, latent):
@@ -35,6 +37,25 @@ def _fit_length(audio, length):
     if audio.shape[-1] >= length:
         return audio[..., :length]
     return np.pad(audio, ((0, 0), (0, length - audio.shape[-1])))
+
+
+def _rms_gain_envelope(previous, current, sample_rate, credible):
+    if not credible:
+        return 1.0, None
+    measure = min(round(0.1 * sample_rate), previous.shape[-1], current.shape[-1])
+    if measure < 1:
+        return 1.0, None
+    left = float(np.sqrt(np.mean(np.square(previous[..., -measure:]))))
+    right = float(np.sqrt(np.mean(np.square(current[..., :measure]))))
+    if left < 1e-4 or right < 1e-4:
+        return 1.0, None
+    limit = 10.0 ** (GAIN_LIMIT_DB / 20.0)
+    gain = float(np.clip(left / right, 1.0 / limit, limit))
+    release = min(round(GAIN_RELEASE_MS / 1000.0 * sample_rate), current.shape[-1])
+    envelope = np.ones(current.shape[-1], dtype=np.float64)
+    if release:
+        envelope[:release] = np.linspace(gain, 1.0, release, endpoint=True)
+    return gain, envelope
 
 
 def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate):
@@ -65,6 +86,11 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate):
         append_length = target_total - assembled.shape[-1]
         start = max(0, cut - fade)
         segment = _fit_length(current[..., start:], append_length + fade)
+        gain, envelope = _rms_gain_envelope(assembled, segment[..., fade:], sample_rate, credible)
+        if envelope is not None:
+            segment[..., fade:fade + len(envelope)] *= envelope
+            if fade:
+                segment[..., :fade] *= gain
         if fade:
             phase = np.linspace(0.0, np.pi / 2.0, fade, endpoint=True)
             assembled[..., -fade:] = assembled[..., -fade:] * np.cos(phase) + segment[..., :fade] * np.sin(phase)
@@ -77,6 +103,9 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate):
             "lag_ms": result["mean_lag_ms"],
             "cut_samples": cut,
             "fade_samples": fade,
+            "gain_match": gain,
+            "gain_match_db": 20.0 * np.log10(gain),
+            "gain_release_samples": 0 if envelope is None else int(np.count_nonzero(envelope != 1.0)),
             "aligned": credible,
             "alignment_reason": "high_correlation_bounded_lag" if credible else "unaligned_short_fade",
         })
