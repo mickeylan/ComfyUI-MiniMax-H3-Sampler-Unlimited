@@ -8,6 +8,7 @@ import numpy as np
 from comfy_api.latest import io
 
 CORR_CREDIBLE = 0.6
+HREndlessTimeline = io.Custom("HRENDLESS_TIMELINE")
 
 
 def _mono(waveform):
@@ -139,6 +140,7 @@ class HREndlessAudioSeamProbe(io.ComfyNode):
             description="Decode and measure every audio join in the latest HR Endless replay without changing the render.",
             inputs=[
                 io.Vae.Input("audio_vae"),
+                HREndlessTimeline.Input("timeline", tooltip="Connect the HR Endless Sampler timeline so analysis runs only after every chunk is saved."),
                 io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=0.001),
                 io.Float.Input("window_ms", default=50.0, min=5.0, max=500.0, step=1.0, advanced=True),
                 io.Float.Input("search_ms", default=40.0, min=5.0, max=500.0, step=1.0, advanced=True),
@@ -149,7 +151,7 @@ class HREndlessAudioSeamProbe(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, audio_vae, fps=24.0, window_ms=50.0, search_ms=40.0):
+    def execute(cls, audio_vae, timeline, fps=24.0, window_ms=50.0, search_ms=40.0):
         from .nodes import _replay_cache_root, _replay_load_tensor_file
 
         root = _replay_cache_root()
@@ -194,6 +196,9 @@ class HREndlessAudioSeamProbe(io.ComfyNode):
             "run_id": manifest.get("run_id"),
             "fps": float(fps),
             "sample_rate": sample_rate,
+            "timeline_total_frames": timeline.get("total_frames") if isinstance(timeline, dict) else None,
             "seams": results,
         }
-        return io.NodeOutput(json.dumps(report, ensure_ascii=False, indent=2))
+        report_text = json.dumps(report, ensure_ascii=False, indent=2)
+        (root / "audio_seam_report.json").write_text(report_text, encoding="utf-8")
+        return io.NodeOutput(report_text)
