@@ -41,7 +41,7 @@ from .preview import begin_preview_execution
 from .prompt_skill import (
     active_prompt_plan_pictures, filter_prompt_plan_events, filter_prompt_plan_picture_items,
     localize_prompt_from_plan, normalize_prompt_plan, project_prompt_plan_interval,
-    prompt_plan_shots, validate_h3_identity_contract,
+    prompt_plan_dialogue_complete, prompt_plan_shots, validate_h3_identity_contract,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images, reference_presentation_items
@@ -1623,6 +1623,12 @@ def _timeline_audio_context(previous_audio, previous_frame_count, boundary_frame
     end_frame = round(FRAME_RESCALE * end_frame) / FRAME_RESCALE
     _ensure_h3_timeline_audio_contract()
     return previous_audio[..., -context_steps:].clone(), end_frame
+
+
+def _chunk_timeline_audio_context(previous_audio, previous_frame_count, boundary_frames, dialogue_complete):
+    if dialogue_complete:
+        return None, float(boundary_frames)
+    return _timeline_audio_context(previous_audio, previous_frame_count, boundary_frames)
 
 
 def _validate_h3_audio_conditioning(conds):
@@ -4252,17 +4258,28 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 video_context_start = 0
                 audio_end_frame = float(keyframe_duration_frames)
                 if index > 0:
-                    audio_context, audio_end_frame = _timeline_audio_context(
+                    silent_tail = (
+                        typed_prompt_plan is not None
+                        and prompt_plan_dialogue_complete(typed_prompt_plan, content_start)
+                    )
+                    audio_context, audio_end_frame = _chunk_timeline_audio_context(
                         previous_audio,
                         previous_frame_count,
                         chunk.get("output_trim_frames", 0),
+                        silent_tail,
                     )
                     if debug:
-                        logging.info(
-                            "HR Endless Sampler chunk %d/%d timeline audio continuation: "
-                            "%d real previous latent steps end-aligned at local frame %.3f.",
-                            index + 1, len(active_plan), audio_context.shape[-1], audio_end_frame,
-                        )
+                        if silent_tail:
+                            logging.info(
+                                "HR Endless Sampler chunk %d/%d omits previous speech audio context because all scripted dialogue ended before frame %d.",
+                                index + 1, len(active_plan), content_start,
+                            )
+                        else:
+                            logging.info(
+                                "HR Endless Sampler chunk %d/%d timeline audio continuation: "
+                                "%d real previous latent steps end-aligned at local frame %.3f.",
+                                index + 1, len(active_plan), audio_context.shape[-1], audio_end_frame,
+                            )
                 if external_active and index == 0:
                     video_context = previous_video.clone()
                     audio_context = previous_audio.clone() if external_audio_mode == "continue" else None

@@ -983,6 +983,8 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("Every character keeps their lips sealed with no mouth or jaw movement", localized)
         self.assertIn("subject_definitions are silent identity metadata", localized)
         self.assertIn("never pronounce subject names", localized)
+        self.assertIn("<Subject 4> is the silent visual identity from <Picture 4>", localized)
+        self.assertNotIn("上官若琳", localized)
         self.assertNotIn("lip movement", localized)
         self.assertIn("overall_soundscape:\nsoft wind", localized)
 

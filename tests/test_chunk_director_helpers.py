@@ -1002,6 +1002,18 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         start_frame = end_frame - tail.shape[-1] / nodes.FRAME_RESCALE
         self.assertEqual(start_frame, -19.2)
 
+    def test_chunk_omits_previous_speech_audio_after_scripted_dialogue_ends(self):
+        previous = torch.ones((1, 32, 2, 65))
+        context, end_frame = nodes._chunk_timeline_audio_context(previous, 39, 5, True)
+        self.assertIsNone(context)
+        self.assertEqual(end_frame, 5.0)
+
+    def test_chunk_keeps_previous_audio_while_scripted_dialogue_is_active(self):
+        previous = torch.arange(65, dtype=torch.float32).reshape(1, 1, 1, 65).expand(1, 32, 2, 65).clone()
+        context, end_frame = nodes._chunk_timeline_audio_context(previous, 39, 5, False)
+        self.assertTrue(torch.equal(context, previous[..., -40:]))
+        self.assertEqual(end_frame, 4.8)
+
     def test_timeline_audio_context_compensates_signed_overhang_before_grid_snap(self):
         positive = torch.zeros((1, 32, 2, 207))
         _tail, positive_end = nodes._timeline_audio_context(positive, 124, 5)

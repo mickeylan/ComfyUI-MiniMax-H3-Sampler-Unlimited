@@ -1353,10 +1353,13 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
     for item in plan["image_subjects"]:
         picture = int(item.get("picture", 0) or 0)
         features = str(item.get("observable_features", "")).strip()
-        definition = (
-            f"<Subject {int(item.get('subject', picture))}> is {str(item.get('name', '')).strip()} "
-            f"from <Picture {picture}>"
-        )
+        if scripted_dialogue_complete:
+            definition = f"<Subject {int(item.get('subject', picture))}> is the silent visual identity from <Picture {picture}>"
+        else:
+            definition = (
+                f"<Subject {int(item.get('subject', picture))}> is {str(item.get('name', '')).strip()} "
+                f"from <Picture {picture}>"
+            )
         subjects.append(definition + (f": {features}." if features else "."))
     subjects.extend(
         line.strip()
