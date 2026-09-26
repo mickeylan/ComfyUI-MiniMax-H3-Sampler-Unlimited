@@ -19,7 +19,7 @@ from typing_extensions import override
 
 from ..director_config import HRDirectorConfig, normalize_qwen38_config
 from ..director_backend import resolve_director_selection
-from .runtime_qwen35 import Qwen35ContinuityDirector
+from .local_runtime import LOCAL_QWEN35_CACHE
 
 
 # ============== 自定义类型定义 ==============
@@ -53,8 +53,15 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                 io.Int.Input("top_k", default=20, min=0, max=1000, step=1),
                 io.Int.Input("max_new_tokens", default=4096, min=512, max=24000, step=256,
                              tooltip="Upper generation limit; 4096 is normally enough for one rewrite"),
-                io.Int.Input("thinking_budget", default=0, min=0, max=8192, step=256,
-                             tooltip="0 disables thinking for faster rewriting; increase only when needed"),
+                io.Int.Input("context_length", default=8192, min=1024, max=65536, step=256,
+                             tooltip="llama.cpp context length; larger values use more memory"),
+                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True),
+                io.Int.Input("image_max_pixels", default=1048576, min=262144, max=4194304, step=262144,
+                             tooltip="Each reference image is resized below this pixel count before vision encoding"),
+                io.Boolean.Input("enable_thinking", default=False,
+                                 tooltip="Disabled by default, matching TE-MAN local mode"),
+                io.Boolean.Input("auto_unload", default=False,
+                                 tooltip="Keep disabled to reuse the loaded model on later executions"),
                 io.Boolean.Input("retry_on_validation", default=False,
                                  tooltip="Retry once when JSON/image/language validation fails; reloads the model and can nearly double runtime"),
                 io.Autogrow.Input("images", optional=True,
@@ -83,7 +90,11 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
         top_p: float,
         top_k: int,
         max_new_tokens: int,
-        thinking_budget: int,
+        context_length: int,
+        seed: int,
+        image_max_pixels: int,
+        enable_thinking: bool,
+        auto_unload: bool,
         retry_on_validation: bool,
         images: Optional[dict] = None,
         director_config: Optional[dict] = None,
@@ -109,6 +120,8 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
         
         if selection.model_path is None or selection.mmproj_path is None:
             return io.NodeOutput("[No Qwen model found]", "", "", "", "{}")
+        if config["backend"] != "qwen3.5":
+            raise ValueError("The cached Qwen Image 2.1 runtime currently requires backend qwen3.5")
         
         frames = cls._autogrow_images(images, dynamic_inputs)
         effective_mode = "i2i" if frames else "t2i"
@@ -124,31 +137,22 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
         )
         user_prompt = prompt
         
-        # 创建 Director 并执行
         start_time = time.time()
         try:
-            director = Qwen35ContinuityDirector(
-                model_path=selection.model_path,
-                mmproj_path=selection.mmproj_path,
-                backend=config["backend"],
-                mtp_enabled=config["mtp"],
-                mtp_draft_tokens=config["mtp_draft_tokens"],
-                reasoning_effort=config["reasoning_effort"],
-                debug=config["debug"],
-                cpu_moe=config["cpu_moe"],
-                n_cpu_moe=config["n_cpu_moe"],
-            )
-
             generation = {
                 "temperature": float(temperature),
                 "top_p": float(top_p),
                 "top_k": int(top_k),
                 "max_tokens": int(max_new_tokens),
-                "reasoning_budget": int(thinking_budget),
+                "seed": int(seed),
+                "enable_thinking": bool(enable_thinking),
             }
-            raw_result = director.plan_jzl_storyboard(
-                frames, system_prompt=system_prompt, user_prompt=user_prompt,
-                generation=generation, json_response=False, enable_thinking=(thinking_budget > 0),
+            raw_result, model_reused = LOCAL_QWEN35_CACHE.generate(
+                model_path=selection.model_path, mmproj_path=selection.mmproj_path,
+                context_length=int(context_length), system_prompt=system_prompt,
+                user_prompt=user_prompt, frames=frames, max_pixels=int(image_max_pixels),
+                temperature=temperature, top_p=top_p, top_k=top_k,
+                max_tokens=max_new_tokens, seed=seed, thinking=enable_thinking,
             )
             enhanced_prompt, wh_ratio, ratio_follow, thinking, parse_ok = cls._parse_result(
                 raw_result, allow_ratio_follow=(effective_mode == "i2i")
@@ -176,9 +180,12 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
 <user_request>
 {prompt}
 </user_request>"""
-                raw_result = director.plan_jzl_storyboard(
-                    frames, system_prompt=system_prompt, user_prompt=correction_prompt,
-                    generation=generation, json_response=False, enable_thinking=(thinking_budget > 0),
+                raw_result, model_reused = LOCAL_QWEN35_CACHE.generate(
+                    model_path=selection.model_path, mmproj_path=selection.mmproj_path,
+                    context_length=int(context_length), system_prompt=system_prompt,
+                    user_prompt=correction_prompt, frames=frames, max_pixels=int(image_max_pixels),
+                    temperature=temperature, top_p=top_p, top_k=top_k,
+                    max_tokens=max_new_tokens, seed=seed, thinking=enable_thinking,
                 )
                 enhanced_prompt, wh_ratio, ratio_follow, thinking, parse_ok = cls._parse_result(
                     raw_result, allow_ratio_follow=(effective_mode == "i2i")
@@ -199,7 +206,11 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
             
         except Exception as e:
             logging.error(f"Prompt enhancement failed: {e}")
+            LOCAL_QWEN35_CACHE.unload()
             return io.NodeOutput(f"[Error: {e}]", "", "", "", "{}")
+        finally:
+            if auto_unload:
+                LOCAL_QWEN35_CACHE.unload()
         
         # 构建完整结果
         full_result = {
@@ -212,6 +223,10 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
             "language": language,
             "image_count": len(frames),
             "parse_ok": parse_ok,
+            "model_reused": bool(model_reused),
+            "auto_unload": bool(auto_unload),
+            "context_length": int(context_length),
+            "image_max_pixels": int(image_max_pixels),
             "retry_on_validation": bool(retry_on_validation),
             "retried": retried,
             "validation_issues": validation_issues,
@@ -335,6 +350,9 @@ class QwenImage21Translator(io.ComfyNode):
             inputs=[
                 io.String.Input("text", multiline=True, dynamic_prompts=True, default=""),
                 io.Combo.Input("direction", options=["auto", "zh2en", "en2zh"], default="auto"),
+                io.Int.Input("context_length", default=8192, min=1024, max=65536, step=256),
+                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True),
+                io.Boolean.Input("auto_unload", default=False),
                 HRDirectorConfig.Input("director_config"),
             ],
             outputs=[
@@ -349,6 +367,9 @@ class QwenImage21Translator(io.ComfyNode):
         cls,
         text: str,
         direction: str,
+        context_length: int,
+        seed: int,
+        auto_unload: bool,
         director_config: Optional[dict] = None,
     ) -> io.NodeOutput:
         if not text.strip():
@@ -387,32 +408,27 @@ English: {text}"""
         
         if selection.model_path is None or selection.mmproj_path is None:
             return io.NodeOutput("[No Qwen model found]", detected)
-        
+        if config["backend"] != "qwen3.5":
+            return io.NodeOutput("[Translator cached runtime requires qwen3.5]", detected)
         try:
-            director = Qwen35ContinuityDirector(
-                model_path=selection.model_path,
-                mmproj_path=selection.mmproj_path,
-                backend=config["backend"],
-                mtp_enabled=config["mtp"],
-                mtp_draft_tokens=config["mtp_draft_tokens"],
-                reasoning_effort=config["reasoning_effort"],
-                debug=config["debug"],
-                cpu_moe=config["cpu_moe"],
-                n_cpu_moe=config["n_cpu_moe"],
-            )
-
-            translated = director.plan_jzl_storyboard(
-                (),
+            translated, _ = LOCAL_QWEN35_CACHE.generate(
+                model_path=selection.model_path, mmproj_path=selection.mmproj_path,
+                context_length=int(context_length),
                 system_prompt=(
                     "You are a professional translator. Preserve meaning, tone, proper nouns, quoted text, "
                     "and formatting. Output only the translation with no explanation or JSON."
                 ),
-                user_prompt=translate_prompt,
+                user_prompt=translate_prompt, frames=(), max_pixels=1048576,
+                temperature=0.1, top_p=0.9, top_k=20, max_tokens=2048,
+                seed=seed, thinking=False, json_response=False,
             )
-            
         except Exception as e:
             logging.error(f"Translation failed: {e}")
+            LOCAL_QWEN35_CACHE.unload()
             return io.NodeOutput(f"[Error: {e}]", detected)
+        finally:
+            if auto_unload:
+                LOCAL_QWEN35_CACHE.unload()
         
         return io.NodeOutput(translated.strip(), detected)
     
