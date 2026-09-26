@@ -53,8 +53,8 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                 io.Int.Input("top_k", default=20, min=0, max=1000, step=1),
                 io.Int.Input("max_new_tokens", default=4096, min=512, max=24000, step=256,
                              tooltip="Upper generation limit; 4096 is normally enough for one rewrite"),
-                io.Int.Input("context_length", default=8192, min=1024, max=65536, step=256,
-                             tooltip="llama.cpp context length; larger values use more memory"),
+                io.Int.Input("context_length", default=32768, min=8192, max=131072, step=1024,
+                             tooltip="Exact llama.cpp context length. Increase for more images or larger output budgets; uses more memory"),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True),
                 io.Int.Input("image_max_pixels", default=1048576, min=262144, max=4194304, step=262144,
                              tooltip="Each reference image is resized below this pixel count before vision encoding"),
@@ -136,7 +136,20 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
             "Visible text requested inside the generated image remains verbatim in its requested script."
         )
         user_prompt = prompt
-        
+        context_length = int(context_length)
+        estimated_required_context = cls._estimated_required_context(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            image_count=len(frames),
+            max_new_tokens=int(max_new_tokens),
+        )
+        if context_length < estimated_required_context:
+            raise ValueError(
+                f"context_length={context_length} is likely too small for {len(frames)} image(s), "
+                f"the official rules, and max_new_tokens={max_new_tokens}; set it to at least "
+                f"{estimated_required_context}"
+            )
+
         start_time = time.time()
         try:
             generation = {
@@ -149,7 +162,7 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
             }
             raw_result, model_reused = LOCAL_QWEN35_CACHE.generate(
                 model_path=selection.model_path, mmproj_path=selection.mmproj_path,
-                context_length=int(context_length), system_prompt=system_prompt,
+                context_length=context_length, system_prompt=system_prompt,
                 user_prompt=user_prompt, frames=frames, max_pixels=int(image_max_pixels),
                 temperature=temperature, top_p=top_p, top_k=top_k,
                 max_tokens=max_new_tokens, seed=seed, thinking=enable_thinking,
@@ -182,7 +195,7 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
 </user_request>"""
                 raw_result, model_reused = LOCAL_QWEN35_CACHE.generate(
                     model_path=selection.model_path, mmproj_path=selection.mmproj_path,
-                    context_length=int(context_length), system_prompt=system_prompt,
+                    context_length=context_length, system_prompt=system_prompt,
                     user_prompt=correction_prompt, frames=frames, max_pixels=int(image_max_pixels),
                     temperature=temperature, top_p=top_p, top_k=top_k,
                     max_tokens=max_new_tokens, seed=seed, thinking=enable_thinking,
@@ -225,7 +238,8 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
             "parse_ok": parse_ok,
             "model_reused": bool(model_reused),
             "auto_unload": bool(auto_unload),
-            "context_length": int(context_length),
+            "context_length": context_length,
+            "estimated_required_context": estimated_required_context,
             "image_max_pixels": int(image_max_pixels),
             "retry_on_validation": bool(retry_on_validation),
             "retried": retried,
@@ -242,6 +256,16 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
             json.dumps(full_result, ensure_ascii=False),
         )
     
+    @staticmethod
+    def _estimated_required_context(*, system_prompt: str, user_prompt: str,
+                                    image_count: int, max_new_tokens: int) -> int:
+        # Conservative preflight only; the user's context_length remains exact.
+        # M-RoPE visual models cannot context-shift when the dialogue overflows.
+        estimated_text_tokens = (len(system_prompt) + len(user_prompt) + 1) // 2
+        estimated_vision_tokens = int(image_count) * 1344
+        required = estimated_text_tokens + estimated_vision_tokens + int(max_new_tokens) + 512
+        return min(131072, max(8192, ((required + 1023) // 1024) * 1024))
+
     @staticmethod
     def _autogrow_images(images, dynamic_inputs) -> tuple[torch.Tensor, ...]:
         values = dict(images or {}) if isinstance(images, dict) else {}
