@@ -124,6 +124,7 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
             raise ValueError("The cached Qwen Image 2.1 runtime currently requires backend qwen3.5")
         
         frames = cls._autogrow_images(images, dynamic_inputs)
+        normalized_prompt = cls._normalize_image_references(prompt, len(frames))
         effective_mode = "i2i" if frames else "t2i"
         if mode == "i2i" and not frames:
             raise ValueError("I2I enhancement requires at least one image")
@@ -141,10 +142,10 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
             )
             user_prompt = (
                 f"{image_mapping}\nAll {len(frames)} images are present above this text and must be inspected.\n"
-                f"User Raw Input Prompt: {prompt}"
+                f"User Raw Input Prompt: {normalized_prompt}"
             )
         else:
-            user_prompt = f"User Raw Input Prompt: {prompt}"
+            user_prompt = f"User Raw Input Prompt: {normalized_prompt}"
         logging.info(
             "Qwen Image 2.1 rewrite sending mode=%s image_count=%d language=%s model=%s mmproj=%s",
             effective_mode, len(frames), language, selection.model_path.name, selection.mmproj_path.name,
@@ -186,7 +187,7 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
             enhanced_prompt = cls._normalize_image_references(enhanced_prompt, len(frames))
             ratio_follow = cls._normalize_image_references(ratio_follow, len(frames))
             validation_issues = cls._validation_issues(
-                original_prompt=prompt,
+                original_prompt=normalized_prompt,
                 rewritten_prompt=enhanced_prompt,
                 language=language,
                 image_count=len(frames),
@@ -207,7 +208,7 @@ Previous response:
 Follow the official Qwen Image 2.1 rules exactly and correct the validation failures. The entire descriptive prose in rewritten_prompt MUST be in {output_language}; do not translate exact user-supplied visible text, proper nouns or brand names. Re-read all {len(frames)} supplied images in their original order. In this message, Picture N is the same source as <imageN> in the official rules. Return exactly one valid JSON object on one line and stop immediately after the closing brace.
 
 <user_request>
-{prompt}
+{normalized_prompt}
 </user_request>"""
                 raw_result, model_reused = LOCAL_QWEN35_CACHE.generate(
                     model_path=selection.model_path, mmproj_path=selection.mmproj_path,
@@ -222,7 +223,7 @@ Follow the official Qwen Image 2.1 rules exactly and correct the validation fail
                 enhanced_prompt = cls._normalize_image_references(enhanced_prompt, len(frames))
                 ratio_follow = cls._normalize_image_references(ratio_follow, len(frames))
                 validation_issues = cls._validation_issues(
-                    original_prompt=prompt,
+                    original_prompt=normalized_prompt,
                     rewritten_prompt=enhanced_prompt,
                     language=language,
                     image_count=len(frames),
@@ -253,6 +254,8 @@ Follow the official Qwen Image 2.1 rules exactly and correct the validation fail
             "requested_mode": mode,
             "effective_mode": effective_mode,
             "language": language,
+            "raw_prompt": prompt,
+            "normalized_prompt": normalized_prompt,
             "image_count": len(frames),
             "image_mapping": [f"Picture {index}=<image{index}>" for index in range(1, len(frames) + 1)],
             "parse_ok": parse_ok,
@@ -387,8 +390,9 @@ Follow the official Qwen Image 2.1 rules exactly and correct the validation fail
         for index in range(1, image_count + 1):
             tag = f"<image{index}>"
             patterns = [
+                rf"<<\s*(?:image|picture)\s*{index}\s*>>",
                 rf"<\s*(?:image|picture)\s*{index}\s*>",
-                rf"\b(?:image|picture)\s*{index}\b",
+                rf"(?<!<)\b(?:image|picture)\s*{index}\b(?!>)",
                 rf"第\s*{index}\s*张\s*(?:图|图片|图像)",
                 rf"(?:图片|图像|图)\s*{index}(?!\d)",
             ]
