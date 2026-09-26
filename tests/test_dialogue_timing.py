@@ -30,9 +30,9 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertIn("continues speaking", parts[2])
         self.assertIn("continues into the next chunk", parts[0])
         self.assertNotIn("continues into the next chunk", parts[2])
-        self.assertIn("<scenetrans>", parts[0])
-        self.assertIn("<scenetrans>", parts[1])
-        self.assertIn("<scenetrans>", parts[2])
+        self.assertNotIn("<scenetrans>", parts[0])
+        self.assertNotIn("<scenetrans>", parts[1])
+        self.assertNotIn("<scenetrans>", parts[2])
 
     def test_chunk_boundary_keeps_leading_punctuation_with_previous_fragment(self):
         source = "<Subject 1> (S1) says: <d>[Chinese] 无用。与其</d>"
@@ -68,12 +68,18 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertEqual(first_text, "已经达到顶峰")
         self.assertEqual(second, "")
 
-    def test_existing_scene_transition_markers_are_not_sliced_as_spoken_text(self):
-        source = "<Subject 1> (S1) carries over: <d>[Chinese] <scenetrans>继续说话<scenetrans></d>"
+    def test_physical_chunk_slice_does_not_invent_scene_transition_markers(self):
+        source = "<Subject 1> (S1) says: <d>[Chinese] 继续说话直到下一段</d>"
         part = slice_dialogue_for_interval(source, 0, 20, 5, 15)
-        self.assertEqual(part.count("<scenetrans>"), 2)
-        spoken = part.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
-        self.assertNotIn("<", spoken)
+        self.assertNotIn("<scenetrans>", part)
+        self.assertIn("continues into the next chunk without a pause or restart", part)
+
+    def test_real_scene_transition_marker_stays_only_on_boundary_side(self):
+        source = "<Subject 1> (S1) carries over: <d>[Chinese] <scenetrans> 继续说话</d>"
+        first = slice_dialogue_for_interval(source, 0, 20, 0, 10)
+        second = slice_dialogue_for_interval(source, 0, 20, 10, 20)
+        self.assertEqual(first.count("<scenetrans>"), 1)
+        self.assertEqual(second.count("<scenetrans>"), 0)
 
     def test_complete_interval_preserves_original_dialogue(self):
         source = "<Subject 1> (S1) says: <d>[English] Stay close.</d>"

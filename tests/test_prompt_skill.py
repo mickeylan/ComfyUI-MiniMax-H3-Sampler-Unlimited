@@ -105,6 +105,8 @@ class PromptSkillTests(unittest.TestCase):
             "continues_from_previous": True, "continues_to_next": True,
         })
         self.assertEqual(description.count("<scenetrans>"), 2)
+        self.assertIn("<d>[Chinese] <scenetrans> 继续说话</d>", description)
+        self.assertRegex(description, r"</d> <scenetrans> with synchronized visible lip movement;.*The same voice")
         self.assertIn("continues seamlessly across the cut", description)
         self.assertNotIn(" says,", description)
 

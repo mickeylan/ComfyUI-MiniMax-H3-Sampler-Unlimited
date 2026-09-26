@@ -555,9 +555,10 @@ def _dialogue_description(item: dict[str, str]) -> str:
     speaker = item["speaker"]
     speaker_id = item["speaker_id"]
     delivery = item["delivery"]
-    prefix = "<scenetrans>" if item.get("continues_from_previous") else ""
-    suffix = "<scenetrans>" if item.get("continues_to_next") else ""
-    tagged = f"<d>[{item['language']}] {prefix}{item['text']}{suffix}</d>"
+    prefix = "<scenetrans> " if item.get("continues_from_previous") else ""
+    tagged = f"<d>[{item['language']}] {prefix}{item['text']}</d>"
+    if item.get("continues_to_next"):
+        tagged += " <scenetrans>"
     if item.get("continues_from_previous"):
         description = f"{speaker} ({speaker_id}) carries the same voice and utterance over from the previous shot: {tagged} with synchronized visible lip movement; the audio continues seamlessly across the cut without a pause, restart, or new breath."
     elif item["kind"] == "voiceover":

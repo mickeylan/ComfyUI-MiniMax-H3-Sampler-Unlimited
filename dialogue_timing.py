@@ -56,7 +56,7 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     prefix, text = (language.group(1), language.group(2)) if language else ("", tagged)
     carries_in = text.startswith("<scenetrans>")
     carries_out = text.endswith("<scenetrans>")
-    text = re.sub(r"^<scenetrans>|<scenetrans>$", "", text)
+    text = re.sub(r"^<scenetrans>\s*|\s*<scenetrans>$", "", text)
     length = len(text)
     first = max(0, min(length, math.floor(length * (overlap_start - source_start) / duration)))
     last = max(first, min(length, math.floor(length * (overlap_end - source_start) / duration)))
@@ -71,9 +71,9 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     if not fragment:
         return ""
     fragment = (
-        ("<scenetrans>" if carries_in or overlap_start > source_start else "")
+        ("<scenetrans> " if carries_in and overlap_start <= source_start else "")
         + fragment
-        + ("<scenetrans>" if carries_out or overlap_end < source_end else "")
+        + (" <scenetrans>" if carries_out and overlap_end >= source_end else "")
     )
     before = content[:match.start()]
     after = content[match.end():]
@@ -86,5 +86,6 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
             before = before.rstrip() + " continues speaking: "
     if overlap_end < source_end:
         after = re.sub(r"^\s*with synchronized visible lip movement\.?", "", after, flags=re.IGNORECASE)
-        after = " while the same utterance continues into the next chunk." + after
+        after = re.sub(r"^\s*<scenetrans>\s*", "", after, flags=re.IGNORECASE)
+        after = " while the same utterance continues into the next chunk without a pause or restart." + after
     return (before + f"<d>{prefix}{fragment}</d>" + after).strip()
