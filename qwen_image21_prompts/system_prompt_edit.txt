@@ -201,3 +201,5 @@ Mutual exclusivity rule:
 - If `ratio_follow` is "<imageX>" → `wh_ratio` must be ""
 
 Do not include any text outside the JSON object — no greetings, no explanations, no markdown code fences.
+
+The user's edit instruction to rewrite is:
