@@ -101,12 +101,14 @@ class PromptSkillTests(unittest.TestCase):
             events=[{"id": "S2.V1", "actor": "asset_1", "action": "enters", "phase": "start"}],
             dialogues=[{"id": "S2.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1", "language": "Chinese", "text": request["required_spoken_lines"][0], "delivery": "自然地"}],
         )
-        normalized, warnings = prompt_skill._redistribute_dialogues(value, request)
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        plan = compiled["shot_plan"]
         self.assertGreater(request["total_frames"], old_total)
         self.assertEqual(request["duration_source"], "dialogue_plus_visual_lead")
-        self.assertEqual(normalized["shots"][-1]["end_frame"], request["total_frames"])
-        self.assertEqual("".join(item["text"] for shot in normalized["shots"] for item in shot["dialogues"]), request["required_spoken_lines"][0])
-        self.assertTrue(any("Extended the H3 timeline" in warning for warning in warnings))
+        self.assertEqual(plan["shots"][-1]["end_frame"], request["total_frames"])
+        self.assertEqual(compiled["planned_frames"], request["total_frames"])
+        self.assertEqual("".join(item["text"] for shot in plan["shots"] for item in shot["dialogues"]), request["required_spoken_lines"][0])
+        self.assertTrue(any("Extended the H3 timeline" in warning for warning in compiled["warnings"]))
 
     def test_dialogue_avoids_two_character_fragment_at_shot_boundary(self):
         story = '<Subject 1> (S1) says: <d>[Chinese] 达到顶峰。</d>'

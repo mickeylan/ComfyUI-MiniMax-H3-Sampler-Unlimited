@@ -901,6 +901,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
     value, dialogue_restore_warnings = _restore_required_dialogues(value, request)
     value, dialogue_order_warnings = _normalize_dialogue_order(value, required_spoken)
     value, dialogue_timing_warnings = _redistribute_dialogues(value, request)
+    total_frames = int(request["total_frames"])
     plan = validate_storyboard_plan(value, image_count=image_count, total_frames=total_frames)
     required_character_subjects = {
         int(match.group(1))
