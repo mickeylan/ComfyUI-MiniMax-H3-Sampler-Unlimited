@@ -202,6 +202,32 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("<scenetrans>", prompt_skill._dialogue_description(continued))
         self.assertTrue(any("Redistributed mandatory dialogue" in warning for warning in compiled["warnings"]))
 
+    def test_model_invented_music_is_removed_without_story_music_request(self):
+        value = self.result()
+        value["non_diegetic_music"] = "A soft flute and guzheng score."
+        value["shots"][0]["audio"] = "Wind, ambient chimes, footsteps"
+        compiled = prompt_skill.compile_prompt_skill(value, self.request())
+        self.assertIn("non_diegetic_music:\nN/A", compiled["prompt"])
+        self.assertNotIn("ambient chimes", compiled["prompt"])
+        self.assertTrue(any("Removed model-invented non-diegetic music" in warning for warning in compiled["warnings"]))
+
+    def test_explicit_story_music_request_is_preserved(self):
+        request = prompt_skill.build_prompt_skill_request(
+            "A hero enters while background music plays.", duration_seconds=2.0, fps=24.0,
+            image_count=1, style="cinematic", shot_density="medium", continuity_mode="balanced", prompt_lang="en",
+        )
+        value = self.result()
+        value["non_diegetic_music"] = "A restrained flute score at slow tempo."
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        self.assertIn("A restrained flute score at slow tempo.", compiled["prompt"])
+
+    def test_observable_features_resolve_internal_asset_ids(self):
+        value = self.result()
+        value["image_subjects"][0]["observable_features"] = "similar facial features to asset_1 with black hair"
+        compiled = prompt_skill.compile_prompt_skill(value, self.request())
+        self.assertNotRegex(compiled["prompt"], r"\basset_\d+\b")
+        self.assertIn("similar facial features to <Subject 1>", compiled["prompt"])
+
     def test_cross_shot_dialogue_uses_h3_scene_transition_contract(self):
         description = prompt_skill._dialogue_description({
             "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",

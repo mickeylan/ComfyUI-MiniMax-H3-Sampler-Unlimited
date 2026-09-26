@@ -33,6 +33,14 @@ _VERBAL_SOUND = re.compile(
     r"\b(?:dialogue|speech|spoken|speaking|says?|asks?|replies?|whispers?|shouts?|voice(?:over)?|vocal(?:ization)?|words?|conversation|singing|lyrics?)\b",
     re.IGNORECASE,
 )
+_MUSIC_SOUND = re.compile(
+    r"\b(?:music|score|instrumental|melody|chimes?|flute|guzheng|piano|strings?|orchestra|bgm)\b|(?:音乐|配乐|乐曲|伴奏|古筝|笛子|钢琴|弦乐)",
+    re.IGNORECASE,
+)
+_MUSIC_INTENT = re.compile(
+    r"\b(?:background music|music|score|soundtrack|instrumental|bgm)\b|(?:背景音乐|配乐|音乐|乐曲|伴奏)",
+    re.IGNORECASE,
+)
 
 
 def _nonverbal_soundscape(*values: Any) -> str:
@@ -40,7 +48,7 @@ def _nonverbal_soundscape(*values: Any) -> str:
     for value in values:
         for part in re.split(r"(?<=[.!?])\s+|\s*[,;]\s*", str(value or "").strip()):
             part = part.strip()
-            if part and part.upper() != "N/A" and _VERBAL_SOUND.search(part) is None:
+            if part and part.upper() != "N/A" and _VERBAL_SOUND.search(part) is None and _MUSIC_SOUND.search(part) is None:
                 parts.append(part)
     return ", ".join(dict.fromkeys(parts))
 
@@ -825,7 +833,10 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             warnings.append(f"Ignored conflicting Qwen kind values for {entity_id}; resolved kind={kind} from the source/usage contract.")
         features = []
         for _index, raw in entries:
-            feature = str(raw.get("observable_features", raw.get("description", ""))).strip()
+            feature = compile_text(
+                raw.get("observable_features", raw.get("description", "")),
+                f"image_subjects[{_index}].observable_features",
+            )
             if feature and feature not in features:
                 features.append(feature)
         normalized_subjects.append({
@@ -1208,6 +1219,10 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
     ]
     plan["retention_analysis"] = "\n".join((*subject_retention, *shot_retention))
     plan["overall_soundscape"] = _nonverbal_soundscape(*(shot["audio"] for shot in plan["shots"])) or "The established ambient room tone continues throughout the video."
+    if _MUSIC_INTENT.search(str(request.get("story", ""))) is None:
+        if str(plan.get("non_diegetic_music", "")).strip().upper() not in {"", "N/A"}:
+            warnings.append("Removed model-invented non-diegetic music because the source story did not request music.")
+        plan["non_diegetic_music"] = "N/A"
     plan["initial_event_ledger"] = {
         "completed": [], "active": [], "pending": ledger_pending, "forbidden": [],
     }
