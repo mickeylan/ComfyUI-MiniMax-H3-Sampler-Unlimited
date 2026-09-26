@@ -987,6 +987,10 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         )))
         for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
     }
+    entity_subjects = {
+        str(item.get("entity_id", "")): f"<Subject {int(item['subject'])}>"
+        for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
+    }
     event_owner: dict[str, int] = {}
     event_actions: dict[str, str] = {}
     speaker_subjects: dict[str, str] = {}
@@ -1049,7 +1053,10 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 event_owner[event_id] = index
                 event_actions[event_id] = action
                 ledger_pending.append({"id": event_id, "summary": action, "owner_shot": index})
-            normalized_events.append({"id": event_id, "action": action, "phase": phase})
+            normalized_events.append({
+                "id": event_id, "actor": str(event.get("actor", "")).strip(),
+                "action": action, "phase": phase,
+            })
         normalized_dialogues = []
         for dialogue_index, dialogue in enumerate(dialogues, 1):
             if not isinstance(dialogue, dict):
@@ -1157,6 +1164,18 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 dialogue_cursor + math.ceil(_line_spoken_duration_seconds(item["text"]) * float(request["fps"])),
             )
             dialogue_cursor = item["end_frame"]
+        for event in normalized_events:
+            actor_subject = entity_subjects.get(str(event.get("actor", "")), "")
+            actor_dialogues = [item for item in normalized_dialogues if item["speaker"] == actor_subject]
+            earlier_speaker = any(
+                item["speaker"] != actor_subject and item["start_frame"] == shot_start
+                for item in normalized_dialogues
+            )
+            if actor_dialogues and earlier_speaker and re.search(
+                r"\b(?:speak|speaks|speaking|say|says|reply|replies|answer|answers)\b|(?:说话|说道|回答)",
+                event["action"], re.IGNORECASE,
+            ):
+                event["start_frame"] = min(item["start_frame"] for item in actor_dialogues)
         dialogue_frames = sum(item["end_frame"] - item["start_frame"] for item in normalized_dialogues)
         if float(request.get("minimum_spoken_duration_seconds", 0.0)) > 0.0 and dialogue_frames > shot_frames:
             raise ValueError(
@@ -1399,7 +1418,7 @@ def project_prompt_plan_interval(plan: dict[str, Any], *, frame_start: int, fram
     }
 
 
-def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str, dict[str, Any]]) -> str:
+def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str, dict[str, Any]], end_state: str = "") -> str:
     action = str(event.get("action", "")).strip()
     if not action:
         return ""
@@ -1411,15 +1430,19 @@ def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str,
             flags=re.IGNORECASE,
         )
     actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
-    if actor is None or str(actor.get("kind", "")).lower() != "character":
-        return action
-    label = f"<Subject {int(actor['subject'])}>"
-    if label.casefold() in action.casefold():
-        return action
-    name = str(actor.get("name", "")).strip()
-    if name and name.casefold() in action.casefold():
-        return f"{label} {action}"
-    return f"{label}{' ' + name if name else ''} {action}"
+    if actor is not None and str(actor.get("kind", "")).lower() == "character":
+        label = f"<Subject {int(actor['subject'])}>"
+        if label.casefold() not in action.casefold():
+            name = str(actor.get("name", "")).strip()
+            action = f"{label}{' ' + name if name and name.casefold() not in action.casefold() else ''} {action}"
+    phase = str(event.get("interval_phase", "start"))
+    if phase == "continue":
+        return "Continue only from the currently visible progress of this already-started action; do not repeat its opening movement. " + (f"Move steadily toward this ending state: {end_state}." if end_state else "")
+    if phase == "complete":
+        return "Complete only the remaining motion once, then stop and hold the established result. " + (f"Settle into this ending state: {end_state}." if end_state else "")
+    if phase == "start_complete":
+        return action + " Perform this action once, then stop and hold its completed state."
+    return action
 
 
 def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
@@ -1432,7 +1455,10 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
             "Continue the already established shot without a cut, reframing, zoom, or restart of completed action."
         )
     if active_events:
-        parts.extend(filter(None, (_localized_event_action(event, subjects_by_entity) for event in active_events)))
+        parts.extend(filter(None, (
+            _localized_event_action(event, subjects_by_entity, str(shot.get("end_state", "")).strip())
+            for event in active_events
+        )))
     elif frame_start <= int(shot["start_frame"]):
         visual = str(shot.get("visual_description", shot.get("description", ""))).strip()
         if visual:

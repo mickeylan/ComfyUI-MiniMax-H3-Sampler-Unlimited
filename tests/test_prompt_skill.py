@@ -1197,6 +1197,56 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotRegex(action, r"\basset_\d+\b")
         self.assertIn("<Subject 4> takes <Subject 3>'s hand", action)
 
+    def test_continuing_visual_event_does_not_repeat_full_action(self):
+        subjects = {"asset_4": {"subject": 4, "kind": "character", "name": "B"}}
+        action = prompt_skill._localized_event_action({
+            "actor": "asset_4", "action": "asset_4 steps forward and takes her hand",
+            "interval_phase": "continue",
+        }, subjects, "both women hold hands and maintain eye contact")
+        self.assertNotIn("steps forward", action)
+        self.assertNotIn("takes her hand", action)
+        self.assertIn("do not repeat its opening movement", action)
+        self.assertIn("both women hold hands", action)
+
+    def test_completing_visual_event_holds_final_state(self):
+        action = prompt_skill._localized_event_action({
+            "action": "steps forward and takes her hand", "interval_phase": "complete",
+        }, {}, "their joined hands remain steady")
+        self.assertNotIn("steps forward", action)
+        self.assertIn("Complete only the remaining motion once", action)
+        self.assertIn("their joined hands remain steady", action)
+
+    def test_reply_visual_action_waits_for_previous_speaker_to_finish(self):
+        story = (
+            '<Subject 1> (S1) says: <d>[English] Are you ready?</d> '
+            '<Subject 2> (S2) says: <d>[English] Yes.</d>'
+        )
+        request = prompt_skill.build_prompt_skill_request(
+            story, duration_seconds=4.0, fps=24.0, image_count=2, style="cinematic",
+            shot_density="low", continuity_mode="balanced", prompt_lang="en",
+        )
+        value = {
+            "image_subjects": [
+                {"entity_id": "asset_1", "kind": "character", "name": "A", "observable_features": "dark hair"},
+                {"entity_id": "asset_2", "kind": "character", "name": "B", "observable_features": "red robe"},
+            ],
+            "shots": [{
+                "start_frame": 0, "end_frame": request["total_frames"], "pictures": ["asset_1", "asset_2"],
+                "camera": "static two-shot", "start_state": "asset_1 and asset_2 face each other",
+                "events": [{"id": "S1.V1", "actor": "asset_2", "action": "asset_2 steps forward, takes asset_1's hand, then speaks", "phase": "start"}],
+                "dialogues": [
+                    {"id": "S1.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1", "language": "English", "text": "Are you ready?", "delivery": "quietly"},
+                    {"id": "S1.D2", "kind": "dialogue", "speaker": "asset_2", "speaker_id": "S2", "language": "English", "text": "Yes.", "delivery": "calmly"},
+                ],
+                "end_state": "they hold hands", "forbidden_replays": [], "audio": "room tone", "description": "two women face each other",
+            }],
+            "non_diegetic_music": "N/A", "warnings": [],
+        }
+        plan = prompt_skill.compile_prompt_skill(value, request)["shot_plan"]
+        event = plan["shots"][0]["events"][0]
+        reply = plan["shots"][0]["dialogues"][1]
+        self.assertEqual(event["start_frame"], reply["start_frame"])
+
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
         plan = {
