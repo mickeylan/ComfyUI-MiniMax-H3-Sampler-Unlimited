@@ -15,12 +15,15 @@ from .storyboard import HRMiniMaxH3StoryboardPlanner
 from .video_io import HREndlessSamplerLoadVideo, HREndlessSamplerSaveVideo
 from .video_bridge import HRVideoBridgeAssemble, HRVideoBridgeConditioning, HRVideoBridgeDirector, HRVideoBridgeExtract
 from .jzl_storyboard import HRMiniMaxH3JZLStoryboard, HRMiniMaxH3JZLSegmentDispatcher
+from .qwen_image21_enhancer import QwenImage21PromptEnhancer, QwenImage21Translator
 
 __version__ = "0.9.0"
 
 
 NODE_CLASS_MAPPINGS = {
     "HREndlessSampler": HREndlessSampler,
+    "QwenImage21PromptEnhancer": QwenImage21PromptEnhancer,
+    "QwenImage21Translator": QwenImage21Translator,
     "HREndlessAudioSeamProbe": HREndlessAudioSeamProbe,
     "HREndlessAudioSeamAssemble": HREndlessAudioSeamAssemble,
     "HREndlessSamplerPreview": HREndlessSamplerPreview,
@@ -48,6 +51,8 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "HREndlessSampler": "HR Endless Sampler",
+    "QwenImage21PromptEnhancer": "Qwen Image 2.1 Prompt Enhancer",
+    "QwenImage21Translator": "Qwen Image 2.1 Translator",
     "HREndlessAudioSeamProbe": "HR Endless Audio Seam Probe",
     "HREndlessAudioSeamAssemble": "HR Endless Audio Seam Assemble",
     "HREndlessSamplerPreview": "HR Endless Sampler Preview",
