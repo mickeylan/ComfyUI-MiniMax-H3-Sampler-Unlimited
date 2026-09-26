@@ -939,17 +939,19 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
         if not timing:
             content = [{"type": "image_url", "image_url": {"url": url}} for url in request.get("image_urls", ())]
             content.append({"type": "text", "text": prompt})
+        generation = request.get("generation", {}) if jzl_storyboard else {}
         completion_kwargs = {
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-            "response_format": None if jzl_storyboard else {"type": "json_object"},
-            "temperature": 0.7,
-            "top_p": 0.8 if family == "qwen3.8" else 0.9,
-            "top_k": 40,
-            "max_tokens": QWEN_JZL_RESPONSE_TOKENS if jzl_storyboard else QWEN_PROMPT_SKILL_RESPONSE_TOKENS if prompt_skill else {
+            "response_format": ({"type": "json_object"} if jzl_storyboard and request.get("json_response") else
+                                None if jzl_storyboard else {"type": "json_object"}),
+            "temperature": float(generation.get("temperature", 0.7)),
+            "top_p": float(generation.get("top_p", 0.8 if family == "qwen3.8" else 0.9)),
+            "top_k": int(generation.get("top_k", 40)),
+            "max_tokens": int(generation.get("max_tokens", QWEN_JZL_RESPONSE_TOKENS if jzl_storyboard else QWEN_PROMPT_SKILL_RESPONSE_TOKENS if prompt_skill else {
                 "qwen3.5": QWEN35_TIMING_RESPONSE_TOKENS if timing else QWEN35_CHUNK_RESPONSE_TOKENS,
                 "qwen3.6": QWEN36_TIMING_RESPONSE_TOKENS if timing else QWEN36_CHUNK_RESPONSE_TOKENS,
                 "qwen3.8": QWEN38_TIMING_RESPONSE_TOKENS if timing else QWEN38_CHUNK_RESPONSE_TOKENS,
-            }[family],
+            }[family])),
             "reasoning_budget": 0,
         }
         if family == "qwen3.8":
@@ -1221,7 +1223,8 @@ class Qwen35ContinuityDirector:
         self._configure_request(request)
         return _run_storyboard_worker(request)
 
-    def plan_jzl_storyboard(self, frames: Sequence[torch.Tensor], *, system_prompt: str, user_prompt: str) -> str:
+    def plan_jzl_storyboard(self, frames: Sequence[torch.Tensor], *, system_prompt: str, user_prompt: str,
+                            generation: dict[str, Any] | None = None, json_response: bool = False) -> str:
         frames = tuple(frames)
         if len(frames) > 32 or any(not isinstance(frame, torch.Tensor) or frame.ndim != 4 or frame.shape[0] != 1 for frame in frames):
             raise Qwen35ObservationError("JZL planning requires single-image NHWC observation batches")
@@ -1230,6 +1233,8 @@ class Qwen35ContinuityDirector:
             "system_prompt": str(system_prompt),
             "user_prompt": str(user_prompt),
             "image_urls": [_image_url(frame[0]) for frame in frames],
+            "generation": dict(generation or {}),
+            "json_response": bool(json_response),
         }
         self._configure_request(request)
         process, value = _run_worker_once(request, timeout=600)

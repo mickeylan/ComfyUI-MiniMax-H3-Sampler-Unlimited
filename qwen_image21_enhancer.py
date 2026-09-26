@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import time
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +46,12 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                 io.Combo.Input("mode", options=["auto", "t2i", "i2i"], default="auto",
                                tooltip="Connected images always select I2I; without images auto/t2i select T2I"),
                 io.Combo.Input("language", options=["en", "zh"], default="en"),
+                io.Float.Input("temperature", default=1.0, min=0.01, max=2.0, step=0.01,
+                               tooltip="Official Qwen Image 2.1 PE default: 1.0"),
+                io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
+                io.Int.Input("top_k", default=20, min=0, max=1000, step=1),
+                io.Int.Input("max_new_tokens", default=16384, min=512, max=24000, step=256,
+                             tooltip="Higher budgets allow substantial multi-image rewrites"),
                 io.Autogrow.Input("images", optional=True,
                     template=io.Autogrow.TemplatePrefix(
                         input=io.Image.Input("image"),
@@ -67,6 +74,10 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
         prompt: str,
         mode: str,
         language: str,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        max_new_tokens: int,
         images: Optional[dict] = None,
         director_config: Optional[dict] = None,
         **dynamic_inputs,
@@ -140,12 +151,58 @@ Required output: one valid JSON object only, matching {output_fields}. Do not ou
                 n_cpu_moe=config["n_cpu_moe"],
             )
 
+            generation = {
+                "temperature": float(temperature),
+                "top_p": float(top_p),
+                "top_k": int(top_k),
+                "max_tokens": int(max_new_tokens),
+            }
             raw_result = director.plan_jzl_storyboard(
                 frames, system_prompt=system_prompt, user_prompt=user_prompt,
+                generation=generation, json_response=True,
             )
-            enhanced_prompt, wh_ratio, ratio_follow, thinking = cls._parse_result(
+            enhanced_prompt, wh_ratio, ratio_follow, thinking, parse_ok = cls._parse_result(
                 raw_result, allow_ratio_follow=(effective_mode == "i2i")
             )
+            validation_issues = cls._validation_issues(
+                original_prompt=prompt,
+                rewritten_prompt=enhanced_prompt,
+                language=language,
+                image_count=len(frames),
+                parse_ok=parse_ok,
+            )
+            retried = False
+            if validation_issues:
+                retried = True
+                correction_prompt = f"""Your previous response failed validation:
+- {chr(10).join(validation_issues)}
+
+Previous response:
+<previous_response>
+{raw_result}
+</previous_response>
+
+Re-read ALL {len(frames)} supplied images and the authoritative user request below. Produce a substantially clarified and expanded instruction that follows the full system rules. For multiple images, explicitly include every required <imageN> tag and state that image's role. Use the selected output language. Return exactly one valid JSON object and nothing else.
+
+<user_request>
+{prompt}
+</user_request>"""
+                raw_result = director.plan_jzl_storyboard(
+                    frames, system_prompt=system_prompt, user_prompt=correction_prompt,
+                    generation=generation, json_response=True,
+                )
+                enhanced_prompt, wh_ratio, ratio_follow, thinking, parse_ok = cls._parse_result(
+                    raw_result, allow_ratio_follow=(effective_mode == "i2i")
+                )
+                validation_issues = cls._validation_issues(
+                    original_prompt=prompt,
+                    rewritten_prompt=enhanced_prompt,
+                    language=language,
+                    image_count=len(frames),
+                    parse_ok=parse_ok,
+                )
+            if validation_issues:
+                raise ValueError("Qwen Image 2.1 rewrite failed validation after correction: " + "; ".join(validation_issues))
             
         except Exception as e:
             logging.error(f"Prompt enhancement failed: {e}")
@@ -161,6 +218,10 @@ Required output: one valid JSON object only, matching {output_fields}. Do not ou
             "effective_mode": effective_mode,
             "language": language,
             "image_count": len(frames),
+            "parse_ok": parse_ok,
+            "retried": retried,
+            "validation_issues": validation_issues,
+            "generation": generation,
             "elapsed_seconds": round(time.time() - start_time, 2),
         }
         
@@ -204,7 +265,7 @@ Required output: one valid JSON object only, matching {output_fields}. Do not ou
         return tuple(frames)
 
     @staticmethod
-    def _parse_result(text: str, *, allow_ratio_follow: bool) -> tuple[str, str, str, str]:
+    def _parse_result(text: str, *, allow_ratio_follow: bool) -> tuple[str, str, str, str, bool]:
         raw = str(text or "").strip()
         thinking = ""
         if "</think>" in raw:
@@ -228,8 +289,43 @@ Required output: one valid JSON object only, matching {output_fields}. Do not ou
                     str(obj.get("wh_ratio") or "").strip(),
                     str(obj.get("ratio_follow") or "").strip() if allow_ratio_follow else "",
                     thinking,
+                    True,
                 )
-        return raw, "", "", thinking
+        return raw, "", "", thinking, False
+
+    @staticmethod
+    def _validation_issues(*, original_prompt: str, rewritten_prompt: str, language: str,
+                           image_count: int, parse_ok: bool) -> list[str]:
+        issues = []
+        rewritten = str(rewritten_prompt or "").strip()
+        original = str(original_prompt or "").strip()
+        if not parse_ok:
+            issues.append("response is not the required JSON object")
+        if not rewritten:
+            issues.append("rewritten_prompt is empty")
+            return issues
+
+        normalized_original = re.sub(r"\s+", "", original).casefold()
+        normalized_rewritten = re.sub(r"\s+", "", rewritten).casefold()
+        similarity = SequenceMatcher(None, normalized_original, normalized_rewritten).ratio()
+        if normalized_rewritten == normalized_original or similarity >= 0.92:
+            issues.append("rewritten_prompt merely repeats the user request")
+        elif len(normalized_original) >= 12 and len(normalized_rewritten) < int(len(normalized_original) * 1.2):
+            issues.append("rewritten_prompt is not materially expanded or clarified")
+
+        if image_count >= 2:
+            missing = [f"<image{index}>" for index in range(1, image_count + 1)
+                       if f"<image{index}>" not in rewritten]
+            if missing:
+                issues.append("missing required image references: " + ", ".join(missing))
+
+        chinese_count = len(re.findall(r"[\u4e00-\u9fff]", rewritten))
+        letter_count = len(re.findall(r"[A-Za-z]", rewritten))
+        if language == "zh" and chinese_count == 0:
+            issues.append("rewritten_prompt is not in Chinese")
+        elif language == "en" and letter_count == 0:
+            issues.append("rewritten_prompt is not in English")
+        return issues
 
 
 # ============== 翻译节点 ==============
