@@ -46,6 +46,8 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                 io.Combo.Input("mode", options=["auto", "t2i", "i2i"], default="auto",
                                tooltip="Connected images always select I2I; without images auto/t2i select T2I"),
                 io.Combo.Input("language", options=["en", "zh"], default="en"),
+                io.Combo.Input("enhancement_level", options=["faithful", "balanced", "detailed"], default="detailed",
+                               tooltip="Controls how much grounded visual detail the generic Qwen GGUF must add"),
                 io.Float.Input("temperature", default=1.0, min=0.01, max=2.0, step=0.01,
                                tooltip="Official Qwen Image 2.1 PE default: 1.0"),
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
@@ -74,6 +76,7 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
         prompt: str,
         mode: str,
         language: str,
+        enhancement_level: str,
         temperature: float,
         top_p: float,
         top_k: int,
@@ -122,7 +125,11 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
             "This explicit output-language selection overrides any contrary default-language rule in the base instructions. "
             "Visible text explicitly requested for the generated image must remain character-for-character in its requested script."
         )
-        system_prompt = f"{base_system_prompt}\n\n## Runtime Contract (highest priority)\n{image_contract}\n{language_contract}"
+        detail_contract = cls._detail_contract(enhancement_level, len(frames), output_language)
+        system_prompt = (
+            f"{base_system_prompt}\n\n## Runtime Contract (highest priority)\n"
+            f"{image_contract}\n{language_contract}\n{detail_contract}"
+        )
         output_fields = (
             '{"rewritten_prompt":"...","wh_ratio":"...","ratio_follow":"<imageN> or empty"}'
             if effective_mode == "i2i" else
@@ -170,6 +177,7 @@ Required output: one valid JSON object only, matching {output_fields}. Do not ou
                 language=language,
                 image_count=len(frames),
                 parse_ok=parse_ok,
+                enhancement_level=enhancement_level,
             )
             retried = False
             if validation_issues:
@@ -182,7 +190,7 @@ Previous response:
 {raw_result}
 </previous_response>
 
-Re-read ALL {len(frames)} supplied images and the authoritative user request below. Produce a substantially clarified and expanded instruction that follows the full system rules. For multiple images, explicitly include every required <imageN> tag and state that image's role. Use the selected output language. Return exactly one valid JSON object and nothing else.
+Re-read ALL {len(frames)} supplied images and the authoritative user request below. Produce a materially enhanced instruction, not a paraphrase. Explicitly state every <imageN> role. Preserve observed identity, clothing and environment; specify final composition, pose/contact, framing/viewpoint, grounded materials/textures, unified light and shadows, scale, perspective and occlusion. Do not invent unsupported luxury, décor, text or objects. Meet the selected enhancement level and output language. Return exactly one valid JSON object and nothing else.
 
 <user_request>
 {prompt}
@@ -200,6 +208,7 @@ Re-read ALL {len(frames)} supplied images and the authoritative user request bel
                     language=language,
                     image_count=len(frames),
                     parse_ok=parse_ok,
+                    enhancement_level=enhancement_level,
                 )
             if validation_issues:
                 raise ValueError("Qwen Image 2.1 rewrite failed validation after correction: " + "; ".join(validation_issues))
@@ -217,6 +226,7 @@ Re-read ALL {len(frames)} supplied images and the authoritative user request bel
             "requested_mode": mode,
             "effective_mode": effective_mode,
             "language": language,
+            "enhancement_level": enhancement_level,
             "image_count": len(frames),
             "parse_ok": parse_ok,
             "retried": retried,
@@ -294,8 +304,25 @@ Re-read ALL {len(frames)} supplied images and the authoritative user request bel
         return raw, "", "", thinking, False
 
     @staticmethod
+    def _detail_contract(level: str, image_count: int, output_language: str) -> str:
+        if level == "faithful":
+            return "Clarify ambiguity concisely while preserving every fixed user requirement and all untargeted image content."
+        if level == "balanced":
+            return (
+                "Do not paraphrase. Materially expand with grounded composition, source-image roles, identity/preservation constraints, "
+                "pose and spatial relations, camera framing, lighting consistency and relevant material details."
+            )
+        minimum = "180 Chinese characters" if output_language == "Chinese" else "120 English words"
+        return (
+            f"Do not paraphrase. For a multi-image request write at least {minimum}. Explicitly cover every source image's role; "
+            "identity and clothing preservation; final placement and body contact; camera framing and viewpoint; observed environment, "
+            "materials and textures; unified light direction, shadows, scale, perspective and occlusion. Add only grounded or necessary "
+            "details; never invent unsupported luxury, décor, text, logos or extra objects."
+        )
+
+    @staticmethod
     def _validation_issues(*, original_prompt: str, rewritten_prompt: str, language: str,
-                           image_count: int, parse_ok: bool) -> list[str]:
+                           image_count: int, parse_ok: bool, enhancement_level: str) -> list[str]:
         issues = []
         rewritten = str(rewritten_prompt or "").strip()
         original = str(original_prompt or "").strip()
@@ -318,6 +345,13 @@ Re-read ALL {len(frames)} supplied images and the authoritative user request bel
                        if f"<image{index}>" not in rewritten]
             if missing:
                 issues.append("missing required image references: " + ", ".join(missing))
+            measured = (len(re.findall(r"[\u4e00-\u9fff]", rewritten)) if language == "zh"
+                        else len(re.findall(r"\b[A-Za-z]+\b", rewritten)))
+            minimum = ({"faithful": 0, "balanced": 100, "detailed": 180}[enhancement_level]
+                       if language == "zh" else
+                       {"faithful": 0, "balanced": 70, "detailed": 120}[enhancement_level])
+            if measured < minimum:
+                issues.append(f"multi-image {enhancement_level} rewrite is too shallow ({measured} < {minimum})")
 
         chinese_count = len(re.findall(r"[\u4e00-\u9fff]", rewritten))
         letter_count = len(re.findall(r"[A-Za-z]", rewritten))
