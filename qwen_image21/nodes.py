@@ -129,13 +129,26 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
             raise ValueError("I2I enhancement requires at least one image")
 
         official_system_prompt = T2I_SYSTEM_PROMPT if effective_mode == "t2i" else I2I_SYSTEM_PROMPT
-        output_language = "Chinese" if language == "zh" else "English"
-        system_prompt = (
-            f"{official_system_prompt}\n\nOutput-language requirement: write rewritten_prompt descriptive prose in {output_language}. "
-            "This changes only the final prompt language; follow every official enhancement rule above. "
-            "Visible text requested inside the generated image remains verbatim in its requested script."
+        output_language = "Simplified Chinese" if language == "zh" else "English"
+        system_prompt = cls._system_prompt_for_language(
+            official_system_prompt, mode=effective_mode, language=language,
+            output_language=output_language,
         )
-        user_prompt = prompt
+        if frames:
+            image_mapping = "\n".join(
+                f"Picture {index} in this message is <image{index}> in the official rewrite rules."
+                for index in range(1, len(frames) + 1)
+            )
+            user_prompt = (
+                f"{image_mapping}\nAll {len(frames)} images are present above this text and must be inspected.\n"
+                f"User Raw Input Prompt: {prompt}"
+            )
+        else:
+            user_prompt = f"User Raw Input Prompt: {prompt}"
+        logging.info(
+            "Qwen Image 2.1 rewrite sending mode=%s image_count=%d language=%s model=%s mmproj=%s",
+            effective_mode, len(frames), language, selection.model_path.name, selection.mmproj_path.name,
+        )
         context_length = int(context_length)
         estimated_required_context = cls._estimated_required_context(
             system_prompt=system_prompt,
@@ -170,6 +183,8 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
             enhanced_prompt, wh_ratio, ratio_follow, thinking, parse_ok = cls._parse_result(
                 raw_result, allow_ratio_follow=(effective_mode == "i2i")
             )
+            enhanced_prompt = cls._normalize_image_references(enhanced_prompt, len(frames))
+            ratio_follow = cls._normalize_image_references(ratio_follow, len(frames))
             validation_issues = cls._validation_issues(
                 original_prompt=prompt,
                 rewritten_prompt=enhanced_prompt,
@@ -178,7 +193,8 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                 parse_ok=parse_ok,
             )
             retried = False
-            if validation_issues and retry_on_validation:
+            language_only_failure = bool(validation_issues) and all("not in " in issue for issue in validation_issues)
+            if validation_issues and (retry_on_validation or language_only_failure):
                 retried = True
                 correction_prompt = f"""Your previous response failed validation:
 - {chr(10).join(validation_issues)}
@@ -188,7 +204,7 @@ Previous response:
 {raw_result}
 </previous_response>
 
-Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames)} supplied images in their original order and correct the validation failures. When this is multi-image compositing or a new scene, apply the official "construct actively" branch rather than merely paraphrasing the placement request. Return exactly one valid JSON object and nothing else.
+Follow the official Qwen Image 2.1 rules exactly and correct the validation failures. The entire descriptive prose in rewritten_prompt MUST be in {output_language}; do not translate exact user-supplied visible text, proper nouns or brand names. Re-read all {len(frames)} supplied images in their original order. In this message, Picture N is the same source as <imageN> in the official rules. Return exactly one valid JSON object on one line and stop immediately after the closing brace.
 
 <user_request>
 {prompt}
@@ -203,6 +219,8 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
                 enhanced_prompt, wh_ratio, ratio_follow, thinking, parse_ok = cls._parse_result(
                     raw_result, allow_ratio_follow=(effective_mode == "i2i")
                 )
+                enhanced_prompt = cls._normalize_image_references(enhanced_prompt, len(frames))
+                ratio_follow = cls._normalize_image_references(ratio_follow, len(frames))
                 validation_issues = cls._validation_issues(
                     original_prompt=prompt,
                     rewritten_prompt=enhanced_prompt,
@@ -216,6 +234,7 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
                     + (" after correction" if retried else "")
                     + ": " + "; ".join(validation_issues)
                 )
+            coverage_warnings = cls._image_reference_warnings(enhanced_prompt, len(frames))
             
         except Exception as e:
             logging.error(f"Prompt enhancement failed: {e}")
@@ -235,6 +254,7 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
             "effective_mode": effective_mode,
             "language": language,
             "image_count": len(frames),
+            "image_mapping": [f"Picture {index}=<image{index}>" for index in range(1, len(frames) + 1)],
             "parse_ok": parse_ok,
             "model_reused": bool(model_reused),
             "auto_unload": bool(auto_unload),
@@ -244,6 +264,7 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
             "retry_on_validation": bool(retry_on_validation),
             "retried": retried,
             "validation_issues": validation_issues,
+            "coverage_warnings": coverage_warnings,
             "generation": generation,
             "elapsed_seconds": round(time.time() - start_time, 2),
         }
@@ -256,6 +277,38 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
             json.dumps(full_result, ensure_ascii=False),
         )
     
+    @staticmethod
+    def _system_prompt_for_language(base_prompt: str, *, mode: str, language: str,
+                                    output_language: str) -> str:
+        prompt = base_prompt
+        if mode == "i2i":
+            # The official edit prompt derives prose language from the request.
+            # The node's explicit language selector replaces only that decision;
+            # every enhancement/editing rule remains intact.
+            prompt = re.sub(
+                r"\*\*FIRST — there are TWO separate language decisions\.[\s\S]*?"
+                r"(?=You are an expert at clarifying image editing instructions\.)",
+                "",
+                prompt,
+                count=1,
+            ).lstrip()
+        elif language == "zh":
+            prompt = re.sub(
+                r"## Language\s+[\s\S]*?(?=## Output format)",
+                "",
+                prompt,
+                count=1,
+            )
+        return (
+            f"{prompt.rstrip()}\n\n## Node Output Policy (highest priority)\n"
+            f"- Write all descriptive prose in `rewritten_prompt` in {output_language}.\n"
+            "- The node language selector is authoritative; do not infer or change it from the user request.\n"
+            "- Keep user-supplied visible text, proper nouns, brand names, and interface labels exactly as supplied.\n"
+            "- Do not add readable image text unless the user supplied its exact wording or explicitly requested it.\n"
+            "- Return exactly the JSON object required by the official task, on one line. Stop immediately after `}`.\n"
+            "- Do not output analysis, explanations, Markdown, or phrases such as 'let me think'."
+        )
+
     @staticmethod
     def _estimated_required_context(*, system_prompt: str, user_prompt: str,
                                     image_count: int, max_new_tokens: int) -> int:
@@ -327,6 +380,34 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
         return raw, "", "", thinking, False
 
     @staticmethod
+    def _normalize_image_references(text: str, image_count: int) -> str:
+        value = str(text or "")
+        chinese_numbers = ("一", "二", "三", "四", "五", "六", "七", "八",
+                           "九", "十", "十一", "十二", "十三", "十四", "十五", "十六")
+        for index in range(1, image_count + 1):
+            tag = f"<image{index}>"
+            patterns = [
+                rf"<\s*(?:image|picture)\s*{index}\s*>",
+                rf"\b(?:image|picture)\s*{index}\b",
+                rf"第\s*{index}\s*张\s*(?:图|图片|图像)",
+                rf"(?:图片|图像|图)\s*{index}(?!\d)",
+            ]
+            if index <= len(chinese_numbers):
+                patterns.append(rf"第\s*{chinese_numbers[index - 1]}\s*张\s*(?:图|图片|图像)")
+            for pattern in patterns:
+                value = re.sub(pattern, tag, value, flags=re.IGNORECASE)
+        return value
+
+    @staticmethod
+    def _image_reference_warnings(rewritten_prompt: str, image_count: int) -> list[str]:
+        if image_count < 2:
+            return []
+        missing = [f"<image{index}>" for index in range(1, image_count + 1)
+                   if f"<image{index}>" not in rewritten_prompt]
+        return (["Model output did not explicitly reference: " + ", ".join(missing)]
+                if missing else [])
+
+    @staticmethod
     def _validation_issues(*, original_prompt: str, rewritten_prompt: str, language: str,
                            image_count: int, parse_ok: bool) -> list[str]:
         issues = []
@@ -343,12 +424,6 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
         similarity = SequenceMatcher(None, normalized_original, normalized_rewritten).ratio()
         if normalized_rewritten == normalized_original or similarity >= 0.92:
             issues.append("rewritten_prompt merely repeats the user request")
-
-        if image_count >= 2:
-            missing = [f"<image{index}>" for index in range(1, image_count + 1)
-                       if f"<image{index}>" not in rewritten]
-            if missing:
-                issues.append("missing required image references: " + ", ".join(missing))
 
         chinese_count = len(re.findall(r"[\u4e00-\u9fff]", rewritten))
         letter_count = len(re.findall(r"[A-Za-z]", rewritten))
