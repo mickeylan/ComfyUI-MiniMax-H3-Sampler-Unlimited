@@ -421,6 +421,34 @@ def _dialogue_prefix_for_frames(text: str, available_frames: int, fps: float) ->
     return low
 
 
+def _dialogue_semantic_cut(text: str, cut: int) -> int:
+    candidates = [match.end() for match in re.finditer(r"[。！？!?；;，,]", text[:cut])]
+    useful = [index for index in candidates if index >= max(3, cut // 2)]
+    return useful[-1] if useful else cut
+
+
+def _extend_shot_intervals(shots: list[dict[str, Any]], normalized_shots: list[dict[str, Any]],
+                           start_index: int, extra_frames: int) -> int:
+    old_total = int(shots[-1]["end_frame"])
+    new_total = planned_frame_count(old_total + int(extra_frames), 1.0)
+    delta = new_total - old_total
+    durations = [int(shot["end_frame"]) - int(shot["start_frame"]) for shot in shots[start_index:]]
+    duration_total = sum(durations)
+    cursor = int(shots[start_index]["start_frame"])
+    allocated = 0
+    for offset, duration in enumerate(durations):
+        target = round(delta * sum(durations[:offset + 1]) / duration_total)
+        addition = target - allocated
+        allocated = target
+        index = start_index + offset
+        shots[index]["start_frame"] = cursor
+        shots[index]["end_frame"] = cursor + duration + addition
+        normalized_shots[index]["start_frame"] = cursor
+        normalized_shots[index]["end_frame"] = cursor + duration + addition
+        cursor += duration + addition
+    return delta
+
+
 def _first_visible_shot(shots: list[dict[str, Any]], subject: str, request: dict[str, Any]) -> int:
     match = re.fullmatch(r"<Subject\s+(\d+)>", subject, re.IGNORECASE)
     if match is None:
@@ -494,6 +522,19 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
         if str(dialogue.get("kind", "dialogue")).strip().lower() != "voiceover":
             current_shot = max(current_shot, _first_visible_shot(shots, str(dialogue.get("speaker", "")), request))
         remaining = str(dialogue["text"]).strip()
+        required_line_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
+        available_line_frames = sum(
+            int(shots[index]["end_frame"]) - int(shots[index]["start_frame"]) - used[index]
+            for index in range(current_shot, len(shots))
+        )
+        if required_line_frames > available_line_frames:
+            added = _extend_shot_intervals(
+                shots, normalized_shots, current_shot, required_line_frames - available_line_frames
+            )
+            extended_frames += added
+            request["total_frames"] = int(shots[-1]["end_frame"])
+            request["duration_seconds"] = request["total_frames"] / fps
+            request["duration_source"] = "dialogue_plus_visual_lead"
         fragment_index = 0
         while remaining:
             while current_shot < len(shots):
@@ -502,16 +543,7 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
                     break
                 current_shot += 1
             if current_shot >= len(shots):
-                remaining_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
-                old_total = int(shots[-1]["end_frame"])
-                new_total = planned_frame_count((old_total + remaining_frames) / fps, fps)
-                extended_frames += new_total - old_total
-                shots[-1]["end_frame"] = new_total
-                normalized_shots[-1]["end_frame"] = new_total
-                request["total_frames"] = new_total
-                request["duration_seconds"] = new_total / fps
-                request["duration_source"] = "dialogue_plus_visual_lead"
-                current_shot = len(shots) - 1
+                raise ValueError("Dialogue redistribution exhausted the proportionally extended H3 timeline")
             required_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
             capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
             if required_frames <= capacity:
@@ -524,6 +556,7 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
                 if cut <= 0:
                     current_shot += 1
                     continue
+                cut = _dialogue_semantic_cut(remaining, cut)
                 while cut > 0 and cut < len(remaining) and remaining[cut] in "，,。！？!?；;：:":
                     cut -= 1
                 fragment_text = re.sub(r"[，,。！？!?；;：:\s]", "", remaining[:cut])
@@ -1343,6 +1376,13 @@ def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str,
     action = str(event.get("action", "")).strip()
     if not action:
         return ""
+    for entity_id, subject in subjects_by_entity.items():
+        action = re.sub(
+            rf"(?<!\w){re.escape(entity_id)}(?!\w)",
+            f"<Subject {int(subject['subject'])}>",
+            action,
+            flags=re.IGNORECASE,
+        )
     actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
     if actor is None or str(actor.get("kind", "")).lower() != "character":
         return action

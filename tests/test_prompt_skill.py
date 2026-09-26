@@ -110,6 +110,27 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual("".join(item["text"] for shot in plan["shots"] for item in shot["dialogues"]), request["required_spoken_lines"][0])
         self.assertTrue(any("Extended the H3 timeline" in warning for warning in compiled["warnings"]))
 
+    def test_semantic_dialogue_cut_prefers_nearby_punctuation(self):
+        text = "再闭关苦修已是无用。与其毫无头绪的闭关，不如继续。"
+        raw_cut = text.index("绪")
+        cut = prompt_skill._dialogue_semantic_cut(text, raw_cut)
+        self.assertEqual(text[:cut], "再闭关苦修已是无用。")
+        self.assertTrue(text[cut:].startswith("与其毫无头绪"))
+
+    def test_extended_timeline_spreads_frames_across_remaining_shots(self):
+        shots = [
+            {"start_frame": 0, "end_frame": 100},
+            {"start_frame": 100, "end_frame": 200},
+            {"start_frame": 200, "end_frame": 300},
+        ]
+        normalized = [dict(shot) for shot in shots]
+        added = prompt_skill._extend_shot_intervals(shots, normalized, 1, 80)
+        self.assertGreater(added, 0)
+        self.assertGreater(shots[1]["end_frame"] - shots[1]["start_frame"], 100)
+        self.assertGreater(shots[2]["end_frame"] - shots[2]["start_frame"], 100)
+        self.assertEqual(shots[1]["end_frame"], shots[2]["start_frame"])
+        self.assertEqual((shots[-1]["end_frame"] - 5) % 17, 0)
+
     def test_dialogue_avoids_two_character_fragment_at_shot_boundary(self):
         story = '<Subject 1> (S1) says: <d>[Chinese] 达到顶峰。</d>'
         request = prompt_skill.build_prompt_skill_request(
@@ -1112,6 +1133,17 @@ class PromptSkillTests(unittest.TestCase):
         compiled = prompt_skill.compile_prompt_skill(value, self.request())
         self.assertNotRegex(compiled["prompt"], r"\basset_\d+\b")
         self.assertIn("<Subject 1> opens the door", compiled["prompt"])
+
+    def test_localized_event_action_removes_internal_asset_ids(self):
+        subjects = {
+            "asset_3": {"subject": 3, "kind": "character", "name": "A"},
+            "asset_4": {"subject": 4, "kind": "character", "name": "B"},
+        }
+        action = prompt_skill._localized_event_action(
+            {"actor": "asset_4", "action": "asset_4 takes asset_3's hand"}, subjects
+        )
+        self.assertNotRegex(action, r"\basset_\d+\b")
+        self.assertIn("<Subject 4> takes <Subject 3>'s hand", action)
 
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
