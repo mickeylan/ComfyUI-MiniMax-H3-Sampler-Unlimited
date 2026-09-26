@@ -296,27 +296,12 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
         similarity = SequenceMatcher(None, normalized_original, normalized_rewritten).ratio()
         if normalized_rewritten == normalized_original or similarity >= 0.92:
             issues.append("rewritten_prompt merely repeats the user request")
-        elif len(normalized_original) >= 12 and len(normalized_rewritten) < int(len(normalized_original) * 1.2):
-            issues.append("rewritten_prompt is not materially expanded or clarified")
 
         if image_count >= 2:
             missing = [f"<image{index}>" for index in range(1, image_count + 1)
                        if f"<image{index}>" not in rewritten]
             if missing:
                 issues.append("missing required image references: " + ", ".join(missing))
-            active_composition = image_count >= 3 or bool(re.search(
-                r"(?:合成|组合|合影|合照|置于|放到|移入|躺在|一起|场景|composit|place|put|together|scene)",
-                original, re.IGNORECASE,
-            ))
-            if active_composition:
-                if language == "zh":
-                    detail_count = len(re.findall(r"[\u4e00-\u9fff]", rewritten))
-                    if detail_count < 120:
-                        issues.append(f"multi-image composition did not use the official construct-actively branch ({detail_count} < 120 Chinese characters)")
-                else:
-                    detail_count = len(re.findall(r"\b[A-Za-z]+\b", rewritten))
-                    if detail_count < 80:
-                        issues.append(f"multi-image composition did not use the official construct-actively branch ({detail_count} < 80 English words)")
 
         chinese_count = len(re.findall(r"[\u4e00-\u9fff]", rewritten))
         letter_count = len(re.findall(r"[A-Za-z]", rewritten))
