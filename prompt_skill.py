@@ -905,9 +905,13 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
                     forbidden_text = " ".join(str(item) for item in raw.get("forbidden_replays", ()))
                     absent_pattern = rf"(?<!\w){re.escape(str(speaker['entity_id']))}(?!\w).*\b(?:appear|appearing|enter|entering|arrive|arriving)\b"
                     if re.search(absent_pattern, forbidden_text, re.IGNORECASE):
-                        raise ValueError(
-                            f"shots[{shot_index}].dialogues[{dialogue_index}] makes visible speaker {speaker['entity_id']} "
-                            "speak while the same shot forbids that speaker from appearing"
+                        shot["forbidden_replays"] = [
+                            compiled for original, compiled in zip(raw.get("forbidden_replays", ()), shot["forbidden_replays"])
+                            if re.search(absent_pattern, str(original), re.IGNORECASE) is None
+                        ]
+                        warnings.append(
+                            f"Removed a contradictory forbidden-replay rule from shot {shot_index}: visible speaker "
+                            f"{speaker['entity_id']} must be allowed to appear before speaking."
                         )
                 dialogue["speaker"] = f"<Subject {int(speaker['picture'])}>"
             dialogues.append(dialogue)

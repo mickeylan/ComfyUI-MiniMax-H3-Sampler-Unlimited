@@ -1136,7 +1136,7 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("stable voice identity", description)
         self.assertIn("consistent timbre, pitch, cadence, and speaking rate", description)
 
-    def test_rejects_visible_speaker_when_same_shot_forbids_appearance(self):
+    def test_removes_forbidden_appearance_rule_that_conflicts_with_visible_speaker(self):
         request = prompt_skill.build_prompt_skill_request(
             '<Subject 1> (S1) says: <d>[English] Wait.</d>', duration_seconds=2.0, fps=24.0,
             image_count=1, style="cinematic", shot_density="medium", continuity_mode="balanced", prompt_lang="en",
@@ -1146,9 +1146,11 @@ class PromptSkillTests(unittest.TestCase):
             "id": "S1.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
             "language": "English", "text": "Wait.", "delivery": "quietly",
         }]
-        value["shots"][0]["forbidden_replays"] = ["asset_1 appearing in this shot"]
-        with self.assertRaisesRegex(ValueError, "forbids that speaker from appearing"):
-            prompt_skill.compile_prompt_skill(value, request)
+        value["shots"][0]["forbidden_replays"] = ["asset_1 appearing in this shot", "repeating the entrance"]
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        self.assertNotIn("appearing in this shot", compiled["prompt"])
+        self.assertIn("repeating the entrance", compiled["prompt"])
+        self.assertTrue(any("Removed a contradictory forbidden-replay rule" in warning for warning in compiled["warnings"]))
 
     def test_compiler_removes_internal_asset_ids_from_h3_text(self):
         value = self.result()
