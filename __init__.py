@@ -15,7 +15,7 @@ from .storyboard import HRMiniMaxH3StoryboardPlanner
 from .video_io import HREndlessSamplerLoadVideo, HREndlessSamplerSaveVideo
 from .video_bridge import HRVideoBridgeAssemble, HRVideoBridgeConditioning, HRVideoBridgeDirector, HRVideoBridgeExtract
 from .jzl_storyboard import HRMiniMaxH3JZLStoryboard, HRMiniMaxH3JZLSegmentDispatcher
-from .qwen_image21_enhancer import QwenImage21PromptEnhancer, QwenImage21Translator
+from .qwen_image21 import QwenImage21PromptEnhancer, QwenImage21Translator
 
 __version__ = "0.9.0"
 

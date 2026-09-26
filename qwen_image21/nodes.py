@@ -17,14 +17,14 @@ import torch
 from comfy_api.latest import io
 from typing_extensions import override
 
-from .director_config import HRDirectorConfig, normalize_qwen38_config
-from .director_backend import resolve_director_selection
-from .qwen35 import Qwen35ContinuityDirector
+from ..director_config import HRDirectorConfig, normalize_qwen38_config
+from ..director_backend import resolve_director_selection
+from .runtime_qwen35 import Qwen35ContinuityDirector
 
 
 # ============== 自定义类型定义 ==============
 EnhancedPromptResult = io.Custom("ENHANCED_PROMPT_RESULT")
-_PROMPT_DIR = Path(__file__).with_name("qwen_image21_prompts")
+_PROMPT_DIR = Path(__file__).with_name("prompts")
 T2I_SYSTEM_PROMPT = (_PROMPT_DIR / "system_prompt_t2i.txt").read_text(encoding="utf-8").strip()
 I2I_SYSTEM_PROMPT = (_PROMPT_DIR / "system_prompt_edit.txt").read_text(encoding="utf-8").strip()
 
