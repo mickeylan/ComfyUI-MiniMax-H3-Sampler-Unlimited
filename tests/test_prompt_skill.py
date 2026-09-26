@@ -85,6 +85,29 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(normalized["shots"][0]["dialogues"], [])
         self.assertEqual(normalized["shots"][1]["dialogues"][0]["text"], "现在开始说话。")
 
+    def test_timeline_extends_when_visible_lead_reduces_dialogue_capacity(self):
+        story = '<Subject 1> (S1) says: <d>[Chinese] 这是一句需要完整自然说完而且不能提前开始的对白。</d>'
+        request = prompt_skill.build_prompt_skill_request(
+            story, duration_seconds=2.0, fps=24.0, image_count=1, style="cinematic",
+            shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
+        )
+        old_total = request["total_frames"]
+        value = self.result()
+        lead_end = old_total - 17
+        value["shots"][0].update(end_frame=lead_end, events=[], dialogues=[])
+        value["shots"][1].update(
+            start_frame=lead_end, end_frame=old_total,
+            start_state="asset_1 enters and becomes visible",
+            events=[{"id": "S2.V1", "actor": "asset_1", "action": "enters", "phase": "start"}],
+            dialogues=[{"id": "S2.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1", "language": "Chinese", "text": request["required_spoken_lines"][0], "delivery": "自然地"}],
+        )
+        normalized, warnings = prompt_skill._redistribute_dialogues(value, request)
+        self.assertGreater(request["total_frames"], old_total)
+        self.assertEqual(request["duration_source"], "dialogue_plus_visual_lead")
+        self.assertEqual(normalized["shots"][-1]["end_frame"], request["total_frames"])
+        self.assertEqual("".join(item["text"] for shot in normalized["shots"] for item in shot["dialogues"]), request["required_spoken_lines"][0])
+        self.assertTrue(any("Extended the H3 timeline" in warning for warning in warnings))
+
     def test_dialogue_avoids_two_character_fragment_at_shot_boundary(self):
         story = '<Subject 1> (S1) says: <d>[Chinese] 达到顶峰。</d>'
         request = prompt_skill.build_prompt_skill_request(

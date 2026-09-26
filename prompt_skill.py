@@ -456,7 +456,7 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
         return value, []
     if not isinstance(value, dict) or not isinstance(value.get("shots"), list):
         return value, []
-    shots = value["shots"]
+    shots = [dict(shot) if isinstance(shot, dict) else shot for shot in value["shots"]]
     dialogues = []
     for shot_index, shot in enumerate(shots):
         if not isinstance(shot, dict) or not isinstance(shot.get("dialogues", []), list):
@@ -489,6 +489,7 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     used = [0] * len(shots)
     current_shot = 0
     split_count = 0
+    extended_frames = 0
     for _original_shot, dialogue in dialogues:
         if str(dialogue.get("kind", "dialogue")).strip().lower() != "voiceover":
             current_shot = max(current_shot, _first_visible_shot(shots, str(dialogue.get("speaker", "")), request))
@@ -501,7 +502,16 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
                     break
                 current_shot += 1
             if current_shot >= len(shots):
-                raise ValueError("The complete video timeline is too short for the mandatory spoken dialogue at natural speed")
+                remaining_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
+                old_total = int(shots[-1]["end_frame"])
+                new_total = planned_frame_count((old_total + remaining_frames) / fps, fps)
+                extended_frames += new_total - old_total
+                shots[-1]["end_frame"] = new_total
+                normalized_shots[-1]["end_frame"] = new_total
+                request["total_frames"] = new_total
+                request["duration_seconds"] = new_total / fps
+                request["duration_source"] = "dialogue_plus_visual_lead"
+                current_shot = len(shots) - 1
             required_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
             capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
             if required_frames <= capacity:
@@ -542,9 +552,10 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
         raise ValueError("Deterministic dialogue redistribution did not preserve the exact mandatory spoken text")
     if normalized_shots == shots:
         return value, []
-    return normalized, [
-        f"Redistributed mandatory dialogue across shot frame capacity at natural speech speed; split {split_count} fragment(s)."
-    ]
+    message = f"Redistributed mandatory dialogue across shot frame capacity at natural speech speed; split {split_count} fragment(s)."
+    if extended_frames:
+        message += f" Extended the H3 timeline by {extended_frames} frame(s) so visible speakers appear before speaking."
+    return normalized, [message]
 
 
 def _normalize_event_id(value: Any, shot_index: int, event_index: int) -> str:
