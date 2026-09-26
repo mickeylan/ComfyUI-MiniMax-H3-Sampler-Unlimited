@@ -51,10 +51,12 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                                tooltip="Official Qwen Image 2.1 PE default: 1.0"),
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("top_k", default=20, min=0, max=1000, step=1),
-                io.Int.Input("max_new_tokens", default=16384, min=512, max=24000, step=256,
-                             tooltip="Includes thinking plus final rewrite"),
-                io.Int.Input("thinking_budget", default=4096, min=0, max=8192, step=256,
-                             tooltip="Official PE requires thinking; 0 disables it"),
+                io.Int.Input("max_new_tokens", default=4096, min=512, max=24000, step=256,
+                             tooltip="Upper generation limit; 4096 is normally enough for one rewrite"),
+                io.Int.Input("thinking_budget", default=1024, min=0, max=8192, step=256,
+                             tooltip="Reasoning token budget; larger values are slower"),
+                io.Boolean.Input("retry_on_validation", default=False,
+                                 tooltip="Retry once when JSON/image/language validation fails; reloads the model and can nearly double runtime"),
                 io.Autogrow.Input("images", optional=True,
                     template=io.Autogrow.TemplatePrefix(
                         input=io.Image.Input("image"),
@@ -82,6 +84,7 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
         top_k: int,
         max_new_tokens: int,
         thinking_budget: int,
+        retry_on_validation: bool,
         images: Optional[dict] = None,
         director_config: Optional[dict] = None,
         **dynamic_inputs,
@@ -158,7 +161,7 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                 parse_ok=parse_ok,
             )
             retried = False
-            if validation_issues:
+            if validation_issues and retry_on_validation:
                 retried = True
                 correction_prompt = f"""Your previous response failed validation:
 - {chr(10).join(validation_issues)}
@@ -188,7 +191,11 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
                     parse_ok=parse_ok,
                 )
             if validation_issues:
-                raise ValueError("Qwen Image 2.1 rewrite failed validation after correction: " + "; ".join(validation_issues))
+                raise ValueError(
+                    "Qwen Image 2.1 rewrite failed validation"
+                    + (" after correction" if retried else "")
+                    + ": " + "; ".join(validation_issues)
+                )
             
         except Exception as e:
             logging.error(f"Prompt enhancement failed: {e}")
@@ -205,6 +212,7 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
             "language": language,
             "image_count": len(frames),
             "parse_ok": parse_ok,
+            "retry_on_validation": bool(retry_on_validation),
             "retried": retried,
             "validation_issues": validation_issues,
             "generation": generation,
