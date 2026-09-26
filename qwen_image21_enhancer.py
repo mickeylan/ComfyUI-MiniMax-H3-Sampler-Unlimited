@@ -42,7 +42,8 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
             description="Qwen Image 2.1 提示词增强，支持 T2I/I2I 模式",
             inputs=[
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True, default=""),
-                io.Combo.Input("mode", options=["t2i", "i2i"], default="t2i"),
+                io.Combo.Input("mode", options=["auto", "t2i", "i2i"], default="auto",
+                               tooltip="Connected images always select I2I; without images auto/t2i select T2I"),
                 io.Combo.Input("language", options=["en", "zh"], default="en"),
                 io.Autogrow.Input("images", optional=True,
                     template=io.Autogrow.TemplatePrefix(
@@ -91,21 +92,38 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
         if selection.model_path is None or selection.mmproj_path is None:
             return io.NodeOutput("[No Qwen model found]", "", "", "", "{}")
         
-        # 构建系统提示词
-        if mode == "t2i":
-            system_prompt = T2I_SYSTEM_PROMPT
-        else:
-            system_prompt = I2I_SYSTEM_PROMPT
-        
-        output_language = "Chinese" if language == "zh" else "English"
-        user_prompt = f"""User Request: {prompt}
-
-Write rewritten_prompt in {output_language}. Preserve explicitly requested visible text verbatim in its original script.
-Return only the requested JSON object."""
-
         frames = cls._autogrow_images(images, dynamic_inputs)
+        effective_mode = "i2i" if frames else "t2i"
         if mode == "i2i" and not frames:
-            raise ValueError("Qwen Image 2.1 i2i enhancement requires at least one image")
+            raise ValueError("I2I enhancement requires at least one image")
+
+        base_system_prompt = T2I_SYSTEM_PROMPT if effective_mode == "t2i" else I2I_SYSTEM_PROMPT
+        output_language = "Chinese" if language == "zh" else "English"
+        image_contract = (
+            "No reference images are supplied. Perform text-to-image prompt expansion."
+            if not frames else
+            f"Exactly {len(frames)} ordered reference images are supplied. Inspect and use ALL of them. "
+            "Refer to them exactly as <image1>, <image2>, ... in input order when there is more than one image. "
+            "State each image's distinct role and do not collapse the images into one generic description."
+        )
+        language_contract = (
+            f"The descriptive prose of rewritten_prompt MUST be written in {output_language}. "
+            "This explicit output-language selection overrides any contrary default-language rule in the base instructions. "
+            "Visible text explicitly requested for the generated image must remain character-for-character in its requested script."
+        )
+        system_prompt = f"{base_system_prompt}\n\n## Runtime Contract (highest priority)\n{image_contract}\n{language_contract}"
+        output_fields = (
+            '{"rewritten_prompt":"...","wh_ratio":"...","ratio_follow":"<imageN> or empty"}'
+            if effective_mode == "i2i" else
+            '{"rewritten_prompt":"...","wh_ratio":"..."}'
+        )
+        user_prompt = f"""The user's original request below is authoritative. Follow it rather than merely captioning the reference images.
+
+<user_request>
+{prompt}
+</user_request>
+
+Required output: one valid JSON object only, matching {output_fields}. Do not output an image inventory, analysis, Markdown, or explanatory prose outside the JSON."""
         
         # 创建 Director 并执行
         start_time = time.time()
@@ -126,7 +144,7 @@ Return only the requested JSON object."""
                 frames, system_prompt=system_prompt, user_prompt=user_prompt,
             )
             enhanced_prompt, wh_ratio, ratio_follow, thinking = cls._parse_result(
-                raw_result, allow_ratio_follow=(mode == "i2i")
+                raw_result, allow_ratio_follow=(effective_mode == "i2i")
             )
             
         except Exception as e:
@@ -139,7 +157,9 @@ Return only the requested JSON object."""
             "thinking": thinking,
             "wh_ratio": wh_ratio,
             "ratio_follow": ratio_follow,
-            "mode": mode,
+            "requested_mode": mode,
+            "effective_mode": effective_mode,
+            "language": language,
             "image_count": len(frames),
             "elapsed_seconds": round(time.time() - start_time, 2),
         }
