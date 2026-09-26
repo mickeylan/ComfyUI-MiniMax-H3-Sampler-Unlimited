@@ -927,7 +927,7 @@ class PromptSkillTests(unittest.TestCase):
             "detailed_description:\nunused", plan, frame_start=0, frame_end=39,
         )
         expected = "<Subject 3> 上官若彤 从桃林深处缓步走出，步伐轻盈，神情关切"
-        self.assertIn("summary:\n" + expected, localized)
+        self.assertIn("summary:\n[video continuation + reference generation] " + expected, localized)
         self.assertIn("[Shot 1] " + expected, localized)
         self.assertNotIn("summary:\n从桃林深处", localized)
 
@@ -989,6 +989,48 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("上官若琳", localized)
         self.assertNotIn("lip movement", localized)
         self.assertIn("overall_soundscape:\nsoft wind", localized)
+
+    def test_localized_soundscape_removes_voice_instructions_and_keeps_ambience(self):
+        plan = {
+            "fps": 24.0,
+            "image_subjects": [{"picture": 1, "subject": 1, "name": "Speaker", "observable_features": ""}],
+            "shots": [{
+                "start_frame": 0, "end_frame": 39, "pictures": [1], "camera": "static medium shot",
+                "start_state": "speaker present", "end_state": "speaker present", "forbidden_replays": [],
+                "audio": "Voice of <Subject 1> is calm and clear, soft wind, distant birds",
+                "visual_description": "The speaker remains still.", "events": [], "dialogues": [],
+            }],
+            "overall_soundscape": "Dialogue, forest ambience",
+            "non_diegetic_music": "N/A",
+        }
+        localized = prompt_skill.localize_prompt_from_plan("", plan, frame_start=0, frame_end=39)
+        self.assertIn("overall_soundscape:\nsoft wind, distant birds", localized)
+        self.assertNotIn("Voice of", localized)
+        self.assertNotIn("Dialogue", localized)
+
+    def test_localized_soundscape_inherits_nonverbal_bed_instead_of_na(self):
+        plan = {
+            "fps": 24.0,
+            "image_subjects": [{"picture": 1, "subject": 1, "name": "Speaker", "observable_features": ""}],
+            "shots": [{
+                "start_frame": 0, "end_frame": 39, "pictures": [1], "camera": "static medium shot",
+                "start_state": "speaker present", "end_state": "speaker present", "forbidden_replays": [],
+                "audio": "Dialogue", "visual_description": "The speaker remains still.", "events": [], "dialogues": [],
+            }],
+            "overall_soundscape": "steady forest ambience",
+            "non_diegetic_music": "N/A",
+        }
+        localized = prompt_skill.localize_prompt_from_plan("", plan, frame_start=0, frame_end=39)
+        self.assertIn("overall_soundscape:\nsteady forest ambience", localized)
+        self.assertNotIn("overall_soundscape:\nN/A", localized)
+
+    def test_first_spoken_fragment_establishes_stable_voice_profile(self):
+        description = prompt_skill._dialogue_description({
+            "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
+            "language": "Chinese", "text": "你好。", "delivery": "calmly",
+        })
+        self.assertIn("stable voice identity", description)
+        self.assertIn("consistent timbre, pitch, cadence, and speaking rate", description)
 
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"

@@ -29,6 +29,20 @@ _NAMED_SPOKEN_QUOTE = re.compile(
     r"([^\s，。；：:\"“”<>]{1,32})\s*(?:说|说道|问|询问|喊|喊道|回答|答道|低语|耳语)\s*[：:]\s*[\"“](.*?)[\"”]",
     re.DOTALL,
 )
+_VERBAL_SOUND = re.compile(
+    r"\b(?:dialogue|speech|spoken|speaking|says?|asks?|replies?|whispers?|shouts?|voice(?:over)?|vocal(?:ization)?|words?|conversation|singing|lyrics?)\b",
+    re.IGNORECASE,
+)
+
+
+def _nonverbal_soundscape(*values: Any) -> str:
+    parts = []
+    for value in values:
+        for part in re.split(r"(?<=[.!?])\s+|\s*[,;]\s*", str(value or "").strip()):
+            part = part.strip()
+            if part and part.upper() != "N/A" and _VERBAL_SOUND.search(part) is None:
+                parts.append(part)
+    return ", ".join(dict.fromkeys(parts))
 
 
 def _spoken_lines(story: str) -> tuple[str, ...]:
@@ -562,11 +576,11 @@ def _dialogue_description(item: dict[str, str]) -> str:
     if item.get("continues_from_previous"):
         description = f"{speaker} ({speaker_id}) carries the same voice and utterance over from the previous shot: {tagged} with synchronized visible lip movement; the audio continues seamlessly across the cut without a pause, restart, or new breath."
     elif item["kind"] == "voiceover":
-        description = f"{speaker} ({speaker_id}) says in an off-screen voiceover, {delivery}: {tagged} while the corresponding on-screen character's lips remain completely closed."
+        description = f"{speaker} ({speaker_id}) says in an off-screen voiceover using a stable voice identity and consistent timbre, pitch, cadence, and speaking rate, {delivery}: {tagged} while the corresponding on-screen character's lips remain completely closed."
     elif item["kind"] == "monologue":
-        description = f"{speaker} ({speaker_id}) speaks an audible monologue, {delivery}: {tagged} with synchronized visible lip movement."
+        description = f"{speaker} ({speaker_id}) speaks an audible monologue using a stable voice identity and consistent timbre, pitch, cadence, and speaking rate, {delivery}: {tagged} with synchronized visible lip movement."
     else:
-        description = f"{speaker} ({speaker_id}) says, {delivery}: {tagged} with synchronized visible lip movement."
+        description = f"{speaker} ({speaker_id}) says using a stable voice identity and consistent timbre, pitch, cadence, and speaking rate, {delivery}: {tagged} with synchronized visible lip movement."
     if item.get("continues_to_next"):
         description += " The same voice and utterance continue uninterrupted into the next shot across the cut."
     return description
@@ -1074,19 +1088,21 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         )
     if split_spoken and not exact_spoken:
         warnings.append("Accepted chronologically adjacent dialogue fragments whose concatenation exactly preserves the source spoken text.")
-    plan["summary"] = " ".join(
+    plan["summary"] = "[reference generation] " + " ".join(
         str(shot.get("visual_description", "")).strip() for shot in plan["shots"]
         if str(shot.get("visual_description", "")).strip()
     )
-    plan["retention_analysis"] = "\n".join(
+    subject_retention = [
+        f"<Subject {int(item['subject'])}>: fully_preserved - preserve the identity and visible attributes defined from <Picture {int(item['picture'])}>."
+        for item in plan["image_subjects"]
+    ]
+    shot_retention = [
         f"Shot {index}: opening={shot['start_state']}; ending={shot['end_state']}; forbidden="
         + ("; ".join(shot["forbidden_replays"]) or "none")
         for index, shot in enumerate(plan["shots"], 1)
-    )
-    plan["overall_soundscape"] = " ".join(
-        str(shot["audio"]).strip() for shot in plan["shots"]
-        if str(shot["audio"]).strip() and str(shot["audio"]).strip().upper() != "N/A"
-    ) or "N/A"
+    ]
+    plan["retention_analysis"] = "\n".join((*subject_retention, *shot_retention))
+    plan["overall_soundscape"] = _nonverbal_soundscape(*(shot["audio"] for shot in plan["shots"])) or "The established ambient room tone continues throughout the video."
     plan["initial_event_ledger"] = {
         "completed": [], "active": [], "pending": ledger_pending, "forbidden": [],
     }
@@ -1392,10 +1408,15 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         localized_descriptions.append(description)
         local_shots.append(f"{marker} {description}")
     local_description = "\n".join(local_shots)
-    summary = " ".join(filter(None, (
+    summary_body = " ".join(filter(None, (
         _localized_event_action(event, subjects_by_entity) for event in projected_events
     )))
-    retention = []
+    summary = "[video continuation + reference generation] " + (summary_body or "Continue only the established current interval.")
+    retention = [
+        f"<Subject {int(item.get('subject', item.get('picture', 0)))}>: fully_preserved - preserve the identity and visible attributes from <Picture {int(item.get('picture', 0))}>."
+        for item in plan["image_subjects"]
+        if int(item.get("picture", 0) or 0) > 0
+    ]
     for shot in active:
         retention.append(f"Camera contract: {str(shot['camera']).strip()}.")
         if int(frame_start) <= int(shot["start_frame"]):
@@ -1415,16 +1436,14 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         f"Only the active events scheduled inside frames [{frame_start},{frame_end}) may occur; "
         "pending events must not begin and completed events must not restart."
     )
-    soundscape = " ".join(
-        str(shot["audio"]).strip()
-        for shot in active
-        if (scripted_dialogue_complete or int(frame_start) <= int(shot["start_frame"]) < int(frame_end))
-        and str(shot["audio"]).strip()
-        and not re.search(r"\b(?:dialogue|voiceover|monologue|singing|speech)\b", str(shot["audio"]), re.IGNORECASE)
-    ) or "N/A"
+    local_soundscape = _nonverbal_soundscape(*(
+        shot["audio"] for shot in active
+        if scripted_dialogue_complete or int(frame_start) <= int(shot["start_frame"]) < int(frame_end)
+    ))
+    soundscape = local_soundscape or _nonverbal_soundscape(plan.get("overall_soundscape", "")) or "The established ambient room tone continues without interruption."
     return "\n\n".join((
         "subject_definitions:\n" + ("\n".join(subjects) or "None."),
-        "summary:\n" + (summary or "Continue only the established current interval."),
+        "summary:\n" + summary,
         "retention_analysis:\n" + "\n".join(retention),
         "detailed_description:\n" + local_description,
         "overall_soundscape:\n" + soundscape,
