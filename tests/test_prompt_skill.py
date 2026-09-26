@@ -1032,6 +1032,28 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("stable voice identity", description)
         self.assertIn("consistent timbre, pitch, cadence, and speaking rate", description)
 
+    def test_rejects_visible_speaker_when_same_shot_forbids_appearance(self):
+        request = prompt_skill.build_prompt_skill_request(
+            '<Subject 1> (S1) says: <d>[English] Wait.</d>', duration_seconds=2.0, fps=24.0,
+            image_count=1, style="cinematic", shot_density="medium", continuity_mode="balanced", prompt_lang="en",
+        )
+        value = self.result()
+        value["shots"][0]["dialogues"] = [{
+            "id": "S1.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
+            "language": "English", "text": "Wait.", "delivery": "quietly",
+        }]
+        value["shots"][0]["forbidden_replays"] = ["asset_1 appearing in this shot"]
+        with self.assertRaisesRegex(ValueError, "forbids that speaker from appearing"):
+            prompt_skill.compile_prompt_skill(value, request)
+
+    def test_compiler_removes_internal_asset_ids_from_h3_text(self):
+        value = self.result()
+        value["shots"][1]["events"][0]["action"] = "asset_1 opens the door and takes asset_1's key"
+        value["shots"][1]["forbidden_replays"] = ["asset_1 entering again"]
+        compiled = prompt_skill.compile_prompt_skill(value, self.request())
+        self.assertNotRegex(compiled["prompt"], r"\basset_\d+\b")
+        self.assertIn("<Subject 1> opens the door", compiled["prompt"])
+
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
         plan = {
@@ -1059,6 +1081,10 @@ class PromptSkillTests(unittest.TestCase):
                 for match in re.findall(r"<d>(.*?)</d>", localized, re.DOTALL)
             )
         self.assertEqual("".join(fragments), text)
+        self.assertTrue(all("<scenetrans>" not in prompt for prompt in prompts))
+        self.assertTrue(all("across the cut" not in prompt for prompt in prompts))
+        self.assertTrue(all("into the next shot" not in prompt for prompt in prompts))
+        self.assertTrue(all("continues into the next chunk without a pause or restart" in prompt for prompt in prompts[:-1]))
         self.assertNotIn("without a cut, reframing, zoom", prompts[0])
         self.assertTrue(all("without a cut, reframing, zoom" in prompt for prompt in prompts[1:]))
         self.assertIn("turns once", prompts[0])

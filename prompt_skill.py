@@ -639,6 +639,13 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             if str(source.get("name", "")).strip():
                 replacement += f" {str(source['name']).strip()}"
             result = re.sub(rf"<Entity\s+{re.escape(marker)}>", replacement, result, flags=re.IGNORECASE)
+        for entity_id, source in contract.items():
+            result = re.sub(
+                rf"(?<![\w>]){re.escape(entity_id)}(?!\w)",
+                f"<Subject {int(source['picture'])}>",
+                result,
+                flags=re.IGNORECASE,
+            )
         return result
 
     character_entities = {
@@ -809,6 +816,14 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
                 speaker = resolved_contract[entity(speaker_id, f"shots[{shot_index}].dialogues[{dialogue_index}].speaker")["entity_id"]]
                 if str(speaker.get("kind") or "").lower() != "character":
                     raise ValueError(f"shots[{shot_index}].dialogues[{dialogue_index}] speaker {speaker['entity_id']} is not a character")
+                if str(dialogue.get("kind", "dialogue")).strip().lower() != "voiceover":
+                    forbidden_text = " ".join(str(item) for item in raw.get("forbidden_replays", ()))
+                    absent_pattern = rf"(?<!\w){re.escape(str(speaker['entity_id']))}(?!\w).*\b(?:appear|appearing|enter|entering|arrive|arriving)\b"
+                    if re.search(absent_pattern, forbidden_text, re.IGNORECASE):
+                        raise ValueError(
+                            f"shots[{shot_index}].dialogues[{dialogue_index}] makes visible speaker {speaker['entity_id']} "
+                            "speak while the same shot forbids that speaker from appearing"
+                        )
                 dialogue["speaker"] = f"<Subject {int(speaker['picture'])}>"
             dialogues.append(dialogue)
         shot["dialogues"] = dialogues
@@ -1330,8 +1345,13 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
                 f"{dialogue['speaker']} is already clearly visible on screen with closed lips before the first audible word; establish the speaker visually, then begin the line."
             )
         if overlap_start < overlap_end:
+            local_dialogue = dict(dialogue)
+            if overlap_start > dialogue_start:
+                local_dialogue["continues_from_previous"] = False
+            if overlap_end < dialogue_end:
+                local_dialogue["continues_to_next"] = False
             fragment = slice_dialogue_for_interval(
-                _dialogue_description(dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end
+                _dialogue_description(local_dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end
             )
             if fragment:
                 parts.append(fragment)
