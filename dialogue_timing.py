@@ -73,9 +73,9 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     first = max(0, min(length, math.floor(length * (overlap_start - source_start) / duration)))
     last = max(first, min(length, math.floor(length * (overlap_end - source_start) / duration)))
     if overlap_start > source_start:
-        first = first if carries_in or carries_out else _dialogue_split_index(text, first)
+        first = _dialogue_split_index(text, first)
     if overlap_end < source_end:
-        last = last if carries_in or carries_out else _dialogue_split_index(text, last)
+        last = _dialogue_split_index(text, last)
     else:
         last = length
     last = max(first, last)

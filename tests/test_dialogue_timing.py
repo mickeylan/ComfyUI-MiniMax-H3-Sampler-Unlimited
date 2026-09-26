@@ -94,8 +94,21 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertNotIn("<scenetrans>", part)
         self.assertIn("continues into the next chunk without a pause or restart", part)
 
+    def test_adjacent_chunks_share_boundary_when_scene_marker_is_stripped_from_continuation(self):
+        text = "还有不到四十年，太运宗就会派更强的弟子，这样真的来得及吗？"
+        first_source = f"<Subject 3> (S1) carries over: <d>[Chinese] <scenetrans> {text}</d>"
+        second_source = f"<Subject 3> (S1) carries over: <d>[Chinese] {text}</d>"
+        first = slice_dialogue_for_interval(first_source, 480, 650, 480, 515)
+        second = slice_dialogue_for_interval(second_source, 480, 650, 515, 600)
+        first_text = first.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "").strip()
+        second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "").strip()
+        boundary = len(first_text)
+        self.assertEqual(first_text + second_text, text[:boundary + len(second_text)])
+        self.assertEqual(first_text, "还有不到四十年，")
+        self.assertTrue(second_text.startswith("太运宗"))
+
     def test_real_scene_transition_marker_stays_only_on_boundary_side(self):
-        source = "<Subject 1> (S1) carries over: <d>[Chinese] <scenetrans> 继续说话</d>"
+        source = "<Subject 1> (S1) carries over: <d>[Chinese] <scenetrans> 继续说话直到这个镜头结束</d>"
         first = slice_dialogue_for_interval(source, 0, 20, 0, 10)
         second = slice_dialogue_for_interval(source, 0, 20, 10, 20)
         self.assertEqual(first.count("<scenetrans>"), 1)
