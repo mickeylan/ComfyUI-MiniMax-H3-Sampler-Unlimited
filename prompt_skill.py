@@ -421,6 +421,36 @@ def _dialogue_prefix_for_frames(text: str, available_frames: int, fps: float) ->
     return low
 
 
+def _first_visible_shot(shots: list[dict[str, Any]], subject: str, request: dict[str, Any]) -> int:
+    match = re.fullmatch(r"<Subject\s+(\d+)>", subject, re.IGNORECASE)
+    if match is None:
+        return 0
+    picture = int(match.group(1))
+    source = next((
+        item for item in request.get("source_image_contract", ())
+        if isinstance(item, dict) and int(item.get("picture", 0) or 0) == picture
+    ), None)
+    if source is None:
+        return 0
+    entity_id = str(source.get("entity_id", "")).strip()
+    name = str(source.get("name", "")).strip()
+    patterns = [re.escape(entity_id)] if entity_id else []
+    if name:
+        patterns.append(re.escape(name))
+    for index, shot in enumerate(shots):
+        if not isinstance(shot, dict):
+            continue
+        if any(
+            isinstance(event, dict) and str(event.get("actor", "")).strip().casefold() == entity_id.casefold()
+            for event in shot.get("events", ())
+        ):
+            return index
+        visible_text = " ".join(str(shot.get(field, "")) for field in ("start_state", "description"))
+        if patterns and re.search("|".join(patterns), visible_text, re.IGNORECASE):
+            return index
+    return 0
+
+
 def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
     if float(request.get("minimum_spoken_duration_seconds", 0.0)) <= 0.0:
         return value, []
@@ -460,6 +490,8 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     current_shot = 0
     split_count = 0
     for _original_shot, dialogue in dialogues:
+        if str(dialogue.get("kind", "dialogue")).strip().lower() != "voiceover":
+            current_shot = max(current_shot, _first_visible_shot(shots, str(dialogue.get("speaker", "")), request))
         remaining = str(dialogue["text"]).strip()
         fragment_index = 0
         while remaining:
@@ -484,7 +516,8 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
                     continue
                 while cut > 0 and cut < len(remaining) and remaining[cut] in "，,。！？!?；;：:":
                     cut -= 1
-                if cut <= 0:
+                fragment_text = re.sub(r"[，,。！？!?；;：:\s]", "", remaining[:cut])
+                if cut <= 0 or len(fragment_text) < 3:
                     current_shot += 1
                     continue
                 fragment = remaining[:cut]

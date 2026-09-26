@@ -79,11 +79,12 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     after = content[match.end():]
     if overlap_start > source_start:
         before = re.sub(
-            r"(?i)\b(?:says|asks|replies|shouts|whispers)(?:\s*,[^:]*)?\s*:\s*$",
-            "continues speaking: ", before,
+            r"(?is)^(.+?\(S\d+\))\s+.*:\s*$",
+            r"\1 continues the same uninterrupted utterance from the previous chunk: ",
+            before,
         )
         if before == content[:match.start()]:
-            before = before.rstrip() + " continues speaking: "
+            before = before.rstrip() + " continues the same uninterrupted utterance from the previous chunk: "
     if overlap_end < source_end:
         after = re.sub(r"^\s*with synchronized visible lip movement\.?", "", after, flags=re.IGNORECASE)
         after = re.sub(r"^\s*<scenetrans>\s*", "", after, flags=re.IGNORECASE)

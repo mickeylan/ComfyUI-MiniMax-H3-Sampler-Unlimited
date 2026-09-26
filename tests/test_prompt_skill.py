@@ -67,6 +67,40 @@ class PromptSkillTests(unittest.TestCase):
         )
         self.assertTrue(any("Redistributed mandatory dialogue" in warning for warning in warnings))
 
+    def test_dialogue_does_not_move_before_speaker_first_visible_shot(self):
+        story = '<Subject 1> (S1) says: <d>[Chinese] 现在开始说话。</d>'
+        request = prompt_skill.build_prompt_skill_request(
+            story, duration_seconds=8.0, fps=24.0, image_count=1, style="cinematic",
+            shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
+        )
+        value = self.result()
+        value["shots"][0].update(end_frame=48, events=[], dialogues=[])
+        value["shots"][1].update(
+            start_frame=48, end_frame=request["total_frames"],
+            start_state="asset_1 enters and becomes visible",
+            events=[{"id": "S2.V1", "actor": "asset_1", "action": "enters", "phase": "start"}],
+            dialogues=[{"id": "S2.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1", "language": "Chinese", "text": "现在开始说话。", "delivery": "自然地"}],
+        )
+        normalized, _warnings = prompt_skill._redistribute_dialogues(value, request)
+        self.assertEqual(normalized["shots"][0]["dialogues"], [])
+        self.assertEqual(normalized["shots"][1]["dialogues"][0]["text"], "现在开始说话。")
+
+    def test_dialogue_avoids_two_character_fragment_at_shot_boundary(self):
+        story = '<Subject 1> (S1) says: <d>[Chinese] 达到顶峰。</d>'
+        request = prompt_skill.build_prompt_skill_request(
+            story, duration_seconds=3.0, fps=24.0, image_count=1, style="cinematic",
+            shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
+        )
+        value = self.result()
+        value["shots"][0].update(end_frame=12, dialogues=[])
+        value["shots"][1].update(
+            start_frame=12, end_frame=request["total_frames"],
+            dialogues=[{"id": "S2.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1", "language": "Chinese", "text": "达到顶峰。", "delivery": "自然地"}],
+        )
+        normalized, _warnings = prompt_skill._redistribute_dialogues(value, request)
+        self.assertEqual(normalized["shots"][0]["dialogues"], [])
+        self.assertEqual(normalized["shots"][1]["dialogues"][0]["text"], "达到顶峰。")
+
     def test_redistributes_two_long_lines_out_of_one_overloaded_shot(self):
         required = [
             "姐姐，自从你跟太运宗使者比试之后，这十年你都没有怎么好好闭关修炼过。还有不到四十年，太运宗就会派更强的弟子，这样真的来得及吗？",

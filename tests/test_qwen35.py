@@ -194,7 +194,7 @@ class Qwen35Tests(unittest.TestCase):
         spoken = [action.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "") for action in actions]
         self.assertEqual("".join(spoken), "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗")
         self.assertNotEqual(actions[0], actions[1])
-        self.assertIn("continues speaking", actions[1])
+        self.assertIn("continues the same uninterrupted utterance from the previous chunk", actions[1])
 
     def test_timing_parser_keeps_a_valid_interval_when_action_text_is_missing(self):
         value = {

@@ -26,8 +26,8 @@ class DialogueTimingTests(unittest.TestCase):
         texts = [part.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "") for part in parts]
         self.assertEqual("".join(texts), "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗")
         self.assertIn("says warmly", parts[0])
-        self.assertIn("continues speaking", parts[1])
-        self.assertIn("continues speaking", parts[2])
+        self.assertIn("continues the same uninterrupted utterance from the previous chunk", parts[1])
+        self.assertIn("continues the same uninterrupted utterance from the previous chunk", parts[2])
         self.assertIn("continues into the next chunk", parts[0])
         self.assertNotIn("continues into the next chunk", parts[2])
         self.assertNotIn("<scenetrans>", parts[0])
