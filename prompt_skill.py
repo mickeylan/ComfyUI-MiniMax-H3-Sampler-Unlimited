@@ -1449,25 +1449,8 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
                                 active_events: tuple[dict[str, Any], ...],
                                 subjects_by_entity: dict[str, dict[str, Any]],
                                 scripted_dialogue_complete: bool = False) -> str:
-    parts = []
-    if frame_start > int(shot["start_frame"]):
-        parts.append(
-            "Continue the already established shot without a cut, reframing, zoom, or restart of completed action."
-        )
-    if active_events:
-        parts.extend(filter(None, (
-            _localized_event_action(event, subjects_by_entity, str(shot.get("end_state", "")).strip())
-            for event in active_events
-        )))
-    elif frame_start <= int(shot["start_frame"]):
-        visual = str(shot.get("visual_description", shot.get("description", ""))).strip()
-        if visual:
-            parts.append(visual)
-    else:
-        if scripted_dialogue_complete:
-            parts.append("Maintain the established post-action body orientation, positions, and composition; allow only subtle eye and facial-expression changes while every mouth and jaw remains completely still.")
-        else:
-            parts.append("Maintain the established post-action body orientation, positions, and composition; allow only natural breathing, lip movement, and subtle expression changes.")
+    dialogue_fragments = []
+    active_speakers = []
     for dialogue in shot.get("dialogues", ()):
         if not isinstance(dialogue, dict) or not str(dialogue.get("text", "")).strip():
             continue
@@ -1478,21 +1461,76 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
         ))
         overlap_start = max(dialogue_start, int(frame_start))
         overlap_end = min(dialogue_end, int(frame_end))
-        if overlap_start < overlap_end and not dialogue.get("continues_from_previous"):
+        if overlap_start >= overlap_end:
+            continue
+        local_dialogue = dict(dialogue)
+        if overlap_start > dialogue_start:
+            local_dialogue["continues_from_previous"] = False
+        if overlap_end < dialogue_end:
+            local_dialogue["continues_to_next"] = False
+        fragment = slice_dialogue_for_interval(
+            _dialogue_description(local_dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end
+        )
+        if not fragment:
+            continue
+        speaker = str(dialogue["speaker"])
+        active_speakers.append(speaker)
+        dialogue_fragments.append((
+            speaker, fragment,
+            overlap_start == dialogue_start and not dialogue.get("continues_from_previous"),
+        ))
+
+    parts = []
+    if frame_start > int(shot["start_frame"]):
+        parts.append(
+            "Continue the already established shot without a cut, reframing, zoom, or restart of completed action."
+        )
+    vocal_action = re.compile(r"\b(?:speak|speaks|speaking|say|says|reply|replies|answer|answers|vocalize|vocalizes)\b|(?:说话|说道|回答)", re.IGNORECASE)
+    allowed_events = []
+    for event in active_events:
+        actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
+        actor_label = f"<Subject {int(actor['subject'])}>" if actor is not None else ""
+        if active_speakers and vocal_action.search(str(event.get("action", ""))) and actor_label not in active_speakers:
+            continue
+        allowed_events.append(event)
+    if allowed_events:
+        parts.extend(filter(None, (
+            _localized_event_action(event, subjects_by_entity, str(shot.get("end_state", "")).strip())
+            for event in allowed_events
+        )))
+    elif active_events or frame_start > int(shot["start_frame"]):
+        state = str(shot.get("start_state" if frame_start <= int(shot["start_frame"]) else "end_state", "")).strip()
+        parts.append(
+            "Hold the established positions, body orientation, eye lines, and framing without starting any pending action."
+            + (" Every mouth and jaw remains completely still." if scripted_dialogue_complete else "")
+            + (f" Preserve this visible state: {state}." if state else "")
+        )
+    elif frame_start <= int(shot["start_frame"]):
+        visual = str(shot.get("visual_description", shot.get("description", ""))).strip()
+        if visual:
+            parts.append(visual)
+    elif scripted_dialogue_complete:
+        parts.append("Maintain the established post-action body orientation, positions, and composition; allow only subtle eye and facial-expression changes while every mouth and jaw remains completely still.")
+    else:
+        parts.append("Maintain the established post-action body orientation, positions, and composition; allow only natural breathing, lip movement, and subtle expression changes.")
+
+    if active_speakers:
+        unique_speakers = list(dict.fromkeys(active_speakers))
+        for speaker in unique_speakers:
+            silent = [
+                f"<Subject {int(item['subject'])}>" for item in subjects_by_entity.values()
+                if str(item.get("kind", "")).lower() == "character" and f"<Subject {int(item['subject'])}>" != speaker
+            ]
+            parts.append(f"Only {speaker} vocalizes the current dialogue; " + (
+                ", ".join(dict.fromkeys(silent)) + " keep their lips and jaws completely still."
+                if silent else "no other character vocalizes."
+            ))
+    for speaker, fragment, first_fragment in dialogue_fragments:
+        if first_fragment:
             parts.append(
-                f"{dialogue['speaker']} is already clearly visible on screen with closed lips before the first audible word; establish the speaker visually, then begin the line."
+                f"{speaker} is already clearly visible on screen with closed lips before the first audible word; establish this speaker visually, then begin the line."
             )
-        if overlap_start < overlap_end:
-            local_dialogue = dict(dialogue)
-            if overlap_start > dialogue_start:
-                local_dialogue["continues_from_previous"] = False
-            if overlap_end < dialogue_end:
-                local_dialogue["continues_to_next"] = False
-            fragment = slice_dialogue_for_interval(
-                _dialogue_description(local_dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end
-            )
-            if fragment:
-                parts.append(fragment)
+        parts.append(fragment)
     return " ".join(parts)
 
 

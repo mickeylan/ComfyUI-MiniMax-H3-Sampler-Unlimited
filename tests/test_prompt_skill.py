@@ -1247,6 +1247,40 @@ class PromptSkillTests(unittest.TestCase):
         reply = plan["shots"][0]["dialogues"][1]
         self.assertEqual(event["start_frame"], reply["start_frame"])
 
+    def test_only_current_dialogue_speaker_may_vocalize(self):
+        shot = {
+            "start_frame": 0, "end_frame": 40, "start_state": "A and B face each other",
+            "end_state": "A finishes the question", "visual_description": "B answers before A finishes",
+            "dialogues": [{
+                "speaker": "<Subject 1>", "speaker_id": "S1", "kind": "dialogue",
+                "language": "English", "text": "Are you ready?", "delivery": "quietly",
+                "start_frame": 0, "end_frame": 40,
+            }],
+        }
+        subjects = {
+            "asset_1": {"subject": 1, "kind": "character"},
+            "asset_2": {"subject": 2, "kind": "character"},
+        }
+        prompt = prompt_skill._localized_shot_description(
+            shot, 0, 40, 24.0,
+            ({"actor": "asset_2", "action": "asset_2 speaks and reaches forward", "interval_phase": "start"},),
+            subjects,
+        )
+        self.assertNotIn("speaks and reaches", prompt)
+        self.assertIn("Only <Subject 1> vocalizes", prompt)
+        self.assertIn("<Subject 2> keep their lips and jaws completely still", prompt)
+        self.assertIn("<Subject 1> (S1) says", prompt)
+
+    def test_no_dialogue_chunk_does_not_prepare_a_speaker(self):
+        shot = {
+            "start_frame": 0, "end_frame": 40, "start_state": "both women face each other",
+            "end_state": "both women hold position", "dialogues": [],
+        }
+        prompt = prompt_skill._localized_shot_description(shot, 20, 40, 24.0, (), {}, True)
+        self.assertNotIn("first audible word", prompt)
+        self.assertNotIn("begin the line", prompt)
+        self.assertIn("Every mouth and jaw remains completely still", prompt)
+
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
         plan = {
