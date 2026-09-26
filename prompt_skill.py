@@ -543,7 +543,15 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
                     break
                 current_shot += 1
             if current_shot >= len(shots):
-                raise ValueError("Dialogue redistribution exhausted the proportionally extended H3 timeline")
+                remaining_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
+                added = _extend_shot_intervals(
+                    shots, normalized_shots, len(shots) - 1, remaining_frames
+                )
+                extended_frames += added
+                request["total_frames"] = int(shots[-1]["end_frame"])
+                request["duration_seconds"] = request["total_frames"] / fps
+                request["duration_source"] = "dialogue_plus_visual_lead"
+                current_shot = len(shots) - 1
             required_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
             capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
             if required_frames <= capacity:

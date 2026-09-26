@@ -131,6 +131,30 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(shots[1]["end_frame"], shots[2]["start_frame"])
         self.assertEqual((shots[-1]["end_frame"] - 5) % 17, 0)
 
+    def test_semantic_split_discarded_capacity_gets_minimal_final_extension(self):
+        text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
+        request = prompt_skill.build_prompt_skill_request(
+            f'<Subject 1> (S1) says: <d>[Chinese] {text}</d>', duration_seconds=2.0, fps=24.0,
+            image_count=1, style="cinematic", shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
+        )
+        total = request["total_frames"]
+        boundaries = [round(total * index / 8) for index in range(9)]
+        shots = []
+        for index, (start, end) in enumerate(zip(boundaries, boundaries[1:]), 1):
+            shots.append({
+                "start_frame": start, "end_frame": end, "pictures": ["asset_1"],
+                "camera": "static", "start_state": "asset_1 visible", "end_state": "asset_1 visible",
+                "events": [], "forbidden_replays": [], "audio": "room tone", "description": "asset_1 remains visible",
+                "dialogues": ([{"id": f"S{index}.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1", "language": "Chinese", "text": text, "delivery": "自然地"}] if index == 1 else []),
+            })
+        value = {"shots": shots}
+        with patch.object(prompt_skill, "_dialogue_semantic_cut", side_effect=lambda _text, cut: min(2, cut)):
+            normalized, warnings = prompt_skill._redistribute_dialogues(value, request)
+        spoken = "".join(item["text"] for shot in normalized["shots"] for item in shot["dialogues"])
+        self.assertEqual(spoken, text)
+        self.assertTrue(any("Extended the H3 timeline" in warning for warning in warnings))
+        self.assertEqual(normalized["shots"][-1]["end_frame"], request["total_frames"])
+
     def test_dialogue_avoids_two_character_fragment_at_shot_boundary(self):
         story = '<Subject 1> (S1) says: <d>[Chinese] 达到顶峰。</d>'
         request = prompt_skill.build_prompt_skill_request(
