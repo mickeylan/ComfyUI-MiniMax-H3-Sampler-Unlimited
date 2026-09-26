@@ -25,8 +25,8 @@ from .local_runtime import LOCAL_QWEN35_CACHE
 # ============== 自定义类型定义 ==============
 EnhancedPromptResult = io.Custom("ENHANCED_PROMPT_RESULT")
 _PROMPT_DIR = Path(__file__).with_name("prompts")
-T2I_SYSTEM_PROMPT = (_PROMPT_DIR / "system_prompt_t2i.txt").read_text(encoding="utf-8").strip()
-I2I_SYSTEM_PROMPT = (_PROMPT_DIR / "system_prompt_edit.txt").read_text(encoding="utf-8").strip()
+T2I_SYSTEM_PROMPT = (_PROMPT_DIR / "skill_t2i.md").read_text(encoding="utf-8").strip()
+I2I_SYSTEM_PROMPT = (_PROMPT_DIR / "skill_i2i.md").read_text(encoding="utf-8").strip()
 
 
 # ============== 主增强节点 ==============
@@ -285,31 +285,29 @@ Follow the official Qwen Image 2.1 rules exactly and correct the validation fail
                                     output_language: str) -> str:
         prompt = base_prompt
         if mode == "i2i":
-            # The official edit prompt derives prose language from the request.
-            # The node's explicit language selector replaces only that decision;
-            # every enhancement/editing rule remains intact.
+            # Replace only the skill's automatic prose-language decision. All
+            # image-editing, reference-role, preservation and few-shot rules stay.
             prompt = re.sub(
-                r"\*\*FIRST — there are TWO separate language decisions\.[\s\S]*?"
-                r"(?=You are an expert at clarifying image editing instructions\.)",
-                "",
-                prompt,
-                count=1,
-            ).lstrip()
-        elif language == "zh":
-            prompt = re.sub(
-                r"## Language\s+[\s\S]*?(?=## Output format)",
+                r"## 2\. 两条语言决策[\s\S]*?(?=## 3\. 图像引用规则)",
                 "",
                 prompt,
                 count=1,
             )
+            schema = '{"rewritten_prompt":"...","wh_ratio":"...","ratio_follow":"<imageN> or empty"}'
+        else:
+            # The T2I skill defaults to English; the node selector is allowed to
+            # override only final prose language, not its expansion procedure.
+            prompt = re.sub(r"\| 语言 \|[^\n]*\n", "", prompt, count=1)
+            prompt = re.sub(r"\*\*语言\*\*：[^\n]*\n", "", prompt, count=1)
+            prompt = re.sub(r"- \[ \] 正文\*\*全程英文\*\*[^\n]*\n", "", prompt, count=1)
+            schema = '{"rewritten_prompt":"...","wh_ratio":"..."}'
         return (
-            f"{prompt.rstrip()}\n\n## Node Output Policy (highest priority)\n"
-            f"- Write all descriptive prose in `rewritten_prompt` in {output_language}.\n"
-            "- The node language selector is authoritative; do not infer or change it from the user request.\n"
-            "- Keep user-supplied visible text, proper nouns, brand names, and interface labels exactly as supplied.\n"
-            "- Do not add readable image text unless the user supplied its exact wording or explicitly requested it.\n"
-            "- Return exactly the JSON object required by the official task, on one line. Stop immediately after `}`.\n"
-            "- Do not output analysis, explanations, Markdown, or phrases such as 'let me think'."
+            f"{prompt.rstrip()}\n\n## 节点输出策略（最高优先级）\n"
+            f"- `rewritten_prompt` 的描述正文必须使用{output_language}。\n"
+            "- 语言选择只改变最终提示词语言，不改变上面的增强、构图、图像引用、保留与自检规则。\n"
+            "- 用户明确提供的画面文字、专有名词、品牌名和界面标签保持原样，不得翻译或改写。\n"
+            f"- 只返回一行合法 JSON：{schema}\n"
+            "- JSON 闭合后立即停止，不输出分析、解释、Markdown、标题或思考过程。"
         )
 
     @staticmethod
