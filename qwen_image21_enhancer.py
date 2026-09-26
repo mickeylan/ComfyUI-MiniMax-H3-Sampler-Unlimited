@@ -45,8 +45,8 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True, default=""),
                 io.Combo.Input("mode", options=["auto", "t2i", "i2i"], default="auto",
                                tooltip="Connected images always select I2I; without images auto/t2i select T2I"),
-                io.Combo.Input("language", options=["official", "en", "zh"], default="official",
-                               tooltip="official follows the exact Qwen Image 2.1 rule; en/zh explicitly override output prose language"),
+                io.Combo.Input("language", options=["en", "zh"], default="zh",
+                               tooltip="Controls only the language of rewritten_prompt; enhancement always uses the full official rules"),
                 io.Float.Input("temperature", default=1.0, min=0.01, max=2.0, step=0.01,
                                tooltip="Official Qwen Image 2.1 PE default: 1.0"),
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
@@ -109,14 +109,14 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
         if mode == "i2i" and not frames:
             raise ValueError("I2I enhancement requires at least one image")
 
-        system_prompt = T2I_SYSTEM_PROMPT if effective_mode == "t2i" else I2I_SYSTEM_PROMPT
+        official_system_prompt = T2I_SYSTEM_PROMPT if effective_mode == "t2i" else I2I_SYSTEM_PROMPT
+        output_language = "Chinese" if language == "zh" else "English"
+        system_prompt = (
+            f"{official_system_prompt}\n\nOutput-language requirement: write rewritten_prompt descriptive prose in {output_language}. "
+            "This changes only the final prompt language; follow every official enhancement rule above. "
+            "Visible text requested inside the generated image remains verbatim in its requested script."
+        )
         user_prompt = prompt
-        if language != "official":
-            output_language = "Chinese" if language == "zh" else "English"
-            system_prompt = (
-                f"{system_prompt}\n\nOutput-language override: write descriptive prose in {output_language}. "
-                "Visible text requested inside the generated image remains verbatim in its requested script."
-            )
         
         # 创建 Director 并执行
         start_time = time.time()
