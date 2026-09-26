@@ -12,16 +12,28 @@ _TRAILING_PUNCTUATION = "，,。！？!?；;：:、"
 def _dialogue_split_index(text: str, position: int) -> int:
     position = max(0, min(len(text), int(position)))
     candidates = []
-    for index in range(max(0, position - 4), min(len(text), position + 4)):
+    for index in range(max(0, position - 6), min(len(text), position + 6)):
         if text[index] in _TRAILING_PUNCTUATION:
-            candidates.append(index + 1)
+            candidate = index + 1
+            if candidate <= 3 and text[index] in "，,、":
+                continue
+            candidates.append(candidate)
         elif text[index].isspace():
             candidates.append(index)
     if candidates:
         position = min(candidates, key=lambda index: (abs(index - position), index < position))
-    if position == 1:
+    elif 0 < position < len(text):
+        run_start = position
+        while run_start > 0 and re.match(r"[\u3400-\u9fff]", text[run_start - 1]):
+            run_start -= 1
+        run_end = position
+        while run_end < len(text) and re.match(r"[\u3400-\u9fff]", text[run_end]):
+            run_end += 1
+        if run_end - run_start >= 4 and (position - run_start) % 2:
+            position -= 1
+    if position <= 2:
         return 0
-    if position == len(text) - 1:
+    if position >= len(text) - 1:
         return len(text)
     return position
 
@@ -61,9 +73,9 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     first = max(0, min(length, math.floor(length * (overlap_start - source_start) / duration)))
     last = max(first, min(length, math.floor(length * (overlap_end - source_start) / duration)))
     if overlap_start > source_start:
-        first = _dialogue_split_index(text, first)
+        first = first if carries_in or carries_out else _dialogue_split_index(text, first)
     if overlap_end < source_end:
-        last = _dialogue_split_index(text, last)
+        last = last if carries_in or carries_out else _dialogue_split_index(text, last)
     else:
         last = length
     last = max(first, last)

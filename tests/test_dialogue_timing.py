@@ -34,6 +34,24 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertNotIn("<scenetrans>", parts[1])
         self.assertNotIn("<scenetrans>", parts[2])
 
+    def test_short_vocative_is_not_isolated_at_first_chunk_boundary(self):
+        source = "<Subject 1> (S1) says: <d>[Chinese] 姐姐，自从你回来以后我一直很担心。</d>"
+        first = slice_dialogue_for_interval(source, 0, 30, 0, 3)
+        second = slice_dialogue_for_interval(source, 0, 30, 3, 30)
+        self.assertEqual(first, "")
+        second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0]
+        self.assertTrue(second_text.startswith("姐姐，自从"))
+
+    def test_unpunctuated_cjk_boundary_uses_two_character_cadence(self):
+        source = "<Subject 1> (S1) says: <d>[Chinese] 不如将舒寒当年传授给我的武学反复磨练</d>"
+        first = slice_dialogue_for_interval(source, 0, 30, 0, 15)
+        second = slice_dialogue_for_interval(source, 0, 30, 15, 30)
+        first_text = first.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0]
+        second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0]
+        self.assertFalse(first_text.endswith("反"))
+        self.assertFalse(second_text.startswith("复"))
+        self.assertEqual(first_text + second_text, "不如将舒寒当年传授给我的武学反复磨练")
+
     def test_chunk_boundary_keeps_leading_punctuation_with_previous_fragment(self):
         source = "<Subject 1> (S1) says: <d>[Chinese] 无用。与其</d>"
         first = slice_dialogue_for_interval(source, 0, 10, 0, 4)
@@ -60,13 +78,15 @@ class DialogueTimingTests(unittest.TestCase):
         second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
         self.assertEqual(second_text, "已经达到顶峰")
 
-    def test_one_character_tail_is_kept_with_previous_chunk_without_loss(self):
+    def test_one_character_tail_moves_to_a_two_character_final_fragment_without_loss(self):
         source = "<Subject 1> (S1) says: <d>[Chinese] 已经达到顶峰</d>"
         first = slice_dialogue_for_interval(source, 0, 10, 0, 9)
         second = slice_dialogue_for_interval(source, 0, 10, 9, 10)
         first_text = first.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
-        self.assertEqual(first_text, "已经达到顶峰")
-        self.assertEqual(second, "")
+        second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
+        self.assertEqual(first_text, "已经达到")
+        self.assertEqual(second_text, "顶峰")
+        self.assertEqual(first_text + second_text, "已经达到顶峰")
 
     def test_physical_chunk_slice_does_not_invent_scene_transition_markers(self):
         source = "<Subject 1> (S1) says: <d>[Chinese] 继续说话直到下一段</d>"
