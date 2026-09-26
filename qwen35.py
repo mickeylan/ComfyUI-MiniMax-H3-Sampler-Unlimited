@@ -880,7 +880,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     try:
         from llama_cpp import Llama
-        from llama_cpp.llama_chat_format import MTMDChatHandler
+        from llama_cpp.llama_chat_format import MTMDChatHandler, Qwen35ChatHandler
     except ImportError as error:
         raise Qwen35DependencyError("Qwen3.5 requires llama-cpp-python with MTMD support") from error
 
@@ -892,13 +892,26 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     jzl_storyboard = operation == "jzl_storyboard"
     external = operation == "external_video_continuation"
     prompt_skill = operation == "prompt_skill_compile"
-    handler = None if timing else MTMDChatHandler(
-        clip_model_path=request["director_mmproj_path"],
-        image_min_tokens=QWEN35_IMAGE_MIN_TOKENS,
-        image_max_tokens=QWEN35_IMAGE_MAX_TOKENS,
-        verbose=False,
-        use_gpu=True,
-    )
+    if timing:
+        handler = None
+    elif jzl_storyboard and request.get("enable_thinking", False):
+        handler = Qwen35ChatHandler(
+            clip_model_path=request["director_mmproj_path"],
+            enable_thinking=True,
+            preserve_thinking=False,
+            image_min_tokens=QWEN35_IMAGE_MIN_TOKENS,
+            image_max_tokens=QWEN35_IMAGE_MAX_TOKENS,
+            verbose=False,
+            use_gpu=True,
+        )
+    else:
+        handler = MTMDChatHandler(
+            clip_model_path=request["director_mmproj_path"],
+            image_min_tokens=QWEN35_IMAGE_MIN_TOKENS,
+            image_max_tokens=QWEN35_IMAGE_MAX_TOKENS,
+            verbose=False,
+            use_gpu=True,
+        )
     print(f"[MINIMAX_H3_WORKER] MTMDChatHandler(mmgrpo) done t={time.monotonic()-t0:.1f}s", flush=True)
     print(f"[MINIMAX_H3_WORKER] loading GGUF t={time.monotonic()-t0:.1f}s", flush=True)
     context_tokens = int(request.get("director_n_ctx", QWEN35_CONTEXT_TOKENS))
@@ -939,10 +952,13 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             max_tokens=int(generation.get("max_tokens", QWEN_JZL_RESPONSE_TOKENS if jzl_storyboard else
                            QWEN35_PROMPT_SKILL_RESPONSE_TOKENS if prompt_skill else
                            QWEN35_TIMING_RESPONSE_TOKENS if timing else QWEN35_CHUNK_RESPONSE_TOKENS)),
-            reasoning_budget=0,
+            reasoning_budget=int(generation.get("reasoning_budget", 0)),
         )
         message = response["choices"][0]["message"]
-        text = str(message.get("content") or message.get("reasoning_content") or "")
+        content_text = str(message.get("content") or "")
+        reasoning_text = str(message.get("reasoning_content") or "")
+        text = (f"<think>{reasoning_text}</think>\n{content_text}"
+                if jzl_storyboard and reasoning_text and content_text else content_text or reasoning_text)
         print(f"[MINIMAX_H3_WORKER] streaming done chars={len(text)} t={time.monotonic()-t0:.1f}s", flush=True)
         if jzl_storyboard:
             return {"jzl_storyboard": text}
@@ -1460,7 +1476,8 @@ class Qwen35ContinuityDirector:
         return _run_storyboard_worker(request)
 
     def plan_jzl_storyboard(self, frames: Sequence[torch.Tensor], *, system_prompt: str, user_prompt: str,
-                            generation: dict[str, Any] | None = None, json_response: bool = False) -> str:
+                            generation: dict[str, Any] | None = None, json_response: bool = False,
+                            enable_thinking: bool = False) -> str:
         frames = tuple(frames)
         if len(frames) > 32 or any(not isinstance(frame, torch.Tensor) or frame.ndim != 4 or frame.shape[0] != 1 for frame in frames):
             raise Qwen35ObservationError("JZL planning requires single-image NHWC observation batches")
@@ -1471,6 +1488,7 @@ class Qwen35ContinuityDirector:
             "image_urls": [_image_url(frame[0]) for frame in frames],
             "generation": dict(generation or {}),
             "json_response": bool(json_response),
+            "enable_thinking": bool(enable_thinking),
         }
         self._configure_request(request)
         process, value = _run_worker_once(request, timeout=600)

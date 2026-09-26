@@ -864,9 +864,21 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
     video_bridge = operation == "video_bridge"
     prompt_skill = operation == "prompt_skill_compile"
     family = _qwen_family(request["director_model_path"])
-    handler = None if timing or family == "qwen3.8" else MTMDChatHandler(
-        clip_model_path=request["director_mmproj_path"], verbose=False, use_gpu=False,
-    )
+    enable_thinking = bool(jzl_storyboard and request.get("enable_thinking", False))
+    if timing or family == "qwen3.8":
+        handler = None
+    elif enable_thinking:
+        handler = Qwen35ChatHandler(
+            clip_model_path=request["director_mmproj_path"],
+            enable_thinking=True, preserve_thinking=False,
+            image_min_tokens=QWEN35_IMAGE_MIN_TOKENS,
+            image_max_tokens=QWEN35_IMAGE_MAX_TOKENS,
+            verbose=False, use_gpu=False,
+        )
+    else:
+        handler = MTMDChatHandler(
+            clip_model_path=request["director_mmproj_path"], verbose=False, use_gpu=False,
+        )
     context_tokens = {
         "qwen3.5": QWEN35_CONTEXT_TOKENS,
         "qwen3.6": QWEN36_CONTEXT_TOKENS,
@@ -913,7 +925,7 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
                     raise Qwen35DependencyError("Qwen3.8 GGUF is missing tokenizer.chat_template")
                 handler = Qwen35ChatHandler(
                     clip_model_path=request["director_mmproj_path"],
-                    enable_thinking=False,
+                    enable_thinking=enable_thinking,
                     preserve_thinking=False,
                     extra_template_arguments={"reasoning_effort": reasoning_effort},
                     chat_template_override=_adapt_qwen38_mtmd_template(template),
@@ -952,14 +964,17 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
                 "qwen3.6": QWEN36_TIMING_RESPONSE_TOKENS if timing else QWEN36_CHUNK_RESPONSE_TOKENS,
                 "qwen3.8": QWEN38_TIMING_RESPONSE_TOKENS if timing else QWEN38_CHUNK_RESPONSE_TOKENS,
             }[family])),
-            "reasoning_budget": 0,
+            "reasoning_budget": int(generation.get("reasoning_budget", 0)),
         }
         if family == "qwen3.8":
             completion_kwargs["min_p"] = 0.0
         response = llm.create_chat_completion(**completion_kwargs)
         choice = response["choices"][0]
         message = choice["message"]
-        text = str(message.get("content") or message.get("reasoning_content") or "")
+        content_text = str(message.get("content") or "")
+        reasoning_text = str(message.get("reasoning_content") or "")
+        text = (f"<think>{reasoning_text}</think>\n{content_text}"
+                if jzl_storyboard and reasoning_text and content_text else content_text or reasoning_text)
         if jzl_storyboard:
             result = text
         else:
@@ -1224,7 +1239,8 @@ class Qwen35ContinuityDirector:
         return _run_storyboard_worker(request)
 
     def plan_jzl_storyboard(self, frames: Sequence[torch.Tensor], *, system_prompt: str, user_prompt: str,
-                            generation: dict[str, Any] | None = None, json_response: bool = False) -> str:
+                            generation: dict[str, Any] | None = None, json_response: bool = False,
+                            enable_thinking: bool = False) -> str:
         frames = tuple(frames)
         if len(frames) > 32 or any(not isinstance(frame, torch.Tensor) or frame.ndim != 4 or frame.shape[0] != 1 for frame in frames):
             raise Qwen35ObservationError("JZL planning requires single-image NHWC observation batches")
@@ -1235,6 +1251,7 @@ class Qwen35ContinuityDirector:
             "image_urls": [_image_url(frame[0]) for frame in frames],
             "generation": dict(generation or {}),
             "json_response": bool(json_response),
+            "enable_thinking": bool(enable_thinking),
         }
         self._configure_request(request)
         process, value = _run_worker_once(request, timeout=600)

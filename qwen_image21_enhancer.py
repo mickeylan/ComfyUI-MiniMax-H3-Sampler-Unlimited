@@ -52,7 +52,9 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("top_k", default=20, min=0, max=1000, step=1),
                 io.Int.Input("max_new_tokens", default=16384, min=512, max=24000, step=256,
-                             tooltip="Higher budgets allow substantial multi-image rewrites"),
+                             tooltip="Includes thinking plus final rewrite"),
+                io.Int.Input("thinking_budget", default=4096, min=0, max=8192, step=256,
+                             tooltip="Official PE requires thinking; 0 disables it"),
                 io.Autogrow.Input("images", optional=True,
                     template=io.Autogrow.TemplatePrefix(
                         input=io.Image.Input("image"),
@@ -79,6 +81,7 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
         top_p: float,
         top_k: int,
         max_new_tokens: int,
+        thinking_budget: int,
         images: Optional[dict] = None,
         director_config: Optional[dict] = None,
         **dynamic_inputs,
@@ -138,10 +141,11 @@ class QwenImage21PromptEnhancer(io.ComfyNode):
                 "top_p": float(top_p),
                 "top_k": int(top_k),
                 "max_tokens": int(max_new_tokens),
+                "reasoning_budget": int(thinking_budget),
             }
             raw_result = director.plan_jzl_storyboard(
                 frames, system_prompt=system_prompt, user_prompt=user_prompt,
-                generation=generation, json_response=True,
+                generation=generation, json_response=False, enable_thinking=(thinking_budget > 0),
             )
             enhanced_prompt, wh_ratio, ratio_follow, thinking, parse_ok = cls._parse_result(
                 raw_result, allow_ratio_follow=(effective_mode == "i2i")
@@ -164,14 +168,14 @@ Previous response:
 {raw_result}
 </previous_response>
 
-Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames)} supplied images in their original order and correct the validation failures. Return exactly one valid JSON object and nothing else.
+Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames)} supplied images in their original order and correct the validation failures. When this is multi-image compositing or a new scene, apply the official "construct actively" branch rather than merely paraphrasing the placement request. Return exactly one valid JSON object and nothing else.
 
 <user_request>
 {prompt}
 </user_request>"""
                 raw_result = director.plan_jzl_storyboard(
                     frames, system_prompt=system_prompt, user_prompt=correction_prompt,
-                    generation=generation, json_response=True,
+                    generation=generation, json_response=False, enable_thinking=(thinking_budget > 0),
                 )
                 enhanced_prompt, wh_ratio, ratio_follow, thinking, parse_ok = cls._parse_result(
                     raw_result, allow_ratio_follow=(effective_mode == "i2i")
@@ -300,6 +304,19 @@ Follow the official Qwen Image 2.1 system rules exactly. Re-read all {len(frames
                        if f"<image{index}>" not in rewritten]
             if missing:
                 issues.append("missing required image references: " + ", ".join(missing))
+            active_composition = image_count >= 3 or bool(re.search(
+                r"(?:合成|组合|合影|合照|置于|放到|移入|躺在|一起|场景|composit|place|put|together|scene)",
+                original, re.IGNORECASE,
+            ))
+            if active_composition:
+                if language == "zh":
+                    detail_count = len(re.findall(r"[\u4e00-\u9fff]", rewritten))
+                    if detail_count < 120:
+                        issues.append(f"multi-image composition did not use the official construct-actively branch ({detail_count} < 120 Chinese characters)")
+                else:
+                    detail_count = len(re.findall(r"\b[A-Za-z]+\b", rewritten))
+                    if detail_count < 80:
+                        issues.append(f"multi-image composition did not use the official construct-actively branch ({detail_count} < 80 English words)")
 
         chinese_count = len(re.findall(r"[\u4e00-\u9fff]", rewritten))
         letter_count = len(re.findall(r"[A-Za-z]", rewritten))
