@@ -345,6 +345,34 @@ class PromptSkillTests(unittest.TestCase):
         self.assertTrue(any("Restored omitted image_subjects entry asset_3" in item for item in compiled["warnings"]))
         self.assertTrue(any("resolved kind=character" in item for item in compiled["warnings"]))
 
+    def test_restores_terminal_punctuation_in_immutable_source_name(self):
+        request = {
+            **self.request(), "image_count": 2,
+            "source_image_contract": [
+                {"entity_id": "asset_1", "picture": 1, "name": "Hero", "kind": "character"},
+                {"entity_id": "asset_2", "picture": 2, "name": "豪华寝宫，寝宫中有一张豪华大床。", "kind": "scene"},
+            ],
+        }
+        value = self.result()
+        value["image_subjects"] = [
+            {"entity_id": "asset_1", "kind": "character", "name": "Hero", "observable_features": "black hair"},
+            {"entity_id": "asset_2", "kind": "scene", "name": "豪华寝宫，寝宫中有一张豪华大床", "observable_features": "large bed"},
+        ]
+        for shot in value["shots"]:
+            shot["pictures"] = ["asset_1", "asset_2"]
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        subject = compiled["shot_plan"]["image_subjects"][1]
+        self.assertEqual(subject["name"], "豪华寝宫，寝宫中有一张豪华大床。")
+        self.assertTrue(any("Restored immutable asset_2 name punctuation" in item for item in compiled["warnings"]))
+
+    def test_rejects_actual_immutable_source_rename_despite_punctuation_tolerance(self):
+        request = self.request()
+        request["source_image_contract"][0]["name"] = "Hero"
+        value = self.result()
+        value["image_subjects"][0]["name"] = "Villain."
+        with self.assertRaisesRegex(ValueError, "renamed immutable asset_1"):
+            prompt_skill.compile_prompt_skill(value, request)
+
     def test_rejects_unknown_subject_even_when_other_entries_are_recoverable(self):
         value = self.result()
         value["image_subjects"] = ["asset_1", "asset_9"]

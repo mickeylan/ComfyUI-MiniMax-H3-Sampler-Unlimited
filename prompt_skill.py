@@ -679,6 +679,10 @@ def _dialogue_description(item: dict[str, str]) -> str:
     return description
 
 
+def _immutable_name_key(value: Any) -> str:
+    return re.sub(r"[。．.!！?？；;]+$", "", str(value).strip()).rstrip().casefold()
+
+
 def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
     contract = {
         str(item["entity_id"]): dict(item)
@@ -798,11 +802,13 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
         entries = candidates[entity_id]
         source_name = str(source.get("name", "")).strip()
         model_names = [str(raw.get("name", "")).strip() for _index, raw in entries if str(raw.get("name", "")).strip()]
-        wrong_names = [name for name in model_names if source_name and name.casefold() != source_name.casefold()]
+        wrong_names = [name for name in model_names if source_name and _immutable_name_key(name) != _immutable_name_key(source_name)]
         if wrong_names:
             raise ValueError(
                 f"image_subjects renamed immutable {entity_id} from {source_name!r} to {wrong_names[0]!r}"
             )
+        if source_name and any(name != source_name for name in model_names):
+            warnings.append(f"Restored immutable {entity_id} name punctuation to canonical source name {source_name!r}.")
         model_kinds = {
             str(raw.get("kind", "")).strip().lower()
             for _index, raw in entries
