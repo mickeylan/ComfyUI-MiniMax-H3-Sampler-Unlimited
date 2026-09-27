@@ -731,6 +731,10 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
         return contract[key]
 
     warnings = []
+    by_picture = {
+        int(source["picture"]): entity_id
+        for entity_id, source in contract.items()
+    }
     names = {}
     for entity_id, source in contract.items():
         name = str(source.get("name", "")).strip()
@@ -739,8 +743,18 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
 
     def compile_text(text: Any, label: str) -> str:
         result = str(text).strip()
-        if re.search(r"<(?:Subject|Picture)\s+\d+>", result, re.IGNORECASE):
-            raise ValueError(f"{label} contains compiler-owned Subject/Picture labels")
+
+        def restore_entity(match: re.Match[str]) -> str:
+            picture = int(match.group(1))
+            entity_id = by_picture.get(picture)
+            if entity_id is None:
+                raise ValueError(f"{label} references unknown compiler-owned Subject/Picture {picture}")
+            warning = f"Normalized compiler-owned <{match.group(0)[1:-1]}> to <Entity {entity_id}> in {label}."
+            if warning not in warnings:
+                warnings.append(warning)
+            return f"<Entity {entity_id}>"
+
+        result = re.sub(r"<(?:Subject|Picture)\s+(\d+)>", restore_entity, result, flags=re.IGNORECASE)
         for entity_id, source in contract.items():
             name = str(source.get("name", "")).strip()
             if not name:

@@ -446,10 +446,18 @@ class PromptSkillTests(unittest.TestCase):
         plan = {"image_subjects": [{"subject": 3, "picture": 3, "kind": "character", "name": "上官若彤"}]}
         prompt_skill.validate_h3_identity_contract("summary:\n上官若彤 enters.", plan)
 
-    def test_rejects_model_owned_subject_labels_before_h3_compilation(self):
+    def test_normalizes_known_model_owned_subject_labels_before_h3_compilation(self):
         value = self.result()
-        value["shots"][0]["start_state"] = "<Subject 1> is incorrectly assigned by the model"
-        with self.assertRaisesRegex(ValueError, "compiler-owned Subject/Picture labels"):
+        value["shots"][0]["events"][0]["action"] = "<Subject 1> enters once"
+        compiled = prompt_skill.compile_prompt_skill(value, self.request())
+        event = compiled["shot_plan"]["shots"][0]["events"][0]
+        self.assertIn("<Subject 1>", event["action"])
+        self.assertTrue(any("Normalized compiler-owned <Subject 1>" in item for item in compiled["warnings"]))
+
+    def test_rejects_unknown_model_owned_subject_labels_before_h3_compilation(self):
+        value = self.result()
+        value["shots"][0]["events"][0]["action"] = "<Subject 9> enters once"
+        with self.assertRaisesRegex(ValueError, "unknown compiler-owned Subject/Picture 9"):
             prompt_skill.compile_prompt_skill(value, self.request())
 
     def test_rejects_scene_entity_as_visual_event_actor(self):
