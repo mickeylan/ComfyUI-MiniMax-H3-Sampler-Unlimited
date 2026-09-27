@@ -11,7 +11,7 @@ from .director_backend import resolve_director_selection
 from .director_config import HRDirectorConfig, normalize_qwen38_config
 from .prompt_skill import (
     CONTINUITY_MODES, build_prompt_skill_request, build_typed_prompt_plan,
-    normalize_prompt_plan, validate_prompt_plan_edit,
+    normalize_prompt_plan, rebase_prompt_plan_edit, validate_prompt_plan_edit,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images
@@ -149,6 +149,7 @@ class HRH3PromptPlanEditor(io.ComfyNode):
         total_frames = int(prompt_plan.get("total_frames", 0))
         original = normalize_prompt_plan(prompt_plan, fps=fps, total_frames=total_frames)
         text = str(edited_plan_json or "").strip()
+        rebase_warnings = []
         if text:
             try:
                 supplied = json.loads(text)
@@ -160,6 +161,7 @@ class HRH3PromptPlanEditor(io.ComfyNode):
                 raise ValueError("edited_plan_json root must be an object")
             candidate = supplied if supplied.get("type") else {**original, **supplied}
             edited = normalize_prompt_plan(candidate, fps=fps, total_frames=total_frames)
+            edited, rebase_warnings = rebase_prompt_plan_edit(original, edited)
             validate_prompt_plan_edit(original, edited)
         else:
             edited = original
@@ -172,6 +174,7 @@ class HRH3PromptPlanEditor(io.ComfyNode):
             "shots": len(edited["shots"]),
             "dialogues": sum(len(shot.get("dialogues", ())) for shot in edited["shots"]),
             "timeline_chunk_frames": int(chunk_frames),
+            "warnings": rebase_warnings,
         }
         validated_json = json.dumps(edited, ensure_ascii=False, indent=2)
         return io.NodeOutput(

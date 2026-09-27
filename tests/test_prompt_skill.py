@@ -1139,9 +1139,15 @@ class PromptSkillTests(unittest.TestCase):
             prompt_skill.build_typed_prompt_plan(compiled, fps=24.0), fps=24.0, total_frames=56
         )
         renamed = {**original, "image_subjects": [dict(item) for item in original["image_subjects"]]}
-        renamed["image_subjects"][0]["name"] = "Other"
-        with self.assertRaisesRegex(ValueError, "preserve Picture/Subject identity"):
-            prompt_skill.validate_prompt_plan_edit(original, renamed)
+        renamed["image_subjects"][0].update(name="旧中文名称", entity_id="old_asset", kind="scene")
+        rebased, warnings = prompt_skill.rebase_prompt_plan_edit(original, renamed)
+        self.assertEqual(rebased["image_subjects"], original["image_subjects"])
+        self.assertTrue(any("Restored immutable Picture/Subject identity" in item for item in warnings))
+        prompt_skill.validate_prompt_plan_edit(original, rebased)
+
+        missing = {**original, "image_subjects": []}
+        with self.assertRaisesRegex(ValueError, "complete Picture identity set"):
+            prompt_skill.rebase_prompt_plan_edit(original, missing)
 
         reassigned = {**original, "shots": [dict(shot) for shot in original["shots"]]}
         reassigned["shots"][0] = {

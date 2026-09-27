@@ -1407,6 +1407,23 @@ def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[
     return {**value, "image_subjects": [dict(item) for item in subjects], "shots": normalized_shots}
 
 
+def rebase_prompt_plan_edit(original: dict[str, Any], edited: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    original_by_picture = {
+        int(item["picture"]): dict(item)
+        for item in original["image_subjects"]
+    }
+    edited_pictures = [int(item["picture"]) for item in edited["image_subjects"]]
+    if len(edited_pictures) != len(set(edited_pictures)) or set(edited_pictures) != set(original_by_picture):
+        raise ValueError("edited prompt plan must preserve the complete Picture identity set")
+    restored = [original_by_picture[picture] for picture in edited_pictures]
+    changed = restored != [dict(item) for item in edited["image_subjects"]]
+    rebased = {**edited, "image_subjects": restored}
+    warnings = [
+        "Restored immutable Picture/Subject identity fields from the currently connected Compiler plan."
+    ] if changed else []
+    return rebased, warnings
+
+
 def validate_prompt_plan_edit(original: dict[str, Any], edited: dict[str, Any]) -> None:
     original_subjects = {
         int(item["picture"]): (
