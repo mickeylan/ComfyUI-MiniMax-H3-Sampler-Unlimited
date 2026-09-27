@@ -498,6 +498,33 @@ class PromptSkillTests(unittest.TestCase):
             ["S1.V1", "S1.D1", "S1.D2", "S1.D3", "S2.V1"],
         )
 
+    def test_normalizes_qwen_dialogue_kind_aliases(self):
+        aliases = {
+            "conversation": "dialogue", "对白": "dialogue",
+            "soliloquy": "monologue", "独白": "monologue",
+            "voice-over": "voiceover", "旁白": "voiceover", "inner_monologue": "voiceover",
+        }
+        for supplied, expected in aliases.items():
+            with self.subTest(supplied=supplied):
+                value = self.result()
+                value["shots"][0]["dialogues"] = [{
+                    "id": "S1.D1", "kind": supplied, "speaker": "asset_1", "speaker_id": "S1",
+                    "language": "Chinese", "text": "测试台词。", "delivery": "平静地",
+                }]
+                request = {**self.request(), "required_spoken_lines": ["测试台词。"]}
+                compiled = prompt_skill.compile_prompt_skill(value, request)
+                self.assertEqual(compiled["shot_plan"]["shots"][0]["dialogues"][0]["kind"], expected)
+
+    def test_rejects_unknown_dialogue_kind_with_actual_value(self):
+        value = self.result()
+        value["shots"][0]["dialogues"] = [{
+            "id": "S1.D1", "kind": "song_lyrics", "speaker": "asset_1", "speaker_id": "S1",
+            "language": "Chinese", "text": "测试台词。", "delivery": "平静地",
+        }]
+        request = {**self.request(), "required_spoken_lines": ["测试台词。"]}
+        with self.assertRaisesRegex(ValueError, "invalid dialogue kind: 'song_lyrics'"):
+            prompt_skill.compile_prompt_skill(value, request)
+
     def test_rejects_non_character_dialogue_entity_instead_of_guessing(self):
         value = self.result()
         value["image_subjects"][0]["kind"] = "scene"

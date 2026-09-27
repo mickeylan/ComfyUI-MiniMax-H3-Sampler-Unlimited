@@ -683,6 +683,20 @@ def _immutable_name_key(value: Any) -> str:
     return re.sub(r"[。．.!！?？；;]+$", "", str(value).strip()).rstrip().casefold()
 
 
+def _dialogue_kind(value: Any) -> str:
+    raw = str(value or "").strip().casefold()
+    key = re.sub(r"[\s_-]+", " ", raw)
+    aliases = {
+        "dialogue": "dialogue", "dialog": "dialogue", "conversation": "dialogue",
+        "spoken dialogue": "dialogue", "speech": "dialogue", "对话": "dialogue", "对白": "dialogue",
+        "monologue": "monologue", "soliloquy": "monologue", "独白": "monologue", "自言自语": "monologue",
+        "voiceover": "voiceover", "voice over": "voiceover", "off screen voiceover": "voiceover",
+        "narration": "voiceover", "narrator": "voiceover", "旁白": "voiceover", "画外音": "voiceover",
+        "internal monologue": "voiceover", "inner monologue": "voiceover", "内心独白": "voiceover", "心声": "voiceover",
+    }
+    return aliases.get(key, raw)
+
+
 def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
     contract = {
         str(item["entity_id"]): dict(item)
@@ -1076,9 +1090,13 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
             if not item["id"]:
                 item["id"] = f"S{index}.D{dialogue_index}"
                 repaired_fields.append("id")
+            original_kind = item["kind"]
+            item["kind"] = _dialogue_kind(original_kind)
             if not item["kind"]:
                 item["kind"] = "dialogue"
                 repaired_fields.append("kind")
+            elif item["kind"] != original_kind.casefold():
+                repaired_fields.append(f"kind={original_kind!r}->{item['kind']}")
             if not item["language"] and item["text"]:
                 item["language"] = "Chinese" if re.search(r"[\u3400-\u9fff]", item["text"]) else "English"
                 repaired_fields.append("language")
@@ -1103,7 +1121,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
             if not re.fullmatch(r"S\d+\.D\d+", item["id"]) or item["id"] in dialogue_ids:
                 raise ValueError(f"shots[{index}] has an invalid or repeated dialogue id")
             if item["kind"] not in {"dialogue", "monologue", "voiceover"}:
-                raise ValueError(f"shots[{index}] has an invalid dialogue kind")
+                raise ValueError(f"shots[{index}] has an invalid dialogue kind: {original_kind!r}")
             missing = [name for name in ("speaker", "speaker_id", "language", "text", "delivery") if not item[name]]
             if not re.fullmatch(r"S\d+", item["speaker_id"]) or missing:
                 raise ValueError(f"shots[{index}] has incomplete dialogue metadata: missing={missing}, speaker_id={item['speaker_id']!r}")
