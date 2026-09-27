@@ -9,7 +9,10 @@ from comfy_api.latest import io
 
 from .director_backend import resolve_director_selection
 from .director_config import HRDirectorConfig, normalize_qwen38_config
-from .prompt_skill import CONTINUITY_MODES, build_prompt_skill_request, build_typed_prompt_plan
+from .prompt_skill import (
+    CONTINUITY_MODES, build_prompt_skill_request, build_typed_prompt_plan,
+    normalize_prompt_plan, validate_prompt_plan_edit,
+)
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images
 
@@ -101,4 +104,69 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             json.dumps(report, ensure_ascii=False, indent=2),
             int(result["planned_frames"]),
             typed_plan,
+        )
+
+
+class HRH3PromptPlanEditor(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="HRH3PromptPlanEditor",
+            display_name="HR H3 Prompt Plan Editor",
+            category="model/sampling/custom",
+            description=(
+                "Apply manually edited JSON to an HR H3 Prompt Plan without another Qwen call. "
+                "Picture/Subject identity and exact dialogue ownership/text remain immutable."
+            ),
+            inputs=[
+                HRH3PromptPlan.Input("prompt_plan"),
+                io.String.Input(
+                    "edited_plan_json", multiline=True, default="",
+                    tooltip=(
+                        "Paste either the full prompt-plan JSON or the compiler's structured shot-plan JSON. "
+                        "Leave empty to pass through the connected plan."
+                    ),
+                ),
+            ],
+            outputs=[
+                HRH3PromptPlan.Output(display_name="edited prompt plan"),
+                io.String.Output(display_name="validated plan JSON"),
+                io.String.Output(display_name="validation report"),
+            ],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(cls, prompt_plan, edited_plan_json=""):
+        fps = float(prompt_plan.get("fps", 0.0))
+        total_frames = int(prompt_plan.get("total_frames", 0))
+        original = normalize_prompt_plan(prompt_plan, fps=fps, total_frames=total_frames)
+        text = str(edited_plan_json or "").strip()
+        if text:
+            try:
+                supplied = json.loads(text)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"edited_plan_json is invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
+                ) from error
+            if not isinstance(supplied, dict):
+                raise ValueError("edited_plan_json root must be an object")
+            candidate = supplied if supplied.get("type") else {**original, **supplied}
+            edited = normalize_prompt_plan(candidate, fps=fps, total_frames=total_frames)
+            validate_prompt_plan_edit(original, edited)
+        else:
+            edited = original
+        report = {
+            "status": "valid",
+            "edited": bool(text),
+            "fps": fps,
+            "total_frames": total_frames,
+            "subjects": len(edited["image_subjects"]),
+            "shots": len(edited["shots"]),
+            "dialogues": sum(len(shot.get("dialogues", ())) for shot in edited["shots"]),
+        }
+        return io.NodeOutput(
+            edited,
+            json.dumps(edited, ensure_ascii=False, indent=2),
+            json.dumps(report, ensure_ascii=False, indent=2),
         )

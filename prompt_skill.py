@@ -1387,6 +1387,46 @@ def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[
     return {**value, "image_subjects": [dict(item) for item in subjects], "shots": normalized_shots}
 
 
+def validate_prompt_plan_edit(original: dict[str, Any], edited: dict[str, Any]) -> None:
+    original_subjects = {
+        int(item["picture"]): (
+            int(item["subject"]), str(item.get("entity_id", "")), str(item.get("kind", "")), str(item.get("name", "")),
+        )
+        for item in original["image_subjects"]
+    }
+    edited_subjects = {
+        int(item["picture"]): (
+            int(item["subject"]), str(item.get("entity_id", "")), str(item.get("kind", "")), str(item.get("name", "")),
+        )
+        for item in edited["image_subjects"]
+    }
+    if edited_subjects != original_subjects:
+        raise ValueError("edited prompt plan must preserve Picture/Subject identity, entity IDs, kinds, and names")
+
+    def dialogue_contract(plan):
+        return [
+            (
+                str(item.get("id", "")), str(item.get("speaker", "")), str(item.get("speaker_id", "")),
+                str(item.get("kind", "")), str(item.get("language", "")), str(item.get("text", "")),
+            )
+            for shot in plan["shots"]
+            for item in shot.get("dialogues", ())
+        ]
+
+    if dialogue_contract(edited) != dialogue_contract(original):
+        raise ValueError("edited prompt plan must preserve dialogue IDs, speakers, kinds, languages, exact text, and order")
+
+    def event_contract(plan):
+        return [
+            (str(item.get("id", "")), str(item.get("actor", "")))
+            for shot in plan["shots"]
+            for item in shot.get("events", ())
+        ]
+
+    if event_contract(edited) != event_contract(original):
+        raise ValueError("edited prompt plan must preserve event IDs, actors, and order; edit action text or timing instead")
+
+
 def prompt_plan_shots(plan: dict[str, Any]) -> list[tuple[int, int, int, str, bool]]:
     return [
         (index, shot["start_frame"], shot["end_frame"], str(shot["description"]).strip(), bool(shot["cut"]))

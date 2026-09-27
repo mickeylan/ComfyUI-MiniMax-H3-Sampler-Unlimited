@@ -8,7 +8,7 @@ from .external_continuation import (
 )
 from .nodes import HREndlessSampler
 from .preview import HREndlessSamplerPreview
-from .prompt_skill_node import HRH3PromptSkillCompiler
+from .prompt_skill_node import HRH3PromptPlanEditor, HRH3PromptSkillCompiler
 from .retake_director import HREndlessRetakeAssemble, HREndlessSegmentRetakeDirector
 from .reference_set import HRMiniMaxH3ReferenceConditioning, HRMiniMaxH3ReferenceSet
 from .storyboard import HRMiniMaxH3StoryboardPlanner
@@ -47,6 +47,7 @@ NODE_CLASS_MAPPINGS = {
     "HRVideoBridgeConditioning": HRVideoBridgeConditioning,
     "HRVideoBridgeAssemble": HRVideoBridgeAssemble,
     "HRH3PromptSkillCompiler": HRH3PromptSkillCompiler,
+    "HRH3PromptPlanEditor": HRH3PromptPlanEditor,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -76,6 +77,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "HRVideoBridgeConditioning": "HR Video Bridge Conditioning",
     "HRVideoBridgeAssemble": "HR Video Bridge Assemble",
     "HRH3PromptSkillCompiler": "HR H3 Prompt Skill Compiler",
+    "HRH3PromptPlanEditor": "HR H3 Prompt Plan Editor",
 }
 
 WEB_DIRECTORY = "./web"

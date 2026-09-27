@@ -1098,6 +1098,52 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(len(compiled["shot_plan"]["shots"]), 2)
         self.assertEqual(len(compiled["shot_plan"]["image_subjects"]), 1)
 
+    def test_prompt_plan_edit_allows_camera_and_event_changes(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        original = prompt_skill.normalize_prompt_plan(
+            prompt_skill.build_typed_prompt_plan(compiled, fps=24.0), fps=24.0, total_frames=56
+        )
+        edited = {**original, "shots": [dict(shot) for shot in original["shots"]]}
+        edited["shots"][0]["camera"] = "locked profile two-shot"
+        edited["shots"][0]["events"] = [dict(event, action="walks inside once") for event in edited["shots"][0]["events"]]
+        prompt_skill.validate_prompt_plan_edit(original, edited)
+
+    def test_prompt_plan_edit_rejects_dialogue_or_identity_changes(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        original = prompt_skill.normalize_prompt_plan(
+            prompt_skill.build_typed_prompt_plan(compiled, fps=24.0), fps=24.0, total_frames=56
+        )
+        renamed = {**original, "image_subjects": [dict(item) for item in original["image_subjects"]]}
+        renamed["image_subjects"][0]["name"] = "Other"
+        with self.assertRaisesRegex(ValueError, "preserve Picture/Subject identity"):
+            prompt_skill.validate_prompt_plan_edit(original, renamed)
+
+        reassigned = {**original, "shots": [dict(shot) for shot in original["shots"]]}
+        reassigned["shots"][0] = {
+            **reassigned["shots"][0],
+            "events": [dict(reassigned["shots"][0]["events"][0], actor="asset_9")],
+        }
+        with self.assertRaisesRegex(ValueError, "preserve event IDs, actors, and order"):
+            prompt_skill.validate_prompt_plan_edit(original, reassigned)
+
+        spoken = self.result()
+        spoken["shots"][0]["dialogues"] = [{
+            "id": "S1.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
+            "language": "English", "text": "Stay.", "delivery": "quietly",
+        }]
+        spoken_request = {**self.request(), "required_spoken_lines": ["Stay."]}
+        spoken_compiled = prompt_skill.compile_prompt_skill(spoken, spoken_request)
+        spoken_original = prompt_skill.normalize_prompt_plan(
+            prompt_skill.build_typed_prompt_plan(spoken_compiled, fps=24.0), fps=24.0, total_frames=56
+        )
+        changed = {**spoken_original, "shots": [dict(shot) for shot in spoken_original["shots"]]}
+        changed["shots"][0] = {
+            **changed["shots"][0],
+            "dialogues": [dict(changed["shots"][0]["dialogues"][0], text="Go.")],
+        }
+        with self.assertRaisesRegex(ValueError, "preserve dialogue IDs"):
+            prompt_skill.validate_prompt_plan_edit(spoken_original, changed)
+
     def test_chunk_local_prompt_removes_future_subject_and_sound(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         typed_plan = prompt_skill.normalize_prompt_plan(
