@@ -473,6 +473,28 @@ class PromptSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "actor asset_1 is not a character"):
             prompt_skill.compile_prompt_skill(value, request)
 
+    def test_removes_model_invented_dialogue_when_source_story_has_none(self):
+        request = self.request()
+        self.assertEqual(request["required_spoken_lines"], [])
+        value = self.result()
+        value["shots"][0]["dialogues"] = [{
+            "id": "S1.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
+            "language": "English", "text": "Invented words.", "delivery": "quietly",
+        }]
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        self.assertEqual(compiled["shot_plan"]["shots"][0]["dialogues"], [])
+        self.assertNotIn("Invented words", compiled["prompt"])
+        self.assertTrue(any("Removed 1 model-invented dialogue" in item for item in compiled["warnings"]))
+
+    def test_ignores_format_control_characters_in_empty_dialogue_tags(self):
+        request = prompt_skill.build_prompt_skill_request(
+            "A silent room. <d>[Chinese] \u200b</d>", duration_seconds=2.0, fps=24.0,
+            image_count=1, style="cinematic", shot_density="low",
+            continuity_mode="balanced", prompt_lang="en",
+        )
+        self.assertEqual(request["required_spoken_lines"], [])
+        self.assertEqual(request["minimum_spoken_duration_seconds"], 0.0)
+
     def test_preserves_dialogue_monologue_and_voiceover_in_h3_description(self):
         value = self.result()
         value["shots"][0]["dialogues"] = [

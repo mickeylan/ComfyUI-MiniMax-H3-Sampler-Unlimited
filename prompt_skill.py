@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from typing import Any
 
 try:
@@ -58,6 +59,7 @@ def _spoken_lines(story: str) -> tuple[str, ...]:
     for pattern_order, pattern in enumerate((_DIALOGUE_TAG, _SPOKEN_QUOTE)):
         for match in pattern.finditer(story):
             text = re.sub(r"^\s*\[[^\]]+\]\s*", "", match.group(1)).strip()
+            text = "".join(character for character in text if unicodedata.category(character) != "Cf").strip()
             if text:
                 matches.append((match.start(), pattern_order, text))
     return tuple(text for _start, _pattern_order, text in sorted(matches))
@@ -333,8 +335,24 @@ def _normalize_shot_intervals(value: Any, total_frames: int) -> tuple[Any, list[
 
 def _restore_required_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
     required = tuple(str(item).strip() for item in request.get("required_spoken_lines", ()) if str(item).strip())
-    if not required or not isinstance(value, dict) or not isinstance(value.get("shots"), list):
+    if not isinstance(value, dict) or not isinstance(value.get("shots"), list):
         return value, []
+    if not required:
+        invented = sum(
+            len(shot.get("dialogues", ()))
+            for shot in value["shots"]
+            if isinstance(shot, dict) and isinstance(shot.get("dialogues", ()), list)
+        )
+        if not invented:
+            return value, []
+        normalized = dict(value)
+        normalized["shots"] = [
+            dict(shot, dialogues=[]) if isinstance(shot, dict) else shot
+            for shot in value["shots"]
+        ]
+        return normalized, [
+            f"Removed {invented} model-invented dialogue occurrence(s) because the source story contains no spoken dialogue."
+        ]
     slots = []
     for shot_index, shot in enumerate(value["shots"]):
         if not isinstance(shot, dict) or not isinstance(shot.get("dialogues", []), list):
