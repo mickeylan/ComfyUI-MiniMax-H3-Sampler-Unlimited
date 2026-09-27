@@ -34,7 +34,8 @@ except ImportError:  # Direct worker execution.
 QWEN35_CONTEXT_TOKENS = 65536
 QWEN35_IMAGE_MIN_TOKENS = 256
 QWEN35_IMAGE_MAX_TOKENS = 1344
-QWEN35_BATCH_SIZE = 256
+QWEN35_BATCH_SIZE = 2048
+QWEN35_UBATCH_SIZE = 256
 QWEN35_CHUNK_RESPONSE_TOKENS = 8192
 QWEN35_TIMING_RESPONSE_TOKENS = 32768
 QWEN35_PROMPT_SKILL_RESPONSE_TOKENS = 32768
@@ -896,6 +897,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         clip_model_path=request["director_mmproj_path"],
         image_min_tokens=QWEN35_IMAGE_MIN_TOKENS,
         image_max_tokens=QWEN35_IMAGE_MAX_TOKENS,
+        batch_max_tokens=QWEN35_BATCH_SIZE,
         verbose=False,
         use_gpu=True,
     )
@@ -906,7 +908,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         raise Qwen35ObservationError("Qwen3.5 context must be between 65536 and 262144 tokens")
     llm = Llama(
         model_path=request["director_model_path"], chat_handler=handler, n_gpu_layers=-1,
-        n_ctx=context_tokens, n_batch=QWEN35_BATCH_SIZE, n_ubatch=QWEN35_BATCH_SIZE,
+        n_ctx=context_tokens, n_batch=QWEN35_BATCH_SIZE, n_ubatch=QWEN35_UBATCH_SIZE,
         flash_attn=True, type_k=8, type_v=8, swa_full=False, verbose=False,
     )
     print(f"[MINIMAX_H3_WORKER] GGUF loaded t={time.monotonic()-t0:.1f}s", flush=True)
