@@ -1384,6 +1384,19 @@ def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[
         pictures = tuple(int(item) for item in shot.get("pictures", ()))
         if any(picture not in declared_pictures for picture in pictures):
             raise ValueError(f"prompt_plan shot {index} references an undeclared picture")
+        for field in ("events", "dialogues", "forbidden_replays"):
+            if not isinstance(shot.get(field, ()), (list, tuple)):
+                raise ValueError(f"prompt_plan shot {index} {field} must be an array")
+        for field in ("events", "dialogues"):
+            for item_index, item in enumerate(shot.get(field, ()), 1):
+                if not isinstance(item, dict):
+                    raise ValueError(f"prompt_plan shot {index} {field}[{item_index}] must be an object")
+                item_start = int(item.get("start_frame", start))
+                item_end = int(item.get("end_frame", end))
+                if item_start < start or item_end > end or item_end <= item_start:
+                    raise ValueError(
+                        f"prompt_plan shot {index} {field}[{item_index}] has invalid interval [{item_start},{item_end})"
+                    )
         normalized_shots.append({
             **shot, "pictures": pictures, "start_frame": start, "end_frame": end,
             "cut": bool(shot.get("cut", True)),

@@ -1169,6 +1169,13 @@ class PromptSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "preserve dialogue IDs"):
             prompt_skill.validate_prompt_plan_edit(spoken_original, changed)
 
+    def test_prompt_plan_rejects_nested_interval_outside_shot(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        plan["shots"][0]["events"][0]["end_frame"] = plan["shots"][0]["end_frame"] + 1
+        with self.assertRaisesRegex(ValueError, r"events\[1\] has invalid interval"):
+            prompt_skill.normalize_prompt_plan(plan, fps=24.0, total_frames=56)
+
     def test_chunk_local_prompt_removes_future_subject_and_sound(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         typed_plan = prompt_skill.normalize_prompt_plan(
