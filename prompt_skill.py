@@ -1415,12 +1415,52 @@ def rebase_prompt_plan_edit(original: dict[str, Any], edited: dict[str, Any]) ->
     edited_pictures = [int(item["picture"]) for item in edited["image_subjects"]]
     if len(edited_pictures) != len(set(edited_pictures)) or set(edited_pictures) != set(original_by_picture):
         raise ValueError("edited prompt plan must preserve the complete Picture identity set")
+    if len(edited["shots"]) != len(original["shots"]):
+        return original, [
+            "Replaced stale editor JSON because the currently connected Compiler plan has a different shot count."
+        ]
     restored = [original_by_picture[picture] for picture in edited_pictures]
     changed = restored != [dict(item) for item in edited["image_subjects"]]
-    rebased = {**edited, "image_subjects": restored}
+    rebased = {**edited, "image_subjects": restored, "shots": [dict(shot) for shot in edited["shots"]]}
     warnings = [
         "Restored immutable Picture/Subject identity fields from the currently connected Compiler plan."
     ] if changed else []
+
+    def items(plan, field):
+        return [item for shot in plan["shots"] for item in shot.get(field, ())]
+
+    original_events = items(original, "events")
+    edited_events = items(rebased, "events")
+    if len(edited_events) == len(original_events):
+        event_changed = False
+        for current, stale in zip(original_events, edited_events):
+            for field in ("id", "actor"):
+                if stale.get(field) != current.get(field):
+                    stale[field] = current.get(field)
+                    event_changed = True
+        if event_changed:
+            warnings.append("Restored event IDs and actors from the currently connected Compiler plan by event order.")
+    else:
+        for shot, current in zip(rebased["shots"], original["shots"]):
+            shot["events"] = [dict(item) for item in current.get("events", ())]
+        warnings.append("Replaced stale event edits because the currently connected Compiler plan has a different event count.")
+
+    original_dialogues = items(original, "dialogues")
+    edited_dialogues = items(rebased, "dialogues")
+    if len(edited_dialogues) == len(original_dialogues):
+        dialogue_changed = False
+        immutable = ("id", "speaker", "speaker_id", "kind", "language", "text")
+        for current, stale in zip(original_dialogues, edited_dialogues):
+            for field in immutable:
+                if stale.get(field) != current.get(field):
+                    stale[field] = current.get(field)
+                    dialogue_changed = True
+        if dialogue_changed:
+            warnings.append("Restored immutable dialogue ownership and text from the currently connected Compiler plan by dialogue order.")
+    else:
+        for shot, current in zip(rebased["shots"], original["shots"]):
+            shot["dialogues"] = [dict(item) for item in current.get("dialogues", ())]
+        warnings.append("Replaced stale dialogue edits because the currently connected Compiler plan has a different dialogue count.")
     return rebased, warnings
 
 

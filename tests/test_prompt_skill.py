@@ -1152,10 +1152,14 @@ class PromptSkillTests(unittest.TestCase):
         reassigned = {**original, "shots": [dict(shot) for shot in original["shots"]]}
         reassigned["shots"][0] = {
             **reassigned["shots"][0],
-            "events": [dict(reassigned["shots"][0]["events"][0], actor="asset_9")],
+            "events": [dict(reassigned["shots"][0]["events"][0], id="OLD.V9", actor="old_asset", action="manual action")],
         }
-        with self.assertRaisesRegex(ValueError, "preserve event IDs, actors, and order"):
-            prompt_skill.validate_prompt_plan_edit(original, reassigned)
+        event_rebased, event_warnings = prompt_skill.rebase_prompt_plan_edit(original, reassigned)
+        self.assertEqual(event_rebased["shots"][0]["events"][0]["id"], original["shots"][0]["events"][0]["id"])
+        self.assertEqual(event_rebased["shots"][0]["events"][0]["actor"], original["shots"][0]["events"][0]["actor"])
+        self.assertEqual(event_rebased["shots"][0]["events"][0]["action"], "manual action")
+        self.assertTrue(any("Restored event IDs and actors" in item for item in event_warnings))
+        prompt_skill.validate_prompt_plan_edit(original, event_rebased)
 
         spoken = self.result()
         spoken["shots"][0]["dialogues"] = [{
