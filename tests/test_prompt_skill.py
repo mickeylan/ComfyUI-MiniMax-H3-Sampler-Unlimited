@@ -43,6 +43,18 @@ class PromptSkillTests(unittest.TestCase):
             "warnings": [],
         }
 
+    def test_source_asset_names_use_ascii_alphanumeric_only(self):
+        request = prompt_skill.build_prompt_skill_request(
+            "<Picture 1> is Luxury Bedroom!; <Picture 2> is 豪华寝宫。",
+            duration_seconds=2.0, fps=24.0, image_count=2, style="cinematic",
+            shot_density="low", continuity_mode="balanced", prompt_lang="en",
+        )
+        self.assertEqual(
+            [item["name"] for item in request["source_image_contract"]],
+            ["LuxuryBedroom", "Asset2"],
+        )
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z0-9]+", item["name"]) for item in request["source_image_contract"]))
+
     def test_redistributes_dialogue_from_late_qwen_shot_across_complete_timeline(self):
         story = '<Subject 1> (S1) says: <d>[Chinese] 这是第一句很长的对白，需要使用前面镜头的时间。</d>'
         request = prompt_skill.build_prompt_skill_request(
@@ -363,15 +375,16 @@ class PromptSkillTests(unittest.TestCase):
         compiled = prompt_skill.compile_prompt_skill(value, request)
         subject = compiled["shot_plan"]["image_subjects"][1]
         self.assertEqual(subject["name"], "豪华寝宫，寝宫中有一张豪华大床。")
-        self.assertTrue(any("Restored immutable asset_2 name punctuation" in item for item in compiled["warnings"]))
+        self.assertTrue(any("Ignored Qwen name output for immutable asset_2" in item for item in compiled["warnings"]))
 
-    def test_rejects_actual_immutable_source_rename_despite_punctuation_tolerance(self):
+    def test_ignores_qwen_renaming_and_restores_ascii_source_name(self):
         request = self.request()
-        request["source_image_contract"][0]["name"] = "Hero"
+        request["source_image_contract"][0]["name"] = "LuxuryBedroom"
         value = self.result()
-        value["image_subjects"][0]["name"] = "Villain."
-        with self.assertRaisesRegex(ValueError, "renamed immutable asset_1"):
-            prompt_skill.compile_prompt_skill(value, request)
+        value["image_subjects"][0]["name"] = "豪华寝宫，寝宫中有一张豪华大床。"
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        self.assertEqual(compiled["shot_plan"]["image_subjects"][0]["name"], "LuxuryBedroom")
+        self.assertTrue(any("Ignored Qwen name output for immutable asset_1" in item for item in compiled["warnings"]))
 
     def test_rejects_unknown_subject_even_when_other_entries_are_recoverable(self):
         value = self.result()
@@ -693,15 +706,15 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(request["required_spoken_subjects"], ["<Subject 3>", "<Subject 4>"])
         self.assertEqual(request["required_speaker_subjects"], {"S1": "<Subject 3>", "S2": "<Subject 4>"})
         self.assertEqual(request["source_image_contract"], [
-            {"entity_id": "asset_1", "picture": 1, "name": "玉霄峰宫", "kind": None},
-            {"entity_id": "asset_2", "picture": 2, "name": "梵心桃花林", "kind": None},
-            {"entity_id": "asset_3", "picture": 3, "name": "上官若彤", "kind": "character"},
-            {"entity_id": "asset_4", "picture": 4, "name": "上官若琳", "kind": "character"},
+            {"entity_id": "asset_1", "picture": 1, "name": "Asset1", "kind": None},
+            {"entity_id": "asset_2", "picture": 2, "name": "Asset2", "kind": None},
+            {"entity_id": "asset_3", "picture": 3, "name": "Asset3", "kind": "character"},
+            {"entity_id": "asset_4", "picture": 4, "name": "Asset4", "kind": "character"},
         ])
         system, user = prompt_skill.prompt_skill_messages(request)
         self.assertIn("Those H3 labels are private compiler output", system)
-        self.assertIn("entity_id=asset_1: immutable source name='玉霄峰宫'", user)
-        self.assertIn("entity_id=asset_3: immutable source name='上官若彤'; kind=character", user)
+        self.assertIn("entity_id=asset_1: immutable source name='Asset1'", user)
+        self.assertIn("entity_id=asset_3: immutable source name='Asset3'; kind=character", user)
 
         value = self.result()
         value["image_subjects"] = [
@@ -710,8 +723,12 @@ class PromptSkillTests(unittest.TestCase):
             {"entity_id": "asset_3", "kind": "scene", "name": "上官若彤", "observable_features": "purple robe"},
             {"entity_id": "asset_4", "kind": "prop", "name": "上官若琳", "observable_features": "red robe"},
         ]
-        with self.assertRaisesRegex(ValueError, "renamed immutable asset_1"):
-            prompt_skill.compile_prompt_skill(value, request)
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        self.assertEqual(
+            [item["name"] for item in compiled["shot_plan"]["image_subjects"]],
+            ["Asset1", "Asset2", "Asset3", "Asset4"],
+        )
+        self.assertTrue(any("Ignored Qwen name output for immutable asset_1" in item for item in compiled["warnings"]))
 
     def test_restores_missing_canonical_marker_for_unique_source_name_without_retry(self):
         request = {

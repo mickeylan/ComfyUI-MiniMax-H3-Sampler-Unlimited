@@ -697,10 +697,6 @@ def _dialogue_description(item: dict[str, str]) -> str:
     return description
 
 
-def _immutable_name_key(value: Any) -> str:
-    return re.sub(r"[。．.!！?？；;]+$", "", str(value).strip()).rstrip().casefold()
-
-
 def _dialogue_kind(value: Any) -> str:
     raw = str(value or "").strip().casefold()
     key = re.sub(r"[\s_-]+", " ", raw)
@@ -848,13 +844,10 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
         entries = candidates[entity_id]
         source_name = str(source.get("name", "")).strip()
         model_names = [str(raw.get("name", "")).strip() for _index, raw in entries if str(raw.get("name", "")).strip()]
-        wrong_names = [name for name in model_names if source_name and _immutable_name_key(name) != _immutable_name_key(source_name)]
-        if wrong_names:
-            raise ValueError(
-                f"image_subjects renamed immutable {entity_id} from {source_name!r} to {wrong_names[0]!r}"
-            )
         if source_name and any(name != source_name for name in model_names):
-            warnings.append(f"Restored immutable {entity_id} name punctuation to canonical source name {source_name!r}.")
+            warnings.append(
+                f"Ignored Qwen name output for immutable {entity_id}; restored canonical source name {source_name!r}."
+            )
         model_kinds = {
             str(raw.get("kind", "")).strip().lower()
             for _index, raw in entries
@@ -895,7 +888,7 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             "entity_id": entity_id,
             "picture": int(source["picture"]),
             "kind": kind,
-            "name": source_name or (model_names[0] if model_names else ""),
+            "name": source_name or _ascii_asset_name(model_names[0] if model_names else "", int(source["picture"])),
             "observable_features": "; ".join(features),
         })
     resolved_contract = {item["entity_id"]: item for item in normalized_subjects}
@@ -1823,6 +1816,14 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
     ))
 
 
+def _ascii_asset_name(value: Any, picture: int, *, fallback: bool = True) -> str:
+    source = str(value or "").strip()
+    if not source and not fallback:
+        return ""
+    name = "".join(character for character in source if character.isascii() and character.isalnum())
+    return name or f"Asset{picture}"
+
+
 def build_prompt_skill_request(story: str, *, duration_seconds: float, fps: float, image_count: int,
                                style: str, shot_density: str, continuity_mode: str, prompt_lang: str) -> dict[str, Any]:
     if not isinstance(story, str) or not story.strip():
@@ -1838,7 +1839,9 @@ def build_prompt_skill_request(story: str, *, duration_seconds: float, fps: floa
         {
             "entity_id": f"asset_{picture}",
             "picture": picture,
-            "name": speaker_names.get(picture, picture_declarations.get(picture, "")),
+            "name": _ascii_asset_name(
+                speaker_names.get(picture, picture_declarations.get(picture, "")), picture, fallback=False
+            ),
             "kind": "character" if picture in speaker_names else None,
         }
         for picture in range(1, int(image_count) + 1)
