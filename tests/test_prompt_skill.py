@@ -1330,6 +1330,30 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("begin the line", prompt)
         self.assertIn("Every mouth and jaw remains completely still", prompt)
 
+    def test_localized_sections_do_not_reintroduce_future_action_or_internal_ids(self):
+        plan = {
+            "fps": 24.0, "total_frames": 80, "non_diegetic_music": "N/A",
+            "image_subjects": [
+                {"entity_id": "asset_1", "picture": 1, "subject": 1, "kind": "character", "name": "A", "observable_features": "resembles asset_2"},
+                {"entity_id": "asset_2", "picture": 2, "subject": 2, "kind": "character", "name": "B", "observable_features": "red robe"},
+            ],
+            "shots": [{
+                "start_frame": 0, "end_frame": 80, "pictures": [1, 2],
+                "camera": "close-up on asset_2 while asset_1 speaks",
+                "start_state": "asset_2 reaches toward asset_1", "end_state": "asset_2 holds asset_1's hand",
+                "events": [{"id": "S1.V1", "actor": "asset_2", "action": "asset_2 reaches toward asset_1", "start_frame": 40, "end_frame": 80}],
+                "dialogues": [{"id": "S1.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1", "language": "English", "text": "Wait.", "delivery": "firmly", "start_frame": 0, "end_frame": 40}],
+                "forbidden_replays": ["Repeating the dialogue"], "audio": "wind", "visual_description": "asset_2 reaches toward asset_1",
+            }],
+        }
+        localized = prompt_skill.localize_prompt_from_plan("", plan, frame_start=0, frame_end=40)
+        summary = localized.split("summary:\n", 1)[1].split("\n\nretention_analysis:", 1)[0]
+        retention = localized.split("retention_analysis:\n", 1)[1].split("\n\ndetailed_description:", 1)[0]
+        self.assertNotIn("reaches toward", summary)
+        self.assertNotRegex(localized, r"\basset_\d+\b")
+        self.assertIn("keep <Subject 1> visibly identifiable with the speaking mouth unobstructed", retention)
+        self.assertIn("do not restart the utterance from its beginning", retention)
+
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
         plan = {
