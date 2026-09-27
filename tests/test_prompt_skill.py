@@ -1271,6 +1271,26 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("<Subject 2> keep their lips and jaws completely still", prompt)
         self.assertIn("<Subject 1> (S1) says", prompt)
 
+    def test_new_speaker_does_not_continue_previous_chunk_utterance(self):
+        shot = {
+            "start_frame": 0, "end_frame": 80, "start_state": "both women face each other",
+            "end_state": "the reply continues", "dialogues": [{
+                "speaker": "<Subject 2>", "speaker_id": "S2", "kind": "dialogue",
+                "language": "English", "text": "This is the second speaker's reply.", "delivery": "calmly",
+                "start_frame": 20, "end_frame": 80,
+            }],
+        }
+        prompt = prompt_skill._localized_shot_description(
+            shot, 40, 80, 24.0, (), {}, previous_chunk_speakers=("<Subject 1>",)
+        )
+        self.assertIn("<Subject 2> (S2) says", prompt)
+        self.assertNotIn("continues the same uninterrupted utterance from the previous chunk", prompt)
+
+    def test_visual_state_removes_noncanonical_speaking_words(self):
+        state = prompt_skill._visual_state("Subject 3 finishes speaking while Subject 4 answers calmly")
+        self.assertNotRegex(state, r"\b(?:speaking|answers)\b")
+        self.assertIn("maintains eye contact", state)
+
     def test_no_dialogue_chunk_does_not_prepare_a_speaker(self):
         shot = {
             "start_frame": 0, "end_frame": 40, "start_state": "both women face each other",

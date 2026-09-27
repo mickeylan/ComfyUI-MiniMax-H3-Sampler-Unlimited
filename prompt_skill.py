@@ -1445,10 +1445,22 @@ def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str,
     return action
 
 
+def _visual_state(text: Any) -> str:
+    value = str(text or "").strip()
+    value = re.sub(
+        r"\b(?:speaks?|speaking|says?|saying|answers?|answering|replies?|replying|finishes speaking)\b",
+        "maintains eye contact",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", value).strip()
+
+
 def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
                                 active_events: tuple[dict[str, Any], ...],
                                 subjects_by_entity: dict[str, dict[str, Any]],
-                                scripted_dialogue_complete: bool = False) -> str:
+                                scripted_dialogue_complete: bool = False,
+                                previous_chunk_speakers: tuple[str, ...] | None = None) -> str:
     dialogue_fragments = []
     active_speakers = []
     for dialogue in shot.get("dialogues", ()):
@@ -1468,8 +1480,11 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
             local_dialogue["continues_from_previous"] = False
         if overlap_end < dialogue_end:
             local_dialogue["continues_to_next"] = False
+        speaker = str(dialogue["speaker"])
+        continues_from_previous_chunk = previous_chunk_speakers is None or speaker in previous_chunk_speakers
         fragment = slice_dialogue_for_interval(
-            _dialogue_description(local_dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end
+            _dialogue_description(local_dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end,
+            continues_from_previous_chunk=continues_from_previous_chunk,
         )
         if not fragment:
             continue
@@ -1492,21 +1507,21 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
         actor_label = f"<Subject {int(actor['subject'])}>" if actor is not None else ""
         if active_speakers and vocal_action.search(str(event.get("action", ""))) and actor_label not in active_speakers:
             continue
-        allowed_events.append(event)
+        allowed_events.append({**event, "action": _visual_state(event.get("action", ""))})
     if allowed_events:
         parts.extend(filter(None, (
-            _localized_event_action(event, subjects_by_entity, str(shot.get("end_state", "")).strip())
+            _localized_event_action(event, subjects_by_entity, _visual_state(shot.get("end_state", "")))
             for event in allowed_events
         )))
     elif active_events or frame_start > int(shot["start_frame"]):
-        state = str(shot.get("start_state" if frame_start <= int(shot["start_frame"]) else "end_state", "")).strip()
+        state = _visual_state(shot.get("start_state" if frame_start <= int(shot["start_frame"]) else "end_state", ""))
         parts.append(
             "Hold the established positions, body orientation, eye lines, and framing without starting any pending action."
             + (" Every mouth and jaw remains completely still." if scripted_dialogue_complete else "")
             + (f" Preserve this visible state: {state}." if state else "")
         )
     elif frame_start <= int(shot["start_frame"]):
-        visual = str(shot.get("visual_description", shot.get("description", ""))).strip()
+        visual = _visual_state(shot.get("visual_description", shot.get("description", "")))
         if visual:
             parts.append(visual)
     elif scripted_dialogue_complete:
@@ -1553,7 +1568,19 @@ def filter_prompt_plan_events(plan: dict[str, Any], events, frame_start: int):
     )
 
 
-def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
+def prompt_plan_speakers(plan: dict[str, Any], frame_start: int, frame_end: int) -> tuple[str, ...]:
+    speakers = []
+    for shot in plan["shots"]:
+        for dialogue in shot.get("dialogues", ()):
+            start = int(dialogue.get("start_frame", shot["start_frame"]))
+            end = int(dialogue.get("end_frame", shot["end_frame"]))
+            if start < frame_end and end > frame_start:
+                speakers.append(str(dialogue.get("speaker", "")).strip())
+    return tuple(dict.fromkeys(speaker for speaker in speakers if speaker))
+
+
+def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int,
+                              previous_chunk_speakers: tuple[str, ...] | None = None) -> str:
     projection = project_prompt_plan_interval(plan, frame_start=frame_start, frame_end=frame_end)
     active = projection["shots"]
     scripted_dialogue_complete = prompt_plan_dialogue_complete(plan, frame_start)
@@ -1595,6 +1622,7 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         description = _localized_shot_description(
             shot, frame_start, frame_end, float(plan["fps"]), shot_events, subjects_by_entity,
             scripted_dialogue_complete=scripted_dialogue_complete,
+            previous_chunk_speakers=previous_chunk_speakers,
         )
         if scripted_dialogue_complete:
             description = " ".join(filter(None, (

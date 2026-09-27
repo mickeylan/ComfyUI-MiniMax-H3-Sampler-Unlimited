@@ -58,7 +58,8 @@ def dialogue_frame_count(content: str, fps: float) -> int:
 
 
 def slice_dialogue_for_interval(content: str, source_start: int, source_end: int,
-                                overlap_start: int, overlap_end: int) -> str:
+                                overlap_start: int, overlap_end: int,
+                                continues_from_previous_chunk: bool = True) -> str:
     match = _DIALOGUE.search(content)
     duration = source_end - source_start
     if match is None or duration <= 0 or overlap_start <= source_start and overlap_end >= source_end:
@@ -89,7 +90,7 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     )
     before = content[:match.start()]
     after = content[match.end():]
-    if overlap_start > source_start:
+    if overlap_start > source_start and continues_from_previous_chunk:
         before = re.sub(
             r"(?is)^(.+?\(S\d+\))\s+.*:\s*$",
             r"\1 continues the same uninterrupted utterance from the previous chunk: ",
