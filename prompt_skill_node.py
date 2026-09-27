@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import comfy.model_management
-from comfy_api.latest import io
+from comfy_api.latest import io, ui
 
 from .director_backend import resolve_director_selection
 from .director_config import HRDirectorConfig, normalize_qwen38_config
@@ -52,6 +52,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
                 io.Int.Output(display_name="planned frames"),
                 HRH3PromptPlan.Output(display_name="prompt plan"),
             ],
+            is_output_node=True,
             is_experimental=True,
         )
 
@@ -104,6 +105,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             json.dumps(report, ensure_ascii=False, indent=2),
             int(result["planned_frames"]),
             typed_plan,
+            ui=ui.PreviewText(json.dumps(typed_plan, ensure_ascii=False, indent=2)),
         )
 
 
@@ -133,6 +135,7 @@ class HRH3PromptPlanEditor(io.ComfyNode):
                 io.String.Output(display_name="validated plan JSON"),
                 io.String.Output(display_name="validation report"),
             ],
+            is_output_node=True,
             is_experimental=True,
         )
 
@@ -165,8 +168,10 @@ class HRH3PromptPlanEditor(io.ComfyNode):
             "shots": len(edited["shots"]),
             "dialogues": sum(len(shot.get("dialogues", ())) for shot in edited["shots"]),
         }
+        validated_json = json.dumps(edited, ensure_ascii=False, indent=2)
         return io.NodeOutput(
             edited,
-            json.dumps(edited, ensure_ascii=False, indent=2),
+            validated_json,
             json.dumps(report, ensure_ascii=False, indent=2),
+            ui=ui.PreviewText(validated_json),
         )
