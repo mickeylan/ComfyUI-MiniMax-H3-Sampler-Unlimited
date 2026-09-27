@@ -1505,6 +1505,7 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
         dialogue_fragments.append((
             speaker, fragment,
             overlap_start == dialogue_start and not dialogue.get("continues_from_previous"),
+            overlap_start, overlap_end,
         ))
 
     parts = []
@@ -1513,10 +1514,13 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
             "Continue the already established shot without a cut, reframing, zoom, or restart of completed action."
         )
     vocal_action = re.compile(r"\b(?:speak|speaks|speaking|say|says|reply|replies|answer|answers|vocalize|vocalizes)\b|(?:说话|说道|回答)", re.IGNORECASE)
+    unique_speakers = list(dict.fromkeys(active_speakers))
     allowed_events = []
     for event in active_events:
         actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
         actor_label = f"<Subject {int(actor['subject'])}>" if actor is not None else ""
+        if len(unique_speakers) > 1:
+            continue
         if active_speakers and actor_label and actor_label not in active_speakers:
             continue
         if active_speakers and vocal_action.search(str(event.get("action", ""))) and actor_label not in active_speakers:
@@ -1544,18 +1548,23 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
     else:
         parts.append("Maintain the established post-action body orientation, positions, and composition; allow only natural breathing, lip movement, and subtle expression changes.")
 
-    if active_speakers:
-        unique_speakers = list(dict.fromkeys(active_speakers))
-        for speaker in unique_speakers:
-            silent = [
-                f"<Subject {int(item['subject'])}>" for item in subjects_by_entity.values()
-                if str(item.get("kind", "")).lower() == "character" and f"<Subject {int(item['subject'])}>" != speaker
-            ]
+    for speaker, fragment, first_fragment, overlap_start, overlap_end in dialogue_fragments:
+        silent = [
+            f"<Subject {int(item['subject'])}>" for item in subjects_by_entity.values()
+            if str(item.get("kind", "")).lower() == "character" and f"<Subject {int(item['subject'])}>" != speaker
+        ]
+        if len(unique_speakers) > 1:
+            offset = max(0.0, (overlap_start - frame_start) / float(fps))
+            parts.append(
+                f"At {offset:.3f} seconds, begin a strict speaker handoff: only {speaker} vocalizes until this exact dialogue fragment ends; "
+                + (", ".join(dict.fromkeys(silent)) + " keep their lips and jaws completely still. " if silent else "no other character vocalizes. ")
+                + "Do not overlap voices, transfer words, or move another character's mouth."
+            )
+        else:
             parts.append(f"Only {speaker} vocalizes the current dialogue; " + (
                 ", ".join(dict.fromkeys(silent)) + " keep their lips and jaws completely still."
                 if silent else "no other character vocalizes."
             ))
-    for speaker, fragment, first_fragment in dialogue_fragments:
         if first_fragment:
             parts.append(
                 f"{speaker} is already clearly visible on screen with closed lips before the first audible word; establish this speaker visually, then begin the line."
@@ -1650,6 +1659,8 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
     chunk_speakers = set(prompt_plan_speakers(plan, frame_start, frame_end))
     summary_events = []
     for event in projected_events:
+        if len(chunk_speakers) > 1:
+            continue
         actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
         actor_label = f"<Subject {int(actor['subject'])}>" if actor is not None else ""
         if chunk_speakers and actor_label and actor_label not in chunk_speakers:

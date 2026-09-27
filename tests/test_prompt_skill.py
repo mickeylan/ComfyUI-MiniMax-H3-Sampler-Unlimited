@@ -1354,6 +1354,32 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("keep <Subject 1> visibly identifiable with the speaking mouth unobstructed", retention)
         self.assertIn("do not restart the utterance from its beginning", retention)
 
+    def test_multi_speaker_chunk_uses_sequential_handoff_without_visual_action(self):
+        plan = {
+            "fps": 10.0, "total_frames": 40, "non_diegetic_music": "N/A",
+            "image_subjects": [
+                {"entity_id": "asset_1", "picture": 1, "subject": 1, "kind": "character", "name": "A", "observable_features": "blue robe"},
+                {"entity_id": "asset_2", "picture": 2, "subject": 2, "kind": "character", "name": "B", "observable_features": "red robe"},
+            ],
+            "shots": [{
+                "start_frame": 0, "end_frame": 40, "pictures": [1, 2], "camera": "two-shot",
+                "start_state": "A and B face each other", "end_state": "B holds A's hand",
+                "events": [{"id": "S1.V1", "actor": "asset_2", "action": "asset_2 steps forward and takes asset_1's hand", "start_frame": 0, "end_frame": 40}],
+                "dialogues": [
+                    {"id": "S1.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1", "language": "English", "text": "Question?", "delivery": "quietly", "start_frame": 0, "end_frame": 20},
+                    {"id": "S1.D2", "kind": "dialogue", "speaker": "<Subject 2>", "speaker_id": "S2", "language": "English", "text": "Answer.", "delivery": "calmly", "start_frame": 20, "end_frame": 40},
+                ],
+                "forbidden_replays": [], "audio": "wind", "visual_description": "B reaches for A",
+            }],
+        }
+        localized = prompt_skill.localize_prompt_from_plan("", plan, frame_start=0, frame_end=40)
+        self.assertNotIn("steps forward", localized)
+        self.assertNotIn("takes <Subject 1>'s hand", localized)
+        self.assertIn("At 0.000 seconds, begin a strict speaker handoff: only <Subject 1> vocalizes", localized)
+        self.assertIn("At 2.000 seconds, begin a strict speaker handoff: only <Subject 2> vocalizes", localized)
+        self.assertNotIn("Only <Subject 1> vocalizes the current dialogue", localized)
+        self.assertNotIn("Only <Subject 2> vocalizes the current dialogue", localized)
+
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
         plan = {
