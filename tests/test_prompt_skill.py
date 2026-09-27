@@ -1205,7 +1205,7 @@ class PromptSkillTests(unittest.TestCase):
         }, subjects, "both women hold hands and maintain eye contact")
         self.assertNotIn("steps forward", action)
         self.assertNotIn("takes her hand", action)
-        self.assertIn("do not repeat its opening movement", action)
+        self.assertIn("Do not restart, step again, reach again, release, or re-grip", action)
         self.assertIn("both women hold hands", action)
 
     def test_completing_visual_event_holds_final_state(self):
@@ -1213,7 +1213,7 @@ class PromptSkillTests(unittest.TestCase):
             "action": "steps forward and takes her hand", "interval_phase": "complete",
         }, {}, "their joined hands remain steady")
         self.assertNotIn("steps forward", action)
-        self.assertIn("Complete only the remaining motion once", action)
+        self.assertIn("Finish only any visibly incomplete motion once", action)
         self.assertIn("their joined hands remain steady", action)
 
     def test_reply_visual_action_waits_for_previous_speaker_to_finish(self):
@@ -1287,9 +1287,38 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("continues the same uninterrupted utterance from the previous chunk", prompt)
 
     def test_visual_state_removes_noncanonical_speaking_words(self):
-        state = prompt_skill._visual_state("Subject 3 finishes speaking while Subject 4 answers calmly")
-        self.assertNotRegex(state, r"\b(?:speaking|answers)\b")
+        state = prompt_skill._visual_state("Subject 3 finishes her speech while Subject 4 answers calmly")
+        self.assertNotRegex(state, r"\b(?:speech|speaking|answers)\b")
         self.assertIn("maintains eye contact", state)
+
+    def test_non_speaker_physical_action_waits_during_current_dialogue(self):
+        shot = {
+            "start_frame": 0, "end_frame": 40, "start_state": "A and B face each other",
+            "end_state": "B reaches for A", "dialogues": [{
+                "speaker": "<Subject 1>", "speaker_id": "S1", "kind": "dialogue",
+                "language": "English", "text": "Are you ready?", "delivery": "quietly",
+                "start_frame": 0, "end_frame": 40,
+            }],
+        }
+        subjects = {
+            "asset_1": {"subject": 1, "kind": "character"},
+            "asset_2": {"subject": 2, "kind": "character"},
+        }
+        prompt = prompt_skill._localized_shot_description(
+            shot, 0, 40, 24.0,
+            ({"actor": "asset_2", "action": "asset_2 steps forward and reaches for asset_1", "interval_phase": "start"},),
+            subjects,
+        )
+        self.assertNotIn("steps forward", prompt)
+        self.assertNotIn("reaches for", prompt)
+        self.assertIn("Only <Subject 1> vocalizes", prompt)
+
+    def test_duplicate_event_phase_controls_are_emitted_once(self):
+        subjects = {"asset_1": {"subject": 1, "kind": "character"}}
+        shot = {"start_frame": 0, "end_frame": 40, "end_state": "A holds position", "dialogues": []}
+        event = {"actor": "asset_1", "action": "asset_1 turns", "interval_phase": "continue"}
+        prompt = prompt_skill._localized_shot_description(shot, 10, 30, 24.0, (event, dict(event)), subjects)
+        self.assertEqual(prompt.count("Preserve the action progress already visible"), 1)
 
     def test_no_dialogue_chunk_does_not_prepare_a_speaker(self):
         shot = {

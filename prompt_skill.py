@@ -1437,9 +1437,9 @@ def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str,
             action = f"{label}{' ' + name if name and name.casefold() not in action.casefold() else ''} {action}"
     phase = str(event.get("interval_phase", "start"))
     if phase == "continue":
-        return "Continue only from the currently visible progress of this already-started action; do not repeat its opening movement. " + (f"Move steadily toward this ending state: {end_state}." if end_state else "")
+        return "Preserve the action progress already visible in the continuation frames. Do not restart, step again, reach again, release, or re-grip. " + (f"Keep the visible result stable toward this ending state: {end_state}." if end_state else "")
     if phase == "complete":
-        return "Complete only the remaining motion once, then stop and hold the established result. " + (f"Settle into this ending state: {end_state}." if end_state else "")
+        return "Finish only any visibly incomplete motion once, then lock the result. Do not step again, reach again, release, or re-grip. " + (f"Hold this ending state: {end_state}." if end_state else "")
     if phase == "start_complete":
         return action + " Perform this action once, then stop and hold its completed state."
     return action
@@ -1448,7 +1448,7 @@ def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str,
 def _visual_state(text: Any) -> str:
     value = str(text or "").strip()
     value = re.sub(
-        r"\b(?:speaks?|speaking|says?|saying|answers?|answering|replies?|replying|finishes speaking)\b",
+        r"\b(?:finishes?\s+(?:speaking|her speech|his speech|the speech|her sentence|his sentence|the sentence)|speaks?|speaking|says?|saying|answers?|answering|replies?|replying|speech|sentence|vocal(?:izes?|izing|ization)?)\b",
         "maintains eye contact",
         value,
         flags=re.IGNORECASE,
@@ -1505,20 +1505,23 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
     for event in active_events:
         actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
         actor_label = f"<Subject {int(actor['subject'])}>" if actor is not None else ""
+        if active_speakers and actor_label and actor_label not in active_speakers:
+            continue
         if active_speakers and vocal_action.search(str(event.get("action", ""))) and actor_label not in active_speakers:
             continue
         allowed_events.append({**event, "action": _visual_state(event.get("action", ""))})
     if allowed_events:
-        parts.extend(filter(None, (
+        event_parts = filter(None, (
             _localized_event_action(event, subjects_by_entity, _visual_state(shot.get("end_state", "")))
             for event in allowed_events
-        )))
+        ))
+        parts.extend(dict.fromkeys(event_parts))
     elif active_events or frame_start > int(shot["start_frame"]):
         state = _visual_state(shot.get("start_state" if frame_start <= int(shot["start_frame"]) else "end_state", ""))
         parts.append(
             "Hold the established positions, body orientation, eye lines, and framing without starting any pending action."
             + (" Every mouth and jaw remains completely still." if scripted_dialogue_complete else "")
-            + (f" Preserve this visible state: {state}." if state else "")
+            + (f" Preserve this visible state: {state}." if state and not active_speakers else "")
         )
     elif frame_start <= int(shot["start_frame"]):
         visual = _visual_state(shot.get("visual_description", shot.get("description", "")))
