@@ -29,8 +29,11 @@ def _dialogue_split_index(text: str, position: int) -> int:
         run_end = position
         while run_end < len(text) and re.match(r"[\u3400-\u9fff]", text[run_end]):
             run_end += 1
-        if run_end - run_start >= 4 and (position - run_start) % 2:
-            position -= 1
+        if run_end - run_start >= 4:
+            if run_end - position <= 1:
+                position = run_end - 2
+            elif (position - run_start) % 2 == 0:
+                position -= 1
     if position <= 2:
         return 0
     if position >= len(text) - 1:

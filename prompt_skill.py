@@ -54,6 +54,13 @@ def _nonverbal_soundscape(*values: Any) -> str:
     return ", ".join(dict.fromkeys(parts))
 
 
+def _soundscape_sentence(value: str) -> str:
+    text = str(value or "").strip().rstrip(".。 ")
+    if not text:
+        return "The established ambient sound continues naturally through the chunk."
+    return text[0].upper() + text[1:] + "."
+
+
 def _spoken_lines(story: str) -> tuple[str, ...]:
     matches = []
     for pattern_order, pattern in enumerate((_DIALOGUE_TAG, _SPOKEN_QUOTE)):
@@ -623,6 +630,22 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     if extended_frames:
         message += f" Extended the H3 timeline by {extended_frames} frame(s) so visible speakers appear before speaking."
     return normalized, [message]
+
+
+def _close_dialogue_timeline_gaps(shots: list[dict[str, Any]]) -> None:
+    dialogues = [
+        item
+        for shot in shots
+        for item in shot.get("dialogues", ())
+        if isinstance(item, dict) and str(item.get("text", "")).strip()
+    ]
+    for current, following in zip(dialogues, dialogues[1:]):
+        if not current.get("continues_to_next") or not following.get("continues_from_previous"):
+            continue
+        current_end = int(current["end_frame"])
+        following_start = int(following["start_frame"])
+        if current_end < following_start:
+            current["end_frame"] = following_start
 
 
 def _normalize_event_id(value: Any, shot_index: int, event_index: int) -> str:
@@ -1262,6 +1285,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
             forbidden_replays=[str(item).strip() for item in forbidden if str(item).strip()],
             audio=audio,
         )
+    _close_dialogue_timeline_gaps(plan["shots"])
     returned_spoken = [item["text"] for shot in plan["shots"] for item in shot.get("dialogues", ())]
     exact_spoken = returned_spoken == list(required_spoken)
     split_spoken = "".join(returned_spoken) == "".join(required_spoken)
@@ -1324,6 +1348,46 @@ def validate_h3_identity_contract(prompt: str, plan: dict[str, Any]) -> None:
     for number in re.findall(r"<Subject\s+(\d+)>\s*\(S\d+\)", str(prompt), re.IGNORECASE):
         if kinds.get(int(number)) != "character":
             raise ValueError(f"H3 identity contract violation: Subject {number} speaks but is not a character")
+
+
+def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> None:
+    text = str(prompt)
+    headings = (
+        "subject_definitions:", "summary:", "retention_analysis:",
+        "detailed_description:", "overall_soundscape:", "non_diegetic_music:",
+    )
+    positions = [text.find(heading) for heading in headings]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        raise ValueError("H3 chunk prompt must contain the six full-reference sections in guide order")
+    if re.search(r"(?<![A-Za-z0-9_])asset_?\d+(?![A-Za-z0-9_])", text, re.IGNORECASE):
+        raise ValueError("H3 chunk prompt leaks private asset_N identifiers")
+
+    retention = text[positions[2] + len(headings[2]):positions[3]]
+    if re.search(r"(?:Camera contract|Current state|Required ending state|Forbidden replay|Only the active events)", retention, re.IGNORECASE):
+        raise ValueError("H3 retention_analysis must contain reference preservation relationships only")
+
+    soundscape = text[positions[4] + len(headings[4]):positions[5]]
+    music = text[positions[5] + len(headings[5]):].strip()
+    if music.upper() == "N/A" and _MUSIC_SOUND.search(soundscape):
+        raise ValueError("H3 overall_soundscape contains music while non_diegetic_music is N/A")
+
+    semantic_cuts = {
+        int(shot["start_frame"])
+        for shot in plan.get("shots", ())[1:]
+        if frame_start <= int(shot["start_frame"]) <= frame_end
+    }
+    if "<scenetrans>" in text and not semantic_cuts:
+        raise ValueError("H3 chunk prompt uses <scenetrans> without a real semantic shot cut")
+
+    dialogue_continues = any(
+        int(dialogue.get("end_frame", shot["end_frame"])) > frame_end
+        for shot in plan.get("shots", ())
+        for dialogue in shot.get("dialogues", ())
+        if int(dialogue.get("start_frame", shot["start_frame"])) < frame_end
+        and int(dialogue.get("end_frame", shot["end_frame"])) > frame_start
+    )
+    if not dialogue_continues and "continues into the next chunk" in text:
+        raise ValueError("H3 final dialogue fragment incorrectly claims continuation into the next chunk")
 
 
 def compile_prompt_skill(value: Any, request: dict[str, Any]) -> dict[str, Any]:
@@ -1578,41 +1642,31 @@ def project_prompt_plan_interval(plan: dict[str, Any], *, frame_start: int, fram
 
 
 def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str, dict[str, Any]], end_state: str = "") -> str:
-    action = str(event.get("action", "")).strip()
+    action = _subject_text(event.get("action", ""), subjects_by_entity)
     if not action:
         return ""
-    for entity_id, subject in subjects_by_entity.items():
-        action = re.sub(
-            rf"(?<!\w){re.escape(entity_id)}(?!\w)",
-            f"<Subject {int(subject['subject'])}>",
-            action,
-            flags=re.IGNORECASE,
-        )
     actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
     if actor is not None and str(actor.get("kind", "")).lower() == "character":
         label = f"<Subject {int(actor['subject'])}>"
         if label.casefold() not in action.casefold():
-            name = str(actor.get("name", "")).strip()
-            action = f"{label}{' ' + name if name and name.casefold() not in action.casefold() else ''} {action}"
+            action = f"{label} {action}"
     phase = str(event.get("interval_phase", "start"))
     if phase == "continue":
-        return "Preserve the action progress already visible in the continuation frames. Do not restart, step again, reach again, release, or re-grip. " + (f"Keep the visible result stable toward this ending state: {end_state}." if end_state else "")
+        return "Continue the motion already visible in the continuation frames" + (f" toward this observable ending state: {end_state}." if end_state else ".")
     if phase == "complete":
-        return "Finish only any visibly incomplete motion once, then lock the result. Do not step again, reach again, release, or re-grip. " + (f"Hold this ending state: {end_state}." if end_state else "")
+        return "Complete the remaining visible motion and settle naturally" + (f" into this ending state: {end_state}." if end_state else ".")
     if phase == "start_complete":
-        return action + " Perform this action once, then stop and hold its completed state."
+        return action + " Complete the action and settle naturally into its resulting pose."
     return action
 
 
 def _subject_text(text: Any, subjects_by_entity: dict[str, dict[str, Any]]) -> str:
     value = str(text or "").strip()
     for entity_id, subject in subjects_by_entity.items():
-        value = re.sub(
-            rf"(?<!\w){re.escape(entity_id)}(?!\w)",
-            f"<Subject {int(subject['subject'])}>",
-            value,
-            flags=re.IGNORECASE,
-        )
+        label = f"<Subject {int(subject['subject'])}>"
+        for alias in (entity_id, str(subject.get("name", "")).strip()):
+            if alias:
+                value = re.sub(rf"(?<!\w){re.escape(alias)}(?!\w)", label, value, flags=re.IGNORECASE)
     return value
 
 
@@ -1669,9 +1723,7 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
 
     parts = []
     if frame_start > int(shot["start_frame"]):
-        parts.append(
-            "Continue the already established shot without a cut, reframing, zoom, or restart of completed action."
-        )
+        parts.append("The established shot continues from <Video 1> with the same camera axis, framing, and spatial relationships.")
     vocal_action = re.compile(r"\b(?:speak|speaks|speaking|say|says|reply|replies|answer|answers|vocalize|vocalizes)\b|(?:说话|说道|回答)", re.IGNORECASE)
     unique_speakers = list(dict.fromkeys(active_speakers))
     allowed_events = []
@@ -1694,9 +1746,9 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
     elif active_events or frame_start > int(shot["start_frame"]):
         state = _visual_state(shot.get("start_state" if frame_start <= int(shot["start_frame"]) else "end_state", ""), subjects_by_entity)
         parts.append(
-            "Hold the established positions, body orientation, eye lines, and framing without starting any pending action."
-            + (" Every mouth and jaw remains completely still." if scripted_dialogue_complete else "")
-            + (f" Preserve this visible state: {state}." if state and not active_speakers else "")
+            "The characters maintain their established positions, body orientation, eye lines, and framing."
+            + (" Every mouth and jaw remains still." if scripted_dialogue_complete else "")
+            + (f" The visible state remains: {state}." if state and not active_speakers else "")
         )
     elif frame_start <= int(shot["start_frame"]):
         visual = _visual_state(shot.get("visual_description", shot.get("description", "")), subjects_by_entity)
@@ -1772,18 +1824,26 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         str(item.get("entity_id", "")).strip(): item
         for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
     }
+    active_pictures = set(active_prompt_plan_pictures(plan, frame_start=frame_start, frame_end=frame_end))
+    active_entities = {
+        str(item.get("entity_id", "")).strip()
+        for item in plan["image_subjects"]
+        if int(item.get("picture", 0) or 0) in active_pictures
+    }
+    projected_events = tuple(
+        event for event in projected_events
+        if not str(event.get("actor", "")).strip() or str(event.get("actor", "")).strip() in active_entities
+    )
     subjects = []
     for item in plan["image_subjects"]:
         picture = int(item.get("picture", 0) or 0)
-        features = _subject_text(item.get("observable_features", ""), subjects_by_entity)
-        if scripted_dialogue_complete:
-            definition = f"<Subject {int(item.get('subject', picture))}> is the silent visual identity from <Picture {picture}>"
-        else:
-            definition = (
-                f"<Subject {int(item.get('subject', picture))}> is {str(item.get('name', '')).strip()} "
-                f"from <Picture {picture}>"
-            )
-        subjects.append(definition + (f": {features}." if features else "."))
+        if picture not in active_pictures:
+            continue
+        features = _subject_text(item.get("observable_features", ""), subjects_by_entity).rstrip(".。 ")
+        kind = str(item.get("kind", "")).strip().lower()
+        role = "character" if kind == "character" else "visible environment or object"
+        definition = f"<Subject {int(item.get('subject', picture))}> is the {role} defined by <Picture {picture}>"
+        subjects.append(definition + (f", with {features}." if features else "."))
     subjects.extend(
         line.strip()
         for line in str(prompt).splitlines()
@@ -1797,7 +1857,7 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
             milliseconds = round(max(0, int(shot["start_frame"]) - int(frame_start)) * 1000 / float(plan["fps"]))
             minutes, remainder = divmod(milliseconds, 60000)
             seconds, milliseconds = divmod(remainder, 1000)
-            marker += f" At {minutes:02d}:{seconds:02d}.{milliseconds:03d},"
+            marker += f" At {minutes:02d}:{seconds:02d}.{milliseconds:03d}, the camera cuts to"
         shot_events = tuple(
             event for event in projected_events
             if int(shot["start_frame"]) <= int(event["start_frame"]) < int(shot["end_frame"])
@@ -1807,6 +1867,14 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
             scripted_dialogue_complete=scripted_dialogue_complete,
             previous_chunk_speakers=previous_chunk_speakers,
         )
+        referenced_subjects = {int(number) for number in re.findall(r"<Subject\s+(\d+)>", description, re.IGNORECASE)}
+        active_subjects = {
+            int(item.get("subject", item.get("picture", 0)))
+            for item in plan["image_subjects"]
+            if int(item.get("picture", 0) or 0) in active_pictures
+        }
+        if referenced_subjects - active_subjects:
+            description = "The established composition and visible states continue without introducing an off-screen referenced subject."
         if scripted_dialogue_complete:
             description = " ".join(filter(None, (
                 description,
@@ -1831,51 +1899,39 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         if localized:
             summary_events.append(localized)
     summary_body = " ".join(dict.fromkeys(summary_events))
-    summary = "[video continuation + reference generation] " + (
-        summary_body or "Follow detailed_description exactly; do not add, restart, or advance any action or vocalization not explicitly present there."
+    active_labels = [
+        f"<Subject {int(item.get('subject', item.get('picture', 0)))}>"
+        for item in plan["image_subjects"]
+        if int(item.get("picture", 0) or 0) in active_pictures
+    ]
+    if chunk_speakers:
+        current_content = " and ".join(sorted(chunk_speakers)) + " carry the current spoken passage"
+    elif summary_body:
+        current_content = summary_body
+    else:
+        current_content = "the established composition and visible character states continue"
+    summary = (
+        "[video continuation + reference generation] The target chunk continues from <Video 1>, preserving "
+        + (", ".join(active_labels) if active_labels else "the active referenced content")
+        + f" while {current_content}."
     )
     retention = [
-        f"<Subject {int(item.get('subject', item.get('picture', 0)))}>: fully_preserved - preserve the identity and visible attributes from <Picture {int(item.get('picture', 0))}>."
+        f"<Subject {int(item.get('subject', item.get('picture', 0)))}>: fully_preserved - the identity and visible attributes defined by <Picture {int(item.get('picture', 0))}> remain consistent."
         for item in plan["image_subjects"]
-        if int(item.get("picture", 0) or 0) > 0
+        if int(item.get("picture", 0) or 0) in active_pictures
     ]
-    for shot in active:
-        shot_speakers = prompt_plan_speakers(
-            {"shots": [shot]}, max(frame_start, int(shot["start_frame"])), min(frame_end, int(shot["end_frame"]))
-        )
-        if shot_speakers:
-            retention.append(
-                "Camera contract: keep " + ", ".join(shot_speakers)
-                + " visibly identifiable with the speaking mouth unobstructed; listeners remain visibly silent."
-            )
-        else:
-            retention.append(f"Camera contract: {_subject_text(shot['camera'], subjects_by_entity)}.")
-        if int(frame_start) <= int(shot["start_frame"]):
-            retention.append(f"Opening state: {_visual_state(shot['start_state'], subjects_by_entity)}.")
-        else:
-            retention.append("Current state: preserve the established post-action orientation, positions, and composition from the continuation frames.")
-        if int(shot["end_frame"]) <= int(frame_end):
-            retention.append(f"Required ending state: {_visual_state(shot['end_state'], subjects_by_entity)}.")
-        for item in shot.get("forbidden_replays", ()):
-            text = _subject_text(item, subjects_by_entity).strip()
-            if not text:
-                continue
-            if re.search(r"\b(?:dialogue|speech|utterance)\b", text, re.IGNORECASE):
-                retention.append("Dialogue continuation contract: do not restart the utterance from its beginning; continue only the remaining exact text in detailed_description.")
-            else:
-                retention.append(f"Forbidden replay: {text}.")
-    retention.extend(projection["forbidden"])
-    if scripted_dialogue_complete:
-        retention.append("Spoken-audio contract: all scripted dialogue is complete; keep every mouth and jaw motionless, do not invent any words or vocalization, and never pronounce subject names or text from subject_definitions.")
-    retention.append(
-        f"Only the active events scheduled inside frames [{frame_start},{frame_end}) may occur; "
-        "pending events must not begin and completed events must not restart."
+    video_labels = sorted(set(re.findall(r"<Video\s+(\d+)>", "\n".join(subjects), re.IGNORECASE)), key=int)
+    retention.extend(
+        f"<Video {number}>: fully_preserved - its final camera, composition, spatial relationships, and ongoing motion define this chunk's opening state."
+        for number in video_labels
     )
     local_soundscape = _nonverbal_soundscape(*(
         shot["audio"] for shot in active
         if scripted_dialogue_complete or int(frame_start) <= int(shot["start_frame"]) < int(frame_end)
     ))
-    soundscape = local_soundscape or _nonverbal_soundscape(plan.get("overall_soundscape", "")) or "The established ambient room tone continues without interruption."
+    soundscape = _soundscape_sentence(
+        local_soundscape or _nonverbal_soundscape(plan.get("overall_soundscape", ""))
+    )
     return "\n\n".join((
         "subject_definitions:\n" + ("\n".join(subjects) or "None."),
         "summary:\n" + summary,

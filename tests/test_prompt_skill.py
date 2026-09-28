@@ -1197,8 +1197,8 @@ class PromptSkillTests(unittest.TestCase):
         localized = prompt_skill.localize_prompt_from_plan(
             current_chunk_prompt, typed_plan, frame_start=0, frame_end=22
         )
-        self.assertIn("Hero", localized)
-        self.assertIn("footsteps", localized)
+        self.assertNotIn("Hero", localized)
+        self.assertIn("Footsteps", localized)
         self.assertNotIn("opens the door", localized)
         self.assertNotIn("door creak", localized)
 
@@ -1221,8 +1221,8 @@ class PromptSkillTests(unittest.TestCase):
         localized = prompt_skill.localize_prompt_from_plan(
             "detailed_description:\nunused", plan, frame_start=0, frame_end=39,
         )
-        expected = "<Subject 3> 上官若彤 从桃林深处缓步走出，步伐轻盈，神情关切"
-        self.assertIn("summary:\n[video continuation + reference generation] " + expected, localized)
+        expected = "<Subject 3> 从桃林深处缓步走出，步伐轻盈，神情关切"
+        self.assertIn("summary:\n[video continuation + reference generation] The target chunk continues from <Video 1>", localized)
         self.assertIn("[Shot 1] " + expected, localized)
         self.assertNotIn("summary:\n从桃林深处", localized)
 
@@ -1240,9 +1240,9 @@ class PromptSkillTests(unittest.TestCase):
             "overall_soundscape:\nroar\n\nnon_diegetic_music:\nN/A",
             normalized, frame_start=22, frame_end=56,
         )
-        self.assertIn("Future Dragon", localized)
-        self.assertIn("<Subject 3> is Future Dragon from <Picture 3>", localized)
-        self.assertIn("<Subject 1> is Hero from <Picture 1>", localized)
+        self.assertNotIn("Future Dragon", localized)
+        self.assertIn("<Subject 3> is the visible environment or object defined by <Picture 3>", localized)
+        self.assertNotIn("<Subject 1>", localized)
         items = [
             {"kind": "image", "id": 1}, {"kind": "image", "id": 2},
             {"kind": "image", "id": 3}, {"kind": "video", "id": 4},
@@ -1279,11 +1279,11 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("All scripted dialogue has ended", localized)
         self.assertIn("Every character keeps their lips sealed with no mouth or jaw movement", localized)
         self.assertIn("subject_definitions are silent identity metadata", localized)
-        self.assertIn("never pronounce subject names", localized)
-        self.assertIn("<Subject 4> is the silent visual identity from <Picture 4>", localized)
+        self.assertIn("must never be spoken aloud", localized)
+        self.assertIn("<Subject 4> is the character defined by <Picture 4>", localized)
         self.assertNotIn("上官若琳", localized)
         self.assertNotIn("lip movement", localized)
-        self.assertIn("overall_soundscape:\nsoft wind", localized)
+        self.assertIn("overall_soundscape:\nSoft wind.", localized)
 
     def test_localized_soundscape_removes_voice_instructions_and_keeps_ambience(self):
         plan = {
@@ -1299,7 +1299,7 @@ class PromptSkillTests(unittest.TestCase):
             "non_diegetic_music": "N/A",
         }
         localized = prompt_skill.localize_prompt_from_plan("", plan, frame_start=0, frame_end=39)
-        self.assertIn("overall_soundscape:\nsoft wind, distant birds", localized)
+        self.assertIn("overall_soundscape:\nSoft wind, distant birds.", localized)
         self.assertNotIn("Voice of", localized)
         self.assertNotIn("Dialogue", localized)
 
@@ -1316,7 +1316,7 @@ class PromptSkillTests(unittest.TestCase):
             "non_diegetic_music": "N/A",
         }
         localized = prompt_skill.localize_prompt_from_plan("", plan, frame_start=0, frame_end=39)
-        self.assertIn("overall_soundscape:\nsteady forest ambience", localized)
+        self.assertIn("overall_soundscape:\nSteady forest ambience.", localized)
         self.assertNotIn("overall_soundscape:\nN/A", localized)
 
     def test_first_spoken_fragment_establishes_stable_voice_profile(self):
@@ -1351,6 +1351,23 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotRegex(compiled["prompt"], r"\basset_\d+\b")
         self.assertIn("<Subject 1> opens the door", compiled["prompt"])
 
+    def test_chunk_prompt_validator_rejects_private_ids_and_false_scene_transitions(self):
+        plan = {
+            "shots": [{"start_frame": 0, "end_frame": 80, "dialogues": []}],
+            "image_subjects": [],
+        }
+        prompt = (
+            "subject_definitions:\nNone.\n\nsummary:\n[video continuation] asset_1 continues.\n\n"
+            "retention_analysis:\n<Video 1>: fully_preserved - continuation.\n\n"
+            "detailed_description:\n[Shot 1] <d>[Chinese] <scenetrans> 继续。</d>\n\n"
+            "overall_soundscape:\nSoft wind.\n\nnon_diegetic_music:\nN/A"
+        )
+        with self.assertRaisesRegex(ValueError, "private asset_N"):
+            prompt_skill.validate_h3_chunk_prompt(prompt, plan, frame_start=0, frame_end=40)
+        prompt = prompt.replace("asset_1", "<Subject 1>")
+        with self.assertRaisesRegex(ValueError, "without a real semantic shot cut"):
+            prompt_skill.validate_h3_chunk_prompt(prompt, plan, frame_start=0, frame_end=40)
+
     def test_localized_event_action_removes_internal_asset_ids(self):
         subjects = {
             "asset_3": {"subject": 3, "kind": "character", "name": "A"},
@@ -1370,7 +1387,7 @@ class PromptSkillTests(unittest.TestCase):
         }, subjects, "both women hold hands and maintain eye contact")
         self.assertNotIn("steps forward", action)
         self.assertNotIn("takes her hand", action)
-        self.assertIn("Do not restart, step again, reach again, release, or re-grip", action)
+        self.assertIn("Continue the motion already visible", action)
         self.assertIn("both women hold hands", action)
 
     def test_completing_visual_event_holds_final_state(self):
@@ -1378,7 +1395,7 @@ class PromptSkillTests(unittest.TestCase):
             "action": "steps forward and takes her hand", "interval_phase": "complete",
         }, {}, "their joined hands remain steady")
         self.assertNotIn("steps forward", action)
-        self.assertIn("Finish only any visibly incomplete motion once", action)
+        self.assertIn("Complete the remaining visible motion", action)
         self.assertIn("their joined hands remain steady", action)
 
     def test_reply_visual_action_waits_for_previous_speaker_to_finish(self):
@@ -1483,7 +1500,7 @@ class PromptSkillTests(unittest.TestCase):
         shot = {"start_frame": 0, "end_frame": 40, "end_state": "A holds position", "dialogues": []}
         event = {"actor": "asset_1", "action": "asset_1 turns", "interval_phase": "continue"}
         prompt = prompt_skill._localized_shot_description(shot, 10, 30, 24.0, (event, dict(event)), subjects)
-        self.assertEqual(prompt.count("Preserve the action progress already visible"), 1)
+        self.assertEqual(prompt.count("Continue the motion already visible"), 1)
 
     def test_no_dialogue_chunk_does_not_prepare_a_speaker(self):
         shot = {
@@ -1493,7 +1510,7 @@ class PromptSkillTests(unittest.TestCase):
         prompt = prompt_skill._localized_shot_description(shot, 20, 40, 24.0, (), {}, True)
         self.assertNotIn("first audible word", prompt)
         self.assertNotIn("begin the line", prompt)
-        self.assertIn("Every mouth and jaw remains completely still", prompt)
+        self.assertIn("Every mouth and jaw remains still", prompt)
 
     def test_localized_sections_do_not_reintroduce_future_action_or_internal_ids(self):
         plan = {
@@ -1516,8 +1533,8 @@ class PromptSkillTests(unittest.TestCase):
         retention = localized.split("retention_analysis:\n", 1)[1].split("\n\ndetailed_description:", 1)[0]
         self.assertNotIn("reaches toward", summary)
         self.assertNotRegex(localized, r"\basset_\d+\b")
-        self.assertIn("keep <Subject 1> visibly identifiable with the speaking mouth unobstructed", retention)
-        self.assertIn("do not restart the utterance from its beginning", retention)
+        self.assertNotIn("Camera contract", retention)
+        self.assertNotIn("Dialogue continuation contract", retention)
 
     def test_multi_speaker_chunk_uses_sequential_handoff_without_visual_action(self):
         plan = {
@@ -1576,12 +1593,55 @@ class PromptSkillTests(unittest.TestCase):
         self.assertTrue(all("across the cut" not in prompt for prompt in prompts))
         self.assertTrue(all("into the next shot" not in prompt for prompt in prompts))
         self.assertTrue(all("continues into the next chunk without a pause or restart" in prompt for prompt in prompts[:-1]))
-        self.assertNotIn("without a cut, reframing, zoom", prompts[0])
-        self.assertTrue(all("without a cut, reframing, zoom" in prompt for prompt in prompts[1:]))
+        self.assertNotIn("established shot continues from <Video 1>", prompts[0])
+        self.assertTrue(all("established shot continues from <Video 1>" in prompt for prompt in prompts[1:]))
         self.assertIn("turns once", prompts[0])
         self.assertTrue(all("turns once" not in prompt for prompt in prompts[1:]))
         self.assertIn("衣袂随转身摩擦声", prompts[0])
         self.assertTrue(all("衣袂随转身摩擦声" not in prompt for prompt in prompts[1:]))
+
+    def test_physical_chunk_sizes_preserve_one_exact_utterance_without_false_cuts(self):
+        text = "姐姐，自从你跟太运宗使者比试之后，这十年你都没有怎么好好闭关修炼过。这样真的来得及吗？"
+        total_frames = 360
+        plan = {
+            "fps": 24.0, "total_frames": total_frames, "non_diegetic_music": "N/A",
+            "image_subjects": [{"entity_id": "asset_1", "picture": 1, "subject": 1, "kind": "character", "name": "Asset1", "observable_features": "dark hair"}],
+            "shots": [{
+                "start_frame": 0, "end_frame": total_frames, "pictures": [1], "camera": "static medium shot",
+                "start_state": "the speaker is visible", "end_state": "the speaker completes her question",
+                "events": [], "forbidden_replays": [], "audio": "soft wind", "visual_description": "The speaker maintains eye contact.",
+                "dialogues": [{"id": "S1.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1", "language": "Chinese", "text": text, "delivery": "concerned", "start_frame": 0, "end_frame": total_frames}],
+            }],
+        }
+        for chunk_frames in (39, 56, 73):
+            prompts = []
+            cursor = 0
+            while cursor < total_frames:
+                end = min(total_frames, cursor + chunk_frames)
+                prompts.append(prompt_skill.localize_prompt_from_plan("<Video 1> is the continuation source.", plan, frame_start=cursor, frame_end=end))
+                cursor = end
+            fragments = [
+                re.sub(r"^\s*\[[^]]+\]\s*", "", item).strip()
+                for localized in prompts
+                for item in re.findall(r"<d>(.*?)</d>", localized, re.DOTALL)
+            ]
+            self.assertEqual("".join(fragments), text)
+            self.assertTrue(all("<scenetrans>" not in localized for localized in prompts))
+            self.assertNotIn("continues into the next chunk", prompts[-1])
+            for index, localized in enumerate(prompts):
+                prompt_skill.validate_h3_chunk_prompt(
+                    localized, plan,
+                    frame_start=index * chunk_frames,
+                    frame_end=min(total_frames, (index + 1) * chunk_frames),
+                )
+
+    def test_dialogue_fragments_form_one_continuous_global_interval(self):
+        shots = [
+            {"dialogues": [{"text": "first", "start_frame": 100, "end_frame": 160, "continues_to_next": True}]},
+            {"dialogues": [{"text": "second", "start_frame": 240, "end_frame": 320, "continues_from_previous": True}]},
+        ]
+        prompt_skill._close_dialogue_timeline_gaps(shots)
+        self.assertEqual(shots[0]["dialogues"][0]["end_frame"], 240)
 
     def test_event_timeline_advances_once_across_physical_chunks(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
@@ -1597,7 +1657,7 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("enters the temple", " ".join(third["forbidden"]))
         third_prompt = prompt_skill.localize_prompt_from_plan("", plan, frame_start=22, frame_end=39)
         self.assertNotIn("enters the temple", third_prompt)
-        self.assertIn("Do not restart completed event S1.V1", third_prompt)
+        self.assertNotIn("Do not restart completed event S1.V1", third_prompt)
         self.assertIn("opens the door", third_prompt)
 
     def test_continuous_beat_does_not_claim_a_camera_cut(self):
