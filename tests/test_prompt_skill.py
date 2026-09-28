@@ -1110,6 +1110,20 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(captured["director_backend"], "qwen3.5")
         self.assertEqual(result["planned_frames"], 56)
 
+    def test_rebases_stale_editor_timeline_to_extended_compiler_plan(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        original = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        extended = {**original, "total_frames": 73, "shots": [dict(item) for item in original["shots"]]}
+        extended["shots"][-1]["end_frame"] = 73
+        stale = {**original, "total_frames": 56, "shots": [dict(item) for item in original["shots"]]}
+        stale["shots"][0]["camera"] = "manually edited locked camera"
+        rebased, warnings = prompt_skill.rebase_prompt_plan_timeline(extended, stale)
+        normalized = prompt_skill.normalize_prompt_plan(rebased, fps=24.0, total_frames=73)
+        self.assertEqual(normalized["total_frames"], 73)
+        self.assertEqual(normalized["shots"][-1]["end_frame"], 73)
+        self.assertEqual(normalized["shots"][0]["camera"], "manually edited locked camera")
+        self.assertTrue(any("Rebased stale editor timeline" in warning for warning in warnings))
+
     def test_builds_versioned_typed_plan_without_changing_legacy_outputs(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         typed_plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)

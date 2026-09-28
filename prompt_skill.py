@@ -1428,6 +1428,52 @@ def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[
     return {**value, "image_subjects": [dict(item) for item in subjects], "shots": normalized_shots}
 
 
+def rebase_prompt_plan_timeline(original: dict[str, Any], candidate: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Move stale editor JSON onto the connected Compiler plan's current timeline."""
+    current_total = int(original["total_frames"])
+    stale_total = int(candidate.get("total_frames", current_total) or current_total)
+    rebased = {**candidate, "fps": float(original["fps"]), "total_frames": current_total}
+    if stale_total == current_total:
+        return rebased, []
+    original_shots = original.get("shots", ())
+    candidate_shots = candidate.get("shots", ())
+    if not isinstance(candidate_shots, (list, tuple)) or len(candidate_shots) != len(original_shots):
+        return dict(original), [
+            "Replaced stale editor JSON because its total_frames and shot count no longer match the connected Compiler plan."
+        ]
+    restored_shots = []
+    for stale_shot, current_shot in zip(candidate_shots, original_shots):
+        if not isinstance(stale_shot, dict):
+            return dict(original), [
+                "Replaced stale editor JSON because it contains a non-object shot on an obsolete timeline."
+            ]
+        shot = {
+            **stale_shot,
+            "start_frame": int(current_shot["start_frame"]),
+            "end_frame": int(current_shot["end_frame"]),
+        }
+        for field in ("events", "dialogues"):
+            stale_items = stale_shot.get(field, ())
+            current_items = current_shot.get(field, ())
+            if isinstance(stale_items, (list, tuple)) and len(stale_items) == len(current_items):
+                shot[field] = [
+                    {
+                        **dict(stale_item),
+                        "start_frame": int(current_item.get("start_frame", current_shot["start_frame"])),
+                        "end_frame": int(current_item.get("end_frame", current_shot["end_frame"])),
+                    }
+                    for stale_item, current_item in zip(stale_items, current_items)
+                    if isinstance(stale_item, dict) and isinstance(current_item, dict)
+                ]
+            else:
+                shot[field] = [dict(item) for item in current_items]
+        restored_shots.append(shot)
+    rebased["shots"] = restored_shots
+    return rebased, [
+        f"Rebased stale editor timeline from {stale_total} to {current_total} frames using the connected Compiler plan."
+    ]
+
+
 def rebase_prompt_plan_edit(original: dict[str, Any], edited: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     original_by_picture = {
         int(item["picture"]): dict(item)

@@ -11,7 +11,7 @@ from .director_backend import resolve_director_selection
 from .director_config import HRDirectorConfig, normalize_qwen38_config
 from .prompt_skill import (
     CONTINUITY_MODES, build_prompt_skill_request, build_typed_prompt_plan,
-    normalize_prompt_plan, rebase_prompt_plan_edit, validate_prompt_plan_edit,
+    normalize_prompt_plan, rebase_prompt_plan_edit, rebase_prompt_plan_timeline, validate_prompt_plan_edit,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images
@@ -160,8 +160,10 @@ class HRH3PromptPlanEditor(io.ComfyNode):
             if not isinstance(supplied, dict):
                 raise ValueError("edited_plan_json root must be an object")
             candidate = supplied if supplied.get("type") else {**original, **supplied}
+            candidate, timeline_warnings = rebase_prompt_plan_timeline(original, candidate)
             edited = normalize_prompt_plan(candidate, fps=fps, total_frames=total_frames)
-            edited, rebase_warnings = rebase_prompt_plan_edit(original, edited)
+            edited, contract_warnings = rebase_prompt_plan_edit(original, edited)
+            rebase_warnings = [*timeline_warnings, *contract_warnings]
             validate_prompt_plan_edit(original, edited)
         else:
             edited = original
