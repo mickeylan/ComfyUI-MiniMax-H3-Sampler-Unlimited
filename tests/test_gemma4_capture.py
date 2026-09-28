@@ -23,50 +23,6 @@ import gemma4_mtp  # noqa: E402
 
 
 class GemmaCaptureTest(unittest.TestCase):
-    def test_llama_0349_negative_multimodal_token_is_native_decode_failure(self):
-        self.assertTrue(gemma4._is_native_decode_failure(
-            "Llama.eval: invalid negative token id at index 958: -10910136"
-        ))
-        self.assertTrue(gemma4._is_native_decode_failure(
-            "Llama.eval(decode): Failed completely even with batch size 1."
-        ))
-        self.assertFalse(gemma4._is_native_decode_failure("invalid Prompt Skill structure"))
-
-    def test_mtp_resolves_only_beside_selected_model_without_download(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            model = root / "selected-gemma.gguf"
-            mtp = root / "my-selected-mtp.gguf"
-            model.touch()
-            mtp.touch()
-            self.assertEqual(gemma4._ensure_mtp_model_file(model), mtp.resolve())
-
-    def test_missing_local_mtp_reports_selected_directory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            model = Path(directory) / "selected-gemma.gguf"
-            model.touch()
-            with self.assertRaisesRegex(gemma4.Gemma4DependencyError, "Automatic download is disabled"):
-                gemma4._ensure_mtp_model_file(model)
-
-    def test_prompt_skill_compile_uses_gemma_without_mtp_for_mtmd_media(self):
-        director = gemma4.Gemma4ContinuityDirector(gemma4_mtp=True)
-        image = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
-        compiled = {"prompt": "compiled by Gemma", "planned_frames": 22}
-        captured = {}
-
-        def worker(request, progress_callback=None):
-            captured.update(request)
-            return compiled
-
-        with patch.object(gemma4, "_prompt_skill_in_worker", side_effect=worker):
-            result = director.compile_prompt_skill({"story": "test"}, (image,))
-
-        self.assertIs(result, compiled)
-        self.assertEqual(captured["director_backend"], "gemma4")
-        self.assertFalse(captured["gemma4_mtp"])
-        self.assertEqual(len(captured["image_urls"]), 1)
-        self.assertTrue(captured["image_urls"][0].startswith("data:image/jpeg;base64,"))
-
     @staticmethod
     def request():
         return {

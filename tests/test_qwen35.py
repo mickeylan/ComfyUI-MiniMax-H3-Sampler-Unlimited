@@ -191,10 +191,10 @@ class Qwen35Tests(unittest.TestCase):
                 "target_start": start, "target_end": end,
             }])
             actions.append(next(item["action"] for item in coverage if item["id"] == "S1.O1"))
-        spoken = [action.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0] for action in actions]
+        spoken = [action.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "") for action in actions]
         self.assertEqual("".join(spoken), "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗")
         self.assertNotEqual(actions[0], actions[1])
-        self.assertIn("continues speaking", actions[1])
+        self.assertIn("continues the same uninterrupted utterance from the previous chunk", actions[1])
 
     def test_timing_parser_keeps_a_valid_interval_when_action_text_is_missing(self):
         value = {
@@ -639,6 +639,10 @@ class Qwen35Tests(unittest.TestCase):
 
     def test_prompt_skill_has_large_deterministic_response_budget(self):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
+
+    def test_qwen35_multimodal_batch_contains_one_complete_image_embedding(self):
+        self.assertGreaterEqual(qwen35.QWEN35_BATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
+        self.assertLess(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_BATCH_SIZE)
 
     def test_prompt_skill_unwraps_known_result_containers(self):
         plan = {"image_subjects": [], "shots": []}

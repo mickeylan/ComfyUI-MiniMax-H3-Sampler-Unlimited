@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from typing import Any
 
 try:
@@ -29,6 +30,28 @@ _NAMED_SPOKEN_QUOTE = re.compile(
     r"([^\s，。；：:\"“”<>]{1,32})\s*(?:说|说道|问|询问|喊|喊道|回答|答道|低语|耳语)\s*[：:]\s*[\"“](.*?)[\"”]",
     re.DOTALL,
 )
+_VERBAL_SOUND = re.compile(
+    r"\b(?:dialogue|speech|spoken|speaking|says?|asks?|replies?|whispers?|shouts?|voice(?:over)?|vocal(?:ization)?|words?|conversation|singing|lyrics?)\b",
+    re.IGNORECASE,
+)
+_MUSIC_SOUND = re.compile(
+    r"\b(?:music|score|instrumental|melody|chimes?|flute|guzheng|piano|strings?|orchestra|bgm)\b|(?:音乐|配乐|乐曲|伴奏|古筝|笛子|钢琴|弦乐)",
+    re.IGNORECASE,
+)
+_MUSIC_INTENT = re.compile(
+    r"\b(?:background music|music|score|soundtrack|instrumental|bgm)\b|(?:背景音乐|配乐|音乐|乐曲|伴奏)",
+    re.IGNORECASE,
+)
+
+
+def _nonverbal_soundscape(*values: Any) -> str:
+    parts = []
+    for value in values:
+        for part in re.split(r"(?<=[.!?])\s+|\s*[,;]\s*", str(value or "").strip()):
+            part = part.strip()
+            if part and part.upper() != "N/A" and _VERBAL_SOUND.search(part) is None and _MUSIC_SOUND.search(part) is None:
+                parts.append(part)
+    return ", ".join(dict.fromkeys(parts))
 
 
 def _spoken_lines(story: str) -> tuple[str, ...]:
@@ -36,6 +59,7 @@ def _spoken_lines(story: str) -> tuple[str, ...]:
     for pattern_order, pattern in enumerate((_DIALOGUE_TAG, _SPOKEN_QUOTE)):
         for match in pattern.finditer(story):
             text = re.sub(r"^\s*\[[^\]]+\]\s*", "", match.group(1)).strip()
+            text = "".join(character for character in text if unicodedata.category(character) != "Cf").strip()
             if text:
                 matches.append((match.start(), pattern_order, text))
     return tuple(text for _start, _pattern_order, text in sorted(matches))
@@ -152,18 +176,17 @@ Hard rules:
 - Every event has one stable ID such as S2.V1 and may start in only one shot.
 - Every shot has camera, start_state, events, dialogues, end_state, forbidden_replays, audio, start_frame, and end_frame.
 - Each event contains id, action, and phase (start, continue, or complete).
-- Preserve every user-provided spoken line verbatim; never translate, paraphrase, shorten, or invent dialogue; never split it. One complete source utterance belongs to exactly one real shot.
+- Preserve every user-provided spoken line verbatim; never translate, paraphrase, shorten, or invent dialogue. A long line may be split into consecutive dialogue fragments across adjacent shots only when those fragments concatenate to the exact original line.
+- When one utterance crosses a shot cut, both adjoining fragments belong to the same uninterrupted vocal event. Do not restart it with says/asks/replies, do not insert a pause or new breath, and never begin a later fragment with isolated punctuation. The compiler adds the required H3 <scenetrans> markers.
 - The numbered mandatory spoken-line list is chronological and authoritative. dialogues across shots and within each shot must follow that exact global order; never swap speakers or reorder fragments for dramatic effect.
 - Each dialogue contains id, kind, speaker, speaker_id, language, text, and delivery. kind is dialogue, monologue, or voiceover. Use stable speaker IDs S1, S2, ... across all shots.
-- Never divide one source utterance across real shots. Allocate one shot long enough for its complete natural delivery; if no shot can hold it, the plan is invalid and must be corrected.
-- Physical sampler chunk boundaries are not story cuts and must not divide, rewrite, or assign character ranges inside a source utterance. Use <cutoff> only when the complete video's final frame genuinely truncates unfinished source speech.
 - dialogue.text contains only the exact spoken words without quotation marks or <d> tags. dialogue.language names the spoken language, regardless of prompt_lang.
 - Visible referenced speakers use speaker="asset_N". That entity must be classified as kind=character and included in the same shot's pictures list. A scene or prop can never speak.
 - For kind=voiceover, the compiled prompt will state that the corresponding on-screen speaker's lips remain completely closed.
 - kind=dialogue is spoken to another character; kind=monologue is audible self-directed speech with visible lip movement; kind=voiceover is off-screen narration or internal narration with no lip movement.
 - Dialogue is concurrent with visual events, not a replacement visual event. Do not repeat dialogue in audio or overall_soundscape.
 - A visible speaker must already be present in that shot's start_state, pictures, and description before their first spoken fragment begins. Never schedule a character to enter in a later shot after they have already spoken.
-- Allocate enough shot duration for natural speech at approximately 4 Chinese characters per second or 2.5 English words per second, plus punctuation pauses. When dialogue exists, its complete natural delivery duration owns the total timeline even when shorter or longer than the requested duration. The sum of dialogue delivery time assigned to one shot must never exceed that shot's frame interval. Never split a line across shots or accelerate/overlap it.
+- Allocate enough shot duration for natural speech at approximately 4 Chinese characters per second or 2.5 English words per second, plus punctuation pauses. When dialogue exists, its complete natural delivery duration owns the total timeline even when shorter or longer than the requested duration. The sum of dialogue delivery time assigned to one shot must never exceed that shot's frame interval. Split long lines across consecutive shots instead of accelerating or overlapping them.
 - In a two-person conversation, classify addressed questions and replies as dialogue, not monologue. Keep the question on its actual asker and the reply on its actual respondent.
 - A later shot must use already/completed language instead of restarting an earlier action.
 - Preserve the same camera across adjacent shots when the story action or dialogue is continuous. Change camera side, scale, height, movement, or subject arrangement only for an intentional story cut; never invent a cut merely to make adjacent camera strings different.
@@ -206,7 +229,7 @@ Shot density: {request.get('shot_density', 'medium')}.
 Connected pictures:
 {inventory}
 
-Mandatory spoken lines detected verbatim in the story, in authoritative chronological order. Preserve every numbered occurrence as one complete dialogues.text value in this exact global order. Never split a line across shots, and do not omit, reorder, or rewrite any character or punctuation:
+Mandatory spoken lines detected verbatim in the story, in authoritative chronological order. Preserve every numbered occurrence in dialogues.text and this exact global order. A long line may be divided into consecutive fragments across adjacent shots, but concatenating all fragments must reproduce the original lines exactly. Do not omit, reorder, or rewrite any character or punctuation:
 {spoken_inventory}
 
 Authoritative speaker-to-character bindings extracted from the source story. Apply these bindings to every fragment and every shot; never remap a speaker ID:
@@ -224,7 +247,7 @@ Return JSON with:
     "camera": "specific camera setup",
     "start_state": "visible opening state",
     "events": [{{"id":"S1.V1","actor":"asset_1","action":"one observable event using <Entity asset_1>","phase":"start"}}],
-    "dialogues": [{{"id":"S1.D1","utterance_id":"U1","kind":"dialogue","speaker":"asset_1","speaker_id":"S1","language":"Chinese","text":"exact user-provided words","delivery":"quietly with a warm voice"}}],
+    "dialogues": [{{"id":"S1.D1","kind":"dialogue","speaker":"asset_1","speaker_id":"S1","language":"Chinese","text":"exact user-provided words","delivery":"quietly with a warm voice"}}],
     "end_state": "visible final state usable by the next shot",
     "forbidden_replays": ["completed event or old composition that must not return"],
     "audio": "ambient, physical, and non-verbal synchronized sound only; exclude dialogue",
@@ -312,8 +335,24 @@ def _normalize_shot_intervals(value: Any, total_frames: int) -> tuple[Any, list[
 
 def _restore_required_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
     required = tuple(str(item).strip() for item in request.get("required_spoken_lines", ()) if str(item).strip())
-    if not required or not isinstance(value, dict) or not isinstance(value.get("shots"), list):
+    if not isinstance(value, dict) or not isinstance(value.get("shots"), list):
         return value, []
+    if not required:
+        invented = sum(
+            len(shot.get("dialogues", ()))
+            for shot in value["shots"]
+            if isinstance(shot, dict) and isinstance(shot.get("dialogues", ()), list)
+        )
+        if not invented:
+            return value, []
+        normalized = dict(value)
+        normalized["shots"] = [
+            dict(shot, dialogues=[]) if isinstance(shot, dict) else shot
+            for shot in value["shots"]
+        ]
+        return normalized, [
+            f"Removed {invented} model-invented dialogue occurrence(s) because the source story contains no spoken dialogue."
+        ]
     slots = []
     for shot_index, shot in enumerate(value["shots"]):
         if not isinstance(shot, dict) or not isinstance(shot.get("dialogues", []), list):
@@ -408,12 +447,70 @@ def _dialogue_prefix_for_frames(text: str, available_frames: int, fps: float) ->
     return low
 
 
+def _dialogue_semantic_cut(text: str, cut: int) -> int:
+    candidates = [match.end() for match in re.finditer(r"[。！？!?；;，,]", text[:cut])]
+    useful = [index for index in candidates if index >= max(3, cut // 2)]
+    return useful[-1] if useful else cut
+
+
+def _extend_shot_intervals(shots: list[dict[str, Any]], normalized_shots: list[dict[str, Any]],
+                           start_index: int, extra_frames: int) -> int:
+    old_total = int(shots[-1]["end_frame"])
+    new_total = planned_frame_count(old_total + int(extra_frames), 1.0)
+    delta = new_total - old_total
+    durations = [int(shot["end_frame"]) - int(shot["start_frame"]) for shot in shots[start_index:]]
+    duration_total = sum(durations)
+    cursor = int(shots[start_index]["start_frame"])
+    allocated = 0
+    for offset, duration in enumerate(durations):
+        target = round(delta * sum(durations[:offset + 1]) / duration_total)
+        addition = target - allocated
+        allocated = target
+        index = start_index + offset
+        shots[index]["start_frame"] = cursor
+        shots[index]["end_frame"] = cursor + duration + addition
+        normalized_shots[index]["start_frame"] = cursor
+        normalized_shots[index]["end_frame"] = cursor + duration + addition
+        cursor += duration + addition
+    return delta
+
+
+def _first_visible_shot(shots: list[dict[str, Any]], subject: str, request: dict[str, Any]) -> int:
+    match = re.fullmatch(r"<Subject\s+(\d+)>", subject, re.IGNORECASE)
+    if match is None:
+        return 0
+    picture = int(match.group(1))
+    source = next((
+        item for item in request.get("source_image_contract", ())
+        if isinstance(item, dict) and int(item.get("picture", 0) or 0) == picture
+    ), None)
+    if source is None:
+        return 0
+    entity_id = str(source.get("entity_id", "")).strip()
+    name = str(source.get("name", "")).strip()
+    patterns = [re.escape(entity_id)] if entity_id else []
+    if name:
+        patterns.append(re.escape(name))
+    for index, shot in enumerate(shots):
+        if not isinstance(shot, dict):
+            continue
+        if any(
+            isinstance(event, dict) and str(event.get("actor", "")).strip().casefold() == entity_id.casefold()
+            for event in shot.get("events", ())
+        ):
+            return index
+        visible_text = " ".join(str(shot.get(field, "")) for field in ("start_state", "description"))
+        if patterns and re.search("|".join(patterns), visible_text, re.IGNORECASE):
+            return index
+    return 0
+
+
 def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
     if float(request.get("minimum_spoken_duration_seconds", 0.0)) <= 0.0:
         return value, []
     if not isinstance(value, dict) or not isinstance(value.get("shots"), list):
         return value, []
-    shots = value["shots"]
+    shots = [dict(shot) if isinstance(shot, dict) else shot for shot in value["shots"]]
     dialogues = []
     for shot_index, shot in enumerate(shots):
         if not isinstance(shot, dict) or not isinstance(shot.get("dialogues", []), list):
@@ -445,32 +542,74 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     fps = float(request["fps"])
     used = [0] * len(shots)
     current_shot = 0
-    for utterance_index, (_original_shot, dialogue) in enumerate(dialogues, 1):
-        full_text = str(dialogue["text"]).strip()
-        utterance_id = str(dialogue.get("utterance_id", "")).strip() or f"U{utterance_index}"
-        while current_shot < len(shots):
-            capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
-            required_frames = math.ceil(_line_spoken_duration_seconds(full_text) * fps)
-            if required_frames <= capacity:
-                break
-            # Dialogue does not fit in current shot — skip this shot, do NOT split the dialogue.
-            current_shot += 1
-        if current_shot >= len(shots):
-            raise ValueError(
-                f"Mandatory spoken dialogue '{full_text[:20]}...' requires "
-                f"{required_frames} frames but no remaining shot has enough capacity. "
-                "Adjust shot timing so each dialogue fits entirely within one shot."
+    split_count = 0
+    extended_frames = 0
+    for _original_shot, dialogue in dialogues:
+        if str(dialogue.get("kind", "dialogue")).strip().lower() != "voiceover":
+            current_shot = max(current_shot, _first_visible_shot(shots, str(dialogue.get("speaker", "")), request))
+        remaining = str(dialogue["text"]).strip()
+        required_line_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
+        available_line_frames = sum(
+            int(shots[index]["end_frame"]) - int(shots[index]["start_frame"]) - used[index]
+            for index in range(current_shot, len(shots))
+        )
+        if required_line_frames > available_line_frames:
+            added = _extend_shot_intervals(
+                shots, normalized_shots, current_shot, required_line_frames - available_line_frames
             )
-        item = dict(dialogue)
-        item["text"] = full_text
-        item["id"] = f"S{current_shot + 1}.D{len(normalized_shots[current_shot]['dialogues']) + 1}"
-        item["utterance_id"] = utterance_id
-        item["utterance_phase"] = "start_complete"
-        item["continues_from_previous_shot"] = False
-        item["continues_into_next_shot"] = False
-        normalized_shots[current_shot]["dialogues"].append(item)
-        used[current_shot] += required_frames
-        current_shot += 1
+            extended_frames += added
+            request["total_frames"] = int(shots[-1]["end_frame"])
+            request["duration_seconds"] = request["total_frames"] / fps
+            request["duration_source"] = "dialogue_plus_visual_lead"
+        fragment_index = 0
+        while remaining:
+            while current_shot < len(shots):
+                capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
+                if capacity > 0:
+                    break
+                current_shot += 1
+            if current_shot >= len(shots):
+                remaining_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
+                added = _extend_shot_intervals(
+                    shots, normalized_shots, len(shots) - 1, remaining_frames
+                )
+                extended_frames += added
+                request["total_frames"] = int(shots[-1]["end_frame"])
+                request["duration_seconds"] = request["total_frames"] / fps
+                request["duration_source"] = "dialogue_plus_visual_lead"
+                current_shot = len(shots) - 1
+            required_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
+            capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
+            if required_frames <= capacity:
+                fragment = remaining
+            else:
+                if not re.search(r"[\u3400-\u9fff]", remaining):
+                    current_shot += 1
+                    continue
+                cut = _dialogue_prefix_for_frames(remaining, capacity, fps)
+                if cut <= 0:
+                    current_shot += 1
+                    continue
+                cut = _dialogue_semantic_cut(remaining, cut)
+                while cut > 0 and cut < len(remaining) and remaining[cut] in "，,。！？!?；;：:":
+                    cut -= 1
+                fragment_text = re.sub(r"[，,。！？!?；;：:\s]", "", remaining[:cut])
+                if cut <= 0 or len(fragment_text) < 3:
+                    current_shot += 1
+                    continue
+                fragment = remaining[:cut]
+                split_count += 1
+            item = dict(dialogue)
+            item["text"] = fragment
+            item["id"] = f"S{current_shot + 1}.D{len(normalized_shots[current_shot]['dialogues']) + 1}"
+            item["continues_from_previous"] = fragment_index > 0
+            item["continues_to_next"] = len(fragment) < len(remaining)
+            normalized_shots[current_shot]["dialogues"].append(item)
+            used[current_shot] += math.ceil(_line_spoken_duration_seconds(fragment) * fps)
+            remaining = remaining[len(fragment):]
+            fragment_index += 1
+            if remaining:
+                current_shot += 1
     returned = "".join(
         str(item.get("text", ""))
         for shot in normalized_shots for item in shot["dialogues"]
@@ -480,9 +619,10 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
         raise ValueError("Deterministic dialogue redistribution did not preserve the exact mandatory spoken text")
     if normalized_shots == shots:
         return value, []
-    return normalized, [
-        f"Redistributed mandatory dialogue across shot frame capacity; no dialogue was split across shots."
-    ]
+    message = f"Redistributed mandatory dialogue across shot frame capacity at natural speech speed; split {split_count} fragment(s)."
+    if extended_frames:
+        message += f" Extended the H3 timeline by {extended_frames} frame(s) so visible speakers appear before speaking."
+    return normalized, [message]
 
 
 def _normalize_event_id(value: Any, shot_index: int, event_index: int) -> str:
@@ -540,22 +680,35 @@ def _dialogue_description(item: dict[str, str]) -> str:
     speaker = item["speaker"]
     speaker_id = item["speaker_id"]
     delivery = item["delivery"]
-    continues_from_cut = bool(item.get("continues_from_previous_shot", False))
-    continues_into_cut = bool(item.get("continues_into_next_shot", False))
-    tagged = f"<d>[{item['language']}] {item['text']}</d>"
-    if continues_from_cut:
-        lead = f"{speaker} ({speaker_id}) continues speaking seamlessly across the cut, {delivery}: <scenetrans> {tagged}"
+    prefix = "<scenetrans> " if item.get("continues_from_previous") else ""
+    tagged = f"<d>[{item['language']}] {prefix}{item['text']}</d>"
+    if item.get("continues_to_next"):
+        tagged += " <scenetrans>"
+    if item.get("continues_from_previous"):
+        description = f"{speaker} ({speaker_id}) carries the same voice and utterance over from the previous shot: {tagged} with synchronized visible lip movement; the audio continues seamlessly across the cut without a pause, restart, or new breath."
     elif item["kind"] == "voiceover":
-        lead = f"{speaker} ({speaker_id}) says in an off-screen voiceover, {delivery}: {tagged}"
+        description = f"{speaker} ({speaker_id}) says in an off-screen voiceover using a stable voice identity and consistent timbre, pitch, cadence, and speaking rate, {delivery}: {tagged} while the corresponding on-screen character's lips remain completely closed."
     elif item["kind"] == "monologue":
-        lead = f"{speaker} ({speaker_id}) speaks an audible monologue, {delivery}: {tagged}"
+        description = f"{speaker} ({speaker_id}) speaks an audible monologue using a stable voice identity and consistent timbre, pitch, cadence, and speaking rate, {delivery}: {tagged} with synchronized visible lip movement."
     else:
-        lead = f"{speaker} ({speaker_id}) says, {delivery}: {tagged}"
-    if continues_into_cut:
-        lead += " <scenetrans> The same utterance continues uninterrupted into the next shot."
-    if item["kind"] == "voiceover":
-        return lead + " while the corresponding on-screen character's lips remain completely closed."
-    return lead + " with synchronized visible lip movement."
+        description = f"{speaker} ({speaker_id}) says using a stable voice identity and consistent timbre, pitch, cadence, and speaking rate, {delivery}: {tagged} with synchronized visible lip movement."
+    if item.get("continues_to_next"):
+        description += " The same voice and utterance continue uninterrupted into the next shot across the cut."
+    return description
+
+
+def _dialogue_kind(value: Any) -> str:
+    raw = str(value or "").strip().casefold()
+    key = re.sub(r"[\s_-]+", " ", raw)
+    aliases = {
+        "dialogue": "dialogue", "dialog": "dialogue", "conversation": "dialogue",
+        "spoken dialogue": "dialogue", "speech": "dialogue", "对话": "dialogue", "对白": "dialogue",
+        "monologue": "monologue", "soliloquy": "monologue", "独白": "monologue", "自言自语": "monologue",
+        "voiceover": "voiceover", "voice over": "voiceover", "off screen voiceover": "voiceover",
+        "narration": "voiceover", "narrator": "voiceover", "旁白": "voiceover", "画外音": "voiceover",
+        "internal monologue": "voiceover", "inner monologue": "voiceover", "内心独白": "voiceover", "心声": "voiceover",
+    }
+    return aliases.get(key, raw)
 
 
 def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, list[str]]:
@@ -574,6 +727,10 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
         return contract[key]
 
     warnings = []
+    by_picture = {
+        int(source["picture"]): entity_id
+        for entity_id, source in contract.items()
+    }
     names = {}
     for entity_id, source in contract.items():
         name = str(source.get("name", "")).strip()
@@ -582,8 +739,18 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
 
     def compile_text(text: Any, label: str) -> str:
         result = str(text).strip()
-        if re.search(r"<(?:Subject|Picture)\s+\d+>", result, re.IGNORECASE):
-            raise ValueError(f"{label} contains compiler-owned Subject/Picture labels")
+
+        def restore_entity(match: re.Match[str]) -> str:
+            picture = int(match.group(1))
+            entity_id = by_picture.get(picture)
+            if entity_id is None:
+                raise ValueError(f"{label} references unknown compiler-owned Subject/Picture {picture}")
+            warning = f"Normalized compiler-owned <{match.group(0)[1:-1]}> to <Entity {entity_id}> in {label}."
+            if warning not in warnings:
+                warnings.append(warning)
+            return f"<Entity {entity_id}>"
+
+        result = re.sub(r"<(?:Subject|Picture)\s+(\d+)>", restore_entity, result, flags=re.IGNORECASE)
         for entity_id, source in contract.items():
             name = str(source.get("name", "")).strip()
             if not name:
@@ -611,6 +778,13 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             if str(source.get("name", "")).strip():
                 replacement += f" {str(source['name']).strip()}"
             result = re.sub(rf"<Entity\s+{re.escape(marker)}>", replacement, result, flags=re.IGNORECASE)
+        for entity_id, source in contract.items():
+            result = re.sub(
+                rf"(?<![\w>]){re.escape(entity_id)}(?!\w)",
+                f"<Subject {int(source['picture'])}>",
+                result,
+                flags=re.IGNORECASE,
+            )
         return result
 
     character_entities = {
@@ -670,10 +844,9 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
         entries = candidates[entity_id]
         source_name = str(source.get("name", "")).strip()
         model_names = [str(raw.get("name", "")).strip() for _index, raw in entries if str(raw.get("name", "")).strip()]
-        wrong_names = [name for name in model_names if source_name and name.casefold() != source_name.casefold()]
-        if wrong_names:
-            raise ValueError(
-                f"image_subjects renamed immutable {entity_id} from {source_name!r} to {wrong_names[0]!r}"
+        if source_name and any(name != source_name for name in model_names):
+            warnings.append(
+                f"Ignored Qwen name output for immutable {entity_id}; restored canonical source name {source_name!r}."
             )
         model_kinds = {
             str(raw.get("kind", "")).strip().lower()
@@ -705,14 +878,17 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             warnings.append(f"Ignored conflicting Qwen kind values for {entity_id}; resolved kind={kind} from the source/usage contract.")
         features = []
         for _index, raw in entries:
-            feature = str(raw.get("observable_features", raw.get("description", ""))).strip()
+            feature = compile_text(
+                raw.get("observable_features", raw.get("description", "")),
+                f"image_subjects[{_index}].observable_features",
+            )
             if feature and feature not in features:
                 features.append(feature)
         normalized_subjects.append({
             "entity_id": entity_id,
             "picture": int(source["picture"]),
             "kind": kind,
-            "name": source_name or (model_names[0] if model_names else ""),
+            "name": source_name or _ascii_asset_name(model_names[0] if model_names else "", int(source["picture"])),
             "observable_features": "; ".join(features),
         })
     resolved_contract = {item["entity_id"]: item for item in normalized_subjects}
@@ -781,6 +957,18 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
                 speaker = resolved_contract[entity(speaker_id, f"shots[{shot_index}].dialogues[{dialogue_index}].speaker")["entity_id"]]
                 if str(speaker.get("kind") or "").lower() != "character":
                     raise ValueError(f"shots[{shot_index}].dialogues[{dialogue_index}] speaker {speaker['entity_id']} is not a character")
+                if str(dialogue.get("kind", "dialogue")).strip().lower() != "voiceover":
+                    forbidden_text = " ".join(str(item) for item in raw.get("forbidden_replays", ()))
+                    absent_pattern = rf"(?<!\w){re.escape(str(speaker['entity_id']))}(?!\w).*\b(?:appear|appearing|enter|entering|arrive|arriving)\b"
+                    if re.search(absent_pattern, forbidden_text, re.IGNORECASE):
+                        shot["forbidden_replays"] = [
+                            compiled for original, compiled in zip(raw.get("forbidden_replays", ()), shot["forbidden_replays"])
+                            if re.search(absent_pattern, str(original), re.IGNORECASE) is None
+                        ]
+                        warnings.append(
+                            f"Removed a contradictory forbidden-replay rule from shot {shot_index}: visible speaker "
+                            f"{speaker['entity_id']} must be allowed to appear before speaking."
+                        )
                 dialogue["speaker"] = f"<Subject {int(speaker['picture'])}>"
             dialogues.append(dialogue)
         shot["dialogues"] = dialogues
@@ -814,6 +1002,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
     value, dialogue_restore_warnings = _restore_required_dialogues(value, request)
     value, dialogue_order_warnings = _normalize_dialogue_order(value, required_spoken)
     value, dialogue_timing_warnings = _redistribute_dialogues(value, request)
+    total_frames = int(request["total_frames"])
     plan = validate_storyboard_plan(value, image_count=image_count, total_frames=total_frames)
     required_character_subjects = {
         int(match.group(1))
@@ -841,6 +1030,10 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         str(item.get("entity_id", "")): " ".join(filter(None, (
             f"<Subject {int(item['subject'])}>", str(item.get("name", "")).strip(),
         )))
+        for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
+    }
+    entity_subjects = {
+        str(item.get("entity_id", "")): f"<Subject {int(item['subject'])}>"
         for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
     }
     event_owner: dict[str, int] = {}
@@ -905,7 +1098,10 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 event_owner[event_id] = index
                 event_actions[event_id] = action
                 ledger_pending.append({"id": event_id, "summary": action, "owner_shot": index})
-            normalized_events.append({"id": event_id, "action": action, "phase": phase})
+            normalized_events.append({
+                "id": event_id, "actor": str(event.get("actor", "")).strip(),
+                "action": action, "phase": phase,
+            })
         normalized_dialogues = []
         for dialogue_index, dialogue in enumerate(dialogues, 1):
             if not isinstance(dialogue, dict):
@@ -913,20 +1109,19 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
             item = {name: str(dialogue.get(name, "")).strip() for name in (
                 "id", "kind", "speaker", "speaker_id", "language", "text", "delivery"
             )}
-            item.update({
-                "utterance_id": str(dialogue.get("utterance_id", "")).strip(),
-                "utterance_fragment": int(dialogue.get("utterance_fragment", 1) or 1),
-                "utterance_phase": str(dialogue.get("utterance_phase", "start_complete")).strip(),
-                "continues_from_previous_shot": bool(dialogue.get("continues_from_previous_shot", False)),
-                "continues_into_next_shot": bool(dialogue.get("continues_into_next_shot", False)),
-            })
+            item["continues_from_previous"] = bool(dialogue.get("continues_from_previous", False))
+            item["continues_to_next"] = bool(dialogue.get("continues_to_next", False))
             repaired_fields = []
             if not item["id"]:
                 item["id"] = f"S{index}.D{dialogue_index}"
                 repaired_fields.append("id")
+            original_kind = item["kind"]
+            item["kind"] = _dialogue_kind(original_kind)
             if not item["kind"]:
                 item["kind"] = "dialogue"
                 repaired_fields.append("kind")
+            elif item["kind"] != original_kind.casefold():
+                repaired_fields.append(f"kind={original_kind!r}->{item['kind']}")
             if not item["language"] and item["text"]:
                 item["language"] = "Chinese" if re.search(r"[\u3400-\u9fff]", item["text"]) else "English"
                 repaired_fields.append("language")
@@ -951,7 +1146,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
             if not re.fullmatch(r"S\d+\.D\d+", item["id"]) or item["id"] in dialogue_ids:
                 raise ValueError(f"shots[{index}] has an invalid or repeated dialogue id")
             if item["kind"] not in {"dialogue", "monologue", "voiceover"}:
-                raise ValueError(f"shots[{index}] has an invalid dialogue kind")
+                raise ValueError(f"shots[{index}] has an invalid dialogue kind: {original_kind!r}")
             missing = [name for name in ("speaker", "speaker_id", "language", "text", "delivery") if not item[name]]
             if not re.fullmatch(r"S\d+", item["speaker_id"]) or missing:
                 raise ValueError(f"shots[{index}] has incomplete dialogue metadata: missing={missing}, speaker_id={item['speaker_id']!r}")
@@ -1018,6 +1213,18 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 dialogue_cursor + math.ceil(_line_spoken_duration_seconds(item["text"]) * float(request["fps"])),
             )
             dialogue_cursor = item["end_frame"]
+        for event in normalized_events:
+            actor_subject = entity_subjects.get(str(event.get("actor", "")), "")
+            actor_dialogues = [item for item in normalized_dialogues if item["speaker"] == actor_subject]
+            earlier_speaker = any(
+                item["speaker"] != actor_subject and item["start_frame"] == shot_start
+                for item in normalized_dialogues
+            )
+            if actor_dialogues and earlier_speaker and re.search(
+                r"\b(?:speak|speaks|speaking|say|says|reply|replies|answer|answers)\b|(?:说话|说道|回答)",
+                event["action"], re.IGNORECASE,
+            ):
+                event["start_frame"] = min(item["start_frame"] for item in actor_dialogues)
         dialogue_frames = sum(item["end_frame"] - item["start_frame"] for item in normalized_dialogues)
         if float(request.get("minimum_spoken_duration_seconds", 0.0)) > 0.0 and dialogue_frames > shot_frames:
             raise ValueError(
@@ -1065,19 +1272,25 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         )
     if split_spoken and not exact_spoken:
         warnings.append("Accepted chronologically adjacent dialogue fragments whose concatenation exactly preserves the source spoken text.")
-    plan["summary"] = " ".join(
+    plan["summary"] = "[reference generation] " + " ".join(
         str(shot.get("visual_description", "")).strip() for shot in plan["shots"]
         if str(shot.get("visual_description", "")).strip()
     )
-    plan["retention_analysis"] = "\n".join(
+    subject_retention = [
+        f"<Subject {int(item['subject'])}>: fully_preserved - preserve the identity and visible attributes defined from <Picture {int(item['picture'])}>."
+        for item in plan["image_subjects"]
+    ]
+    shot_retention = [
         f"Shot {index}: opening={shot['start_state']}; ending={shot['end_state']}; forbidden="
         + ("; ".join(shot["forbidden_replays"]) or "none")
         for index, shot in enumerate(plan["shots"], 1)
-    )
-    plan["overall_soundscape"] = " ".join(
-        str(shot["audio"]).strip() for shot in plan["shots"]
-        if str(shot["audio"]).strip() and str(shot["audio"]).strip().upper() != "N/A"
-    ) or "N/A"
+    ]
+    plan["retention_analysis"] = "\n".join((*subject_retention, *shot_retention))
+    plan["overall_soundscape"] = _nonverbal_soundscape(*(shot["audio"] for shot in plan["shots"])) or "The established ambient room tone continues throughout the video."
+    if _MUSIC_INTENT.search(str(request.get("story", ""))) is None:
+        if str(plan.get("non_diegetic_music", "")).strip().upper() not in {"", "N/A"}:
+            warnings.append("Removed model-invented non-diegetic music because the source story did not request music.")
+        plan["non_diegetic_music"] = "N/A"
     plan["initial_event_ledger"] = {
         "completed": [], "active": [], "pending": ledger_pending, "forbidden": [],
     }
@@ -1171,6 +1384,19 @@ def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[
         pictures = tuple(int(item) for item in shot.get("pictures", ()))
         if any(picture not in declared_pictures for picture in pictures):
             raise ValueError(f"prompt_plan shot {index} references an undeclared picture")
+        for field in ("events", "dialogues", "forbidden_replays"):
+            if not isinstance(shot.get(field, ()), (list, tuple)):
+                raise ValueError(f"prompt_plan shot {index} {field} must be an array")
+        for field in ("events", "dialogues"):
+            for item_index, item in enumerate(shot.get(field, ()), 1):
+                if not isinstance(item, dict):
+                    raise ValueError(f"prompt_plan shot {index} {field}[{item_index}] must be an object")
+                item_start = int(item.get("start_frame", start))
+                item_end = int(item.get("end_frame", end))
+                if item_start < start or item_end > end or item_end <= item_start:
+                    raise ValueError(
+                        f"prompt_plan shot {index} {field}[{item_index}] has invalid interval [{item_start},{item_end})"
+                    )
         normalized_shots.append({
             **shot, "pictures": pictures, "start_frame": start, "end_frame": end,
             "cut": bool(shot.get("cut", True)),
@@ -1179,6 +1405,103 @@ def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[
     if previous_end != total_frames:
         raise ValueError("prompt_plan shots do not cover the complete latent")
     return {**value, "image_subjects": [dict(item) for item in subjects], "shots": normalized_shots}
+
+
+def rebase_prompt_plan_edit(original: dict[str, Any], edited: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    original_by_picture = {
+        int(item["picture"]): dict(item)
+        for item in original["image_subjects"]
+    }
+    edited_pictures = [int(item["picture"]) for item in edited["image_subjects"]]
+    if len(edited_pictures) != len(set(edited_pictures)) or set(edited_pictures) != set(original_by_picture):
+        raise ValueError("edited prompt plan must preserve the complete Picture identity set")
+    if len(edited["shots"]) != len(original["shots"]):
+        return original, [
+            "Replaced stale editor JSON because the currently connected Compiler plan has a different shot count."
+        ]
+    restored = [original_by_picture[picture] for picture in edited_pictures]
+    changed = restored != [dict(item) for item in edited["image_subjects"]]
+    rebased = {**edited, "image_subjects": restored, "shots": [dict(shot) for shot in edited["shots"]]}
+    warnings = [
+        "Restored immutable Picture/Subject identity fields from the currently connected Compiler plan."
+    ] if changed else []
+
+    def items(plan, field):
+        return [item for shot in plan["shots"] for item in shot.get(field, ())]
+
+    original_events = items(original, "events")
+    edited_events = items(rebased, "events")
+    if len(edited_events) == len(original_events):
+        event_changed = False
+        for current, stale in zip(original_events, edited_events):
+            for field in ("id", "actor"):
+                if stale.get(field) != current.get(field):
+                    stale[field] = current.get(field)
+                    event_changed = True
+        if event_changed:
+            warnings.append("Restored event IDs and actors from the currently connected Compiler plan by event order.")
+    else:
+        for shot, current in zip(rebased["shots"], original["shots"]):
+            shot["events"] = [dict(item) for item in current.get("events", ())]
+        warnings.append("Replaced stale event edits because the currently connected Compiler plan has a different event count.")
+
+    original_dialogues = items(original, "dialogues")
+    edited_dialogues = items(rebased, "dialogues")
+    if len(edited_dialogues) == len(original_dialogues):
+        dialogue_changed = False
+        immutable = ("id", "speaker", "speaker_id", "kind", "language", "text")
+        for current, stale in zip(original_dialogues, edited_dialogues):
+            for field in immutable:
+                if stale.get(field) != current.get(field):
+                    stale[field] = current.get(field)
+                    dialogue_changed = True
+        if dialogue_changed:
+            warnings.append("Restored immutable dialogue ownership and text from the currently connected Compiler plan by dialogue order.")
+    else:
+        for shot, current in zip(rebased["shots"], original["shots"]):
+            shot["dialogues"] = [dict(item) for item in current.get("dialogues", ())]
+        warnings.append("Replaced stale dialogue edits because the currently connected Compiler plan has a different dialogue count.")
+    return rebased, warnings
+
+
+def validate_prompt_plan_edit(original: dict[str, Any], edited: dict[str, Any]) -> None:
+    original_subjects = {
+        int(item["picture"]): (
+            int(item["subject"]), str(item.get("entity_id", "")), str(item.get("kind", "")), str(item.get("name", "")),
+        )
+        for item in original["image_subjects"]
+    }
+    edited_subjects = {
+        int(item["picture"]): (
+            int(item["subject"]), str(item.get("entity_id", "")), str(item.get("kind", "")), str(item.get("name", "")),
+        )
+        for item in edited["image_subjects"]
+    }
+    if edited_subjects != original_subjects:
+        raise ValueError("edited prompt plan must preserve Picture/Subject identity, entity IDs, kinds, and names")
+
+    def dialogue_contract(plan):
+        return [
+            (
+                str(item.get("id", "")), str(item.get("speaker", "")), str(item.get("speaker_id", "")),
+                str(item.get("kind", "")), str(item.get("language", "")), str(item.get("text", "")),
+            )
+            for shot in plan["shots"]
+            for item in shot.get("dialogues", ())
+        ]
+
+    if dialogue_contract(edited) != dialogue_contract(original):
+        raise ValueError("edited prompt plan must preserve dialogue IDs, speakers, kinds, languages, exact text, and order")
+
+    def event_contract(plan):
+        return [
+            (str(item.get("id", "")), str(item.get("actor", "")))
+            for shot in plan["shots"]
+            for item in shot.get("events", ())
+        ]
+
+    if event_contract(edited) != event_contract(original):
+        raise ValueError("edited prompt plan must preserve event IDs, actors, and order; edit action text or timing instead")
 
 
 def prompt_plan_shots(plan: dict[str, Any]) -> list[tuple[int, int, int, str, bool]]:
@@ -1202,48 +1525,6 @@ def active_prompt_plan_pictures(plan: dict[str, Any], *, frame_start: int, frame
         for shot in plan["shots"] if shot["start_frame"] < frame_end and shot["end_frame"] > frame_start
         for picture in shot.get("pictures", ()) if isinstance(picture, int) or str(picture).isdigit()
     }))
-
-
-def chunk_dialogue_contract(prompt: str) -> dict[str, Any]:
-    """Extract the sampler-owned exact dialogue contract from one local prompt."""
-    fragments = []
-    for match in _DIALOGUE_TAG.finditer(str(prompt)):
-        prefix = str(prompt)[max(0, match.start() - 500):match.start()]
-        speaker_matches = list(re.finditer(r"\((S\d+(?:\s*,\s*S\d+)*)\)", prefix, re.IGNORECASE))
-        speaker_id = speaker_matches[-1].group(1).replace(" ", "").upper() if speaker_matches else ""
-        fragments.append({
-            "text": match.group(1),
-            "speaker_id": speaker_id,
-            "continues": bool(re.search(r"continues speaking", prefix, re.IGNORECASE)),
-        })
-    return {
-        "fragments": fragments,
-        "scenetrans_count": len(re.findall(r"<scenetrans>", str(prompt), re.IGNORECASE)),
-        "cutoff_count": len(re.findall(r"<cutoff>", str(prompt), re.IGNORECASE)),
-    }
-
-
-def dialogue_contract_warnings(description: str, contract: Any, *, director_name: str) -> list[str]:
-    """Require a director to preserve sampler-owned dialogue verbatim and once."""
-    if not isinstance(contract, dict):
-        return []
-    actual = chunk_dialogue_contract(description)
-    expected = contract.get("fragments", ())
-    warnings = []
-    if [item.get("text") for item in actual["fragments"]] != [item.get("text") for item in expected]:
-        warnings.append(
-            f"{director_name} dialogue contract changed, omitted, reordered, completed, or repeated the exact current-slice <d> fragments"
-        )
-    if [item.get("speaker_id") for item in actual["fragments"]] != [item.get("speaker_id") for item in expected]:
-        warnings.append(f"{director_name} dialogue contract changed the current-slice speaker ID sequence")
-    if actual["scenetrans_count"] != int(contract.get("scenetrans_count", 0)):
-        warnings.append(f"{director_name} dialogue contract changed the real-cut <scenetrans> count")
-    if actual["cutoff_count"] != int(contract.get("cutoff_count", 0)):
-        warnings.append(f"{director_name} dialogue contract changed the final-video <cutoff> count")
-    expected_continuations = [bool(item.get("continues")) for item in expected]
-    if [item["continues"] for item in actual["fragments"]] != expected_continuations:
-        warnings.append(f"{director_name} dialogue contract restarted or stopped an ongoing utterance")
-    return warnings
 
 
 def filter_prompt_plan_picture_items(items: Any, active_pictures: tuple[int, ...], *, kind_key: str) -> list[Any]:
@@ -1296,15 +1577,63 @@ def project_prompt_plan_interval(plan: dict[str, Any], *, frame_start: int, fram
     }
 
 
-_GENERIC_SPEECH_EVENT = re.compile(
-    r"(?:\b(?:speaks?|talks?|says?|asks?|replies?|whispers?|shouts?)\b|"
-    r"(?:说话|说着|说道|开口|谈到|交谈|询问|问道|回答|答道|低语|耳语))",
-    re.IGNORECASE,
-)
+def _localized_event_action(event: dict[str, Any], subjects_by_entity: dict[str, dict[str, Any]], end_state: str = "") -> str:
+    action = str(event.get("action", "")).strip()
+    if not action:
+        return ""
+    for entity_id, subject in subjects_by_entity.items():
+        action = re.sub(
+            rf"(?<!\w){re.escape(entity_id)}(?!\w)",
+            f"<Subject {int(subject['subject'])}>",
+            action,
+            flags=re.IGNORECASE,
+        )
+    actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
+    if actor is not None and str(actor.get("kind", "")).lower() == "character":
+        label = f"<Subject {int(actor['subject'])}>"
+        if label.casefold() not in action.casefold():
+            name = str(actor.get("name", "")).strip()
+            action = f"{label}{' ' + name if name and name.casefold() not in action.casefold() else ''} {action}"
+    phase = str(event.get("interval_phase", "start"))
+    if phase == "continue":
+        return "Preserve the action progress already visible in the continuation frames. Do not restart, step again, reach again, release, or re-grip. " + (f"Keep the visible result stable toward this ending state: {end_state}." if end_state else "")
+    if phase == "complete":
+        return "Finish only any visibly incomplete motion once, then lock the result. Do not step again, reach again, release, or re-grip. " + (f"Hold this ending state: {end_state}." if end_state else "")
+    if phase == "start_complete":
+        return action + " Perform this action once, then stop and hold its completed state."
+    return action
 
 
-def _authoritative_dialogues_for_interval(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float) -> list[dict[str, Any]]:
-    result = []
+def _subject_text(text: Any, subjects_by_entity: dict[str, dict[str, Any]]) -> str:
+    value = str(text or "").strip()
+    for entity_id, subject in subjects_by_entity.items():
+        value = re.sub(
+            rf"(?<!\w){re.escape(entity_id)}(?!\w)",
+            f"<Subject {int(subject['subject'])}>",
+            value,
+            flags=re.IGNORECASE,
+        )
+    return value
+
+
+def _visual_state(text: Any, subjects_by_entity: dict[str, dict[str, Any]] | None = None) -> str:
+    value = _subject_text(text, subjects_by_entity or {})
+    value = re.sub(
+        r"\b(?:finishes?\s+(?:speaking|her speech|his speech|the speech|her sentence|his sentence|the sentence)|speaks?|speaking|says?|saying|answers?|answering|replies?|replying|speech|sentence|vocal(?:izes?|izing|ization)?)\b",
+        "maintains eye contact",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
+                                active_events: tuple[dict[str, Any], ...],
+                                subjects_by_entity: dict[str, dict[str, Any]],
+                                scripted_dialogue_complete: bool = False,
+                                previous_chunk_speakers: tuple[str, ...] | None = None) -> str:
+    dialogue_fragments = []
+    active_speakers = []
     for dialogue in shot.get("dialogues", ()):
         if not isinstance(dialogue, dict) or not str(dialogue.get("text", "")).strip():
             continue
@@ -1313,46 +1642,147 @@ def _authoritative_dialogues_for_interval(shot: dict[str, Any], frame_start: int
             "end_frame",
             min(int(shot["end_frame"]), dialogue_start + math.ceil(_line_spoken_duration_seconds(str(dialogue["text"])) * float(fps))),
         ))
-        if max(dialogue_start, int(frame_start)) < min(dialogue_end, int(frame_end)):
-            result.append(dialogue)
-    return result
+        overlap_start = max(dialogue_start, int(frame_start))
+        overlap_end = min(dialogue_end, int(frame_end))
+        if overlap_start >= overlap_end:
+            continue
+        local_dialogue = dict(dialogue)
+        if overlap_start > dialogue_start:
+            local_dialogue["continues_from_previous"] = False
+        if overlap_end < dialogue_end:
+            local_dialogue["continues_to_next"] = False
+        speaker = str(dialogue["speaker"])
+        continues_from_previous_chunk = previous_chunk_speakers is None or speaker in previous_chunk_speakers
+        fragment = slice_dialogue_for_interval(
+            _dialogue_description(local_dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end,
+            continues_from_previous_chunk=continues_from_previous_chunk,
+        )
+        if not fragment:
+            continue
+        speaker = str(dialogue["speaker"])
+        active_speakers.append(speaker)
+        dialogue_fragments.append((
+            speaker, fragment,
+            overlap_start == dialogue_start and not dialogue.get("continues_from_previous"),
+            overlap_start, overlap_end,
+        ))
 
-
-def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
-                                active_events: tuple[dict[str, Any], ...]) -> str:
     parts = []
     if frame_start > int(shot["start_frame"]):
         parts.append(
             "Continue the already established shot without a cut, reframing, zoom, or restart of completed action."
         )
-    active_dialogues = _authoritative_dialogues_for_interval(shot, frame_start, frame_end, fps)
-    if active_events:
-        parts.extend(
-            action for event in active_events
-            if (action := str(event.get("action", "")).strip())
-            and not (active_dialogues and _GENERIC_SPEECH_EVENT.search(action))
+    vocal_action = re.compile(r"\b(?:speak|speaks|speaking|say|says|reply|replies|answer|answers|vocalize|vocalizes)\b|(?:说话|说道|回答)", re.IGNORECASE)
+    unique_speakers = list(dict.fromkeys(active_speakers))
+    allowed_events = []
+    for event in active_events:
+        actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
+        actor_label = f"<Subject {int(actor['subject'])}>" if actor is not None else ""
+        if len(unique_speakers) > 1:
+            continue
+        if active_speakers and actor_label and actor_label not in active_speakers:
+            continue
+        if active_speakers and vocal_action.search(str(event.get("action", ""))) and actor_label not in active_speakers:
+            continue
+        allowed_events.append({**event, "action": _visual_state(event.get("action", ""), subjects_by_entity)})
+    if allowed_events:
+        event_parts = filter(None, (
+            _localized_event_action(event, subjects_by_entity, _visual_state(shot.get("end_state", ""), subjects_by_entity))
+            for event in allowed_events
+        ))
+        parts.extend(dict.fromkeys(event_parts))
+    elif active_events or frame_start > int(shot["start_frame"]):
+        state = _visual_state(shot.get("start_state" if frame_start <= int(shot["start_frame"]) else "end_state", ""), subjects_by_entity)
+        parts.append(
+            "Hold the established positions, body orientation, eye lines, and framing without starting any pending action."
+            + (" Every mouth and jaw remains completely still." if scripted_dialogue_complete else "")
+            + (f" Preserve this visible state: {state}." if state and not active_speakers else "")
         )
     elif frame_start <= int(shot["start_frame"]):
-        visual = str(shot.get("visual_description", shot.get("description", ""))).strip()
+        visual = _visual_state(shot.get("visual_description", shot.get("description", "")), subjects_by_entity)
         if visual:
             parts.append(visual)
+    elif scripted_dialogue_complete:
+        parts.append("Maintain the established post-action body orientation, positions, and composition; allow only subtle eye and facial-expression changes while every mouth and jaw remains completely still.")
     else:
         parts.append("Maintain the established post-action body orientation, positions, and composition; allow only natural breathing, lip movement, and subtle expression changes.")
-    parts.extend(_dialogue_description(dialogue) for dialogue in active_dialogues)
+
+    for speaker, fragment, first_fragment, overlap_start, overlap_end in dialogue_fragments:
+        silent = [
+            f"<Subject {int(item['subject'])}>" for item in subjects_by_entity.values()
+            if str(item.get("kind", "")).lower() == "character" and f"<Subject {int(item['subject'])}>" != speaker
+        ]
+        if len(unique_speakers) > 1:
+            offset = max(0.0, (overlap_start - frame_start) / float(fps))
+            parts.append(
+                f"At {offset:.3f} seconds, begin a strict speaker handoff: only {speaker} vocalizes until this exact dialogue fragment ends; "
+                + (", ".join(dict.fromkeys(silent)) + " keep their lips and jaws completely still. " if silent else "no other character vocalizes. ")
+                + "Do not overlap voices, transfer words, or move another character's mouth."
+            )
+        else:
+            parts.append(f"Only {speaker} vocalizes the current dialogue; " + (
+                ", ".join(dict.fromkeys(silent)) + " keep their lips and jaws completely still."
+                if silent else "no other character vocalizes."
+            ))
+        if first_fragment:
+            parts.append(
+                f"{speaker} is already clearly visible on screen with closed lips before the first audible word; establish this speaker visually, then begin the line."
+            )
+        parts.append(fragment)
     return " ".join(parts)
 
 
-def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
+def prompt_plan_dialogue_complete(plan: dict[str, Any], frame_start: int) -> bool:
+    dialogue_ends = [
+        int(dialogue.get("end_frame", shot["end_frame"]))
+        for shot in plan["shots"]
+        for dialogue in shot.get("dialogues", ())
+        if isinstance(dialogue, dict) and str(dialogue.get("text", "")).strip()
+    ]
+    return bool(dialogue_ends) and int(frame_start) >= max(dialogue_ends)
+
+
+def filter_prompt_plan_events(plan: dict[str, Any], events, frame_start: int):
+    if not prompt_plan_dialogue_complete(plan, frame_start):
+        return tuple(events)
+    return tuple(
+        event for event in events
+        if not re.search(r"\b(?:speak|speaks|speaking|say|says|saying|ask|asks|reply|replies|whisper|whispers|shout|shouts)\b", str(event.get("action", "")), re.IGNORECASE)
+    )
+
+
+def prompt_plan_speakers(plan: dict[str, Any], frame_start: int, frame_end: int) -> tuple[str, ...]:
+    speakers = []
+    for shot in plan["shots"]:
+        for dialogue in shot.get("dialogues", ()):
+            start = int(dialogue.get("start_frame", shot["start_frame"]))
+            end = int(dialogue.get("end_frame", shot["end_frame"]))
+            if start < frame_end and end > frame_start:
+                speakers.append(str(dialogue.get("speaker", "")).strip())
+    return tuple(dict.fromkeys(speaker for speaker in speakers if speaker))
+
+
+def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int,
+                              previous_chunk_speakers: tuple[str, ...] | None = None) -> str:
     projection = project_prompt_plan_interval(plan, frame_start=frame_start, frame_end=frame_end)
     active = projection["shots"]
+    scripted_dialogue_complete = prompt_plan_dialogue_complete(plan, frame_start)
+    projected_events = filter_prompt_plan_events(plan, projection["active"], frame_start)
+    subjects_by_entity = {
+        str(item.get("entity_id", "")).strip(): item
+        for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
+    }
     subjects = []
     for item in plan["image_subjects"]:
         picture = int(item.get("picture", 0) or 0)
-        features = str(item.get("observable_features", "")).strip()
-        definition = (
-            f"<Subject {int(item.get('subject', picture))}> is {str(item.get('name', '')).strip()} "
-            f"from <Picture {picture}>"
-        )
+        features = _subject_text(item.get("observable_features", ""), subjects_by_entity)
+        if scripted_dialogue_complete:
+            definition = f"<Subject {int(item.get('subject', picture))}> is the silent visual identity from <Picture {picture}>"
+        else:
+            definition = (
+                f"<Subject {int(item.get('subject', picture))}> is {str(item.get('name', '')).strip()} "
+                f"from <Picture {picture}>"
+            )
         subjects.append(definition + (f": {features}." if features else "."))
     subjects.extend(
         line.strip()
@@ -1361,66 +1791,107 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
     )
     local_shots = []
     localized_descriptions = []
-    local_shot_number = 1 if active and int(active[0]["start_frame"]) < int(frame_start) else 0
-    for shot in active:
-        marker = ""
-        if bool(shot.get("cut", True)) and int(shot["start_frame"]) >= int(frame_start):
-            local_shot_number += 1
-            marker = f"[Shot {local_shot_number}]"
-            if local_shot_number > 1:
-                milliseconds = round((int(shot["start_frame"]) - int(frame_start)) * 1000 / float(plan["fps"]))
-                minutes, remainder = divmod(milliseconds, 60000)
-                seconds, milliseconds = divmod(remainder, 1000)
-                marker += f" At {minutes:02d}:{seconds:02d}.{milliseconds:03d},"
+    for index, shot in enumerate(active, 1):
+        marker = f"[Shot {index}]"
+        if index > 1:
+            milliseconds = round(max(0, int(shot["start_frame"]) - int(frame_start)) * 1000 / float(plan["fps"]))
+            minutes, remainder = divmod(milliseconds, 60000)
+            seconds, milliseconds = divmod(remainder, 1000)
+            marker += f" At {minutes:02d}:{seconds:02d}.{milliseconds:03d},"
         shot_events = tuple(
-            event for event in projection["active"]
+            event for event in projected_events
             if int(shot["start_frame"]) <= int(event["start_frame"]) < int(shot["end_frame"])
         )
-        description = _localized_shot_description(shot, frame_start, frame_end, float(plan["fps"]), shot_events)
+        description = _localized_shot_description(
+            shot, frame_start, frame_end, float(plan["fps"]), shot_events, subjects_by_entity,
+            scripted_dialogue_complete=scripted_dialogue_complete,
+            previous_chunk_speakers=previous_chunk_speakers,
+        )
+        if scripted_dialogue_complete:
+            description = " ".join(filter(None, (
+                description,
+                "All scripted dialogue has ended. Every character keeps their lips sealed with no mouth or jaw movement; no dialogue, voiceover, monologue, singing, breathing sound, or other human vocalization occurs. Subject names and all text in subject_definitions are silent identity metadata and must never be spoken aloud.",
+            )))
         localized_descriptions.append(description)
         local_shots.append(f"{marker} {description}")
     local_description = "\n".join(local_shots)
-    has_active_dialogue = any(
-        _authoritative_dialogues_for_interval(shot, frame_start, frame_end, float(plan["fps"]))
-        for shot in active
+    chunk_speakers = set(prompt_plan_speakers(plan, frame_start, frame_end))
+    summary_events = []
+    for event in projected_events:
+        if len(chunk_speakers) > 1:
+            continue
+        actor = subjects_by_entity.get(str(event.get("actor", "")).strip())
+        actor_label = f"<Subject {int(actor['subject'])}>" if actor is not None else ""
+        if chunk_speakers and actor_label and actor_label not in chunk_speakers:
+            continue
+        localized = _localized_event_action(
+            {**event, "action": _visual_state(event.get("action", ""), subjects_by_entity)},
+            subjects_by_entity,
+        )
+        if localized:
+            summary_events.append(localized)
+    summary_body = " ".join(dict.fromkeys(summary_events))
+    summary = "[video continuation + reference generation] " + (
+        summary_body or "Follow detailed_description exactly; do not add, restart, or advance any action or vocalization not explicitly present there."
     )
-    summary = " ".join(
-        action for event in projection["active"]
-        if (action := str(event.get("action", "")).strip())
-        and not (has_active_dialogue and _GENERIC_SPEECH_EVENT.search(action))
-    )
-    retention = []
+    retention = [
+        f"<Subject {int(item.get('subject', item.get('picture', 0)))}>: fully_preserved - preserve the identity and visible attributes from <Picture {int(item.get('picture', 0))}>."
+        for item in plan["image_subjects"]
+        if int(item.get("picture", 0) or 0) > 0
+    ]
     for shot in active:
-        retention.append(f"Camera contract: {str(shot['camera']).strip()}.")
+        shot_speakers = prompt_plan_speakers(
+            {"shots": [shot]}, max(frame_start, int(shot["start_frame"])), min(frame_end, int(shot["end_frame"]))
+        )
+        if shot_speakers:
+            retention.append(
+                "Camera contract: keep " + ", ".join(shot_speakers)
+                + " visibly identifiable with the speaking mouth unobstructed; listeners remain visibly silent."
+            )
+        else:
+            retention.append(f"Camera contract: {_subject_text(shot['camera'], subjects_by_entity)}.")
         if int(frame_start) <= int(shot["start_frame"]):
-            retention.append(f"Opening state: {str(shot['start_state']).strip()}.")
+            retention.append(f"Opening state: {_visual_state(shot['start_state'], subjects_by_entity)}.")
         else:
             retention.append("Current state: preserve the established post-action orientation, positions, and composition from the continuation frames.")
         if int(shot["end_frame"]) <= int(frame_end):
-            retention.append(f"Required ending state: {str(shot['end_state']).strip()}.")
-        retention.extend(
-            f"Forbidden replay: {str(item).strip()}."
-            for item in shot.get("forbidden_replays", ()) if str(item).strip()
-        )
+            retention.append(f"Required ending state: {_visual_state(shot['end_state'], subjects_by_entity)}.")
+        for item in shot.get("forbidden_replays", ()):
+            text = _subject_text(item, subjects_by_entity).strip()
+            if not text:
+                continue
+            if re.search(r"\b(?:dialogue|speech|utterance)\b", text, re.IGNORECASE):
+                retention.append("Dialogue continuation contract: do not restart the utterance from its beginning; continue only the remaining exact text in detailed_description.")
+            else:
+                retention.append(f"Forbidden replay: {text}.")
     retention.extend(projection["forbidden"])
+    if scripted_dialogue_complete:
+        retention.append("Spoken-audio contract: all scripted dialogue is complete; keep every mouth and jaw motionless, do not invent any words or vocalization, and never pronounce subject names or text from subject_definitions.")
     retention.append(
         f"Only the active events scheduled inside frames [{frame_start},{frame_end}) may occur; "
         "pending events must not begin and completed events must not restart."
     )
-    soundscape = " ".join(
-        str(shot["audio"]).strip()
-        for shot in active
-        if int(frame_start) <= int(shot["start_frame"]) < int(frame_end)
-        and str(shot["audio"]).strip()
-    ) or "N/A"
+    local_soundscape = _nonverbal_soundscape(*(
+        shot["audio"] for shot in active
+        if scripted_dialogue_complete or int(frame_start) <= int(shot["start_frame"]) < int(frame_end)
+    ))
+    soundscape = local_soundscape or _nonverbal_soundscape(plan.get("overall_soundscape", "")) or "The established ambient room tone continues without interruption."
     return "\n\n".join((
         "subject_definitions:\n" + ("\n".join(subjects) or "None."),
-        "summary:\n" + (summary or "Continue only the established current interval."),
+        "summary:\n" + summary,
         "retention_analysis:\n" + "\n".join(retention),
         "detailed_description:\n" + local_description,
         "overall_soundscape:\n" + soundscape,
         "non_diegetic_music:\n" + str(plan.get("non_diegetic_music", "N/A") or "N/A").strip(),
     ))
+
+
+def _ascii_asset_name(value: Any, picture: int, *, fallback: bool = True) -> str:
+    source = str(value or "").strip()
+    if not source and not fallback:
+        return ""
+    name = "".join(character for character in source if character.isascii() and character.isalnum())
+    return name or f"Asset{picture}"
 
 
 def build_prompt_skill_request(story: str, *, duration_seconds: float, fps: float, image_count: int,
@@ -1438,7 +1909,9 @@ def build_prompt_skill_request(story: str, *, duration_seconds: float, fps: floa
         {
             "entity_id": f"asset_{picture}",
             "picture": picture,
-            "name": speaker_names.get(picture, picture_declarations.get(picture, "")),
+            "name": _ascii_asset_name(
+                speaker_names.get(picture, picture_declarations.get(picture, "")), picture, fallback=False
+            ),
             "kind": "character" if picture in speaker_names else None,
         }
         for picture in range(1, int(image_count) + 1)

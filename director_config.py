@@ -6,7 +6,7 @@ from typing import Any
 
 from comfy_api.latest import io
 
-from .director_backend import DIRECTOR_BACKENDS, QWEN_DIRECTOR_BACKENDS, director_model_options, resolve_director_selection
+from .director_backend import director_model_options, resolve_director_selection
 
 
 HRDirectorConfig = io.Custom("HR_DIRECTOR_CONFIG")
@@ -21,7 +21,7 @@ def normalize_qwen38_config(value: Any) -> dict[str, Any]:
     if int(value.get("version", -1)) != CONFIG_VERSION:
         raise ValueError("Unsupported HR director_config version")
     backend = str(value.get("backend", "qwen3.8"))
-    if backend not in DIRECTOR_BACKENDS:
+    if backend not in {"qwen3.5", "qwen3.6", "qwen3.8"}:
         raise ValueError(f"The shared HR director configuration does not support {backend}")
     draft_tokens = int(value.get("mtp_draft_tokens", 2))
     if draft_tokens < 1 or draft_tokens > 8:
@@ -37,7 +37,7 @@ def normalize_qwen38_config(value: Any) -> dict[str, Any]:
         "backend": backend,
         "model": str(value.get("model", "auto")),
         "mmproj": str(value.get("mmproj", "auto")),
-        "mtp": bool(value.get("mtp", True)) if backend in {"gemma4", "qwen3.6", "qwen3.8"} else False,
+        "mtp": bool(value.get("mtp", True)) if backend in {"qwen3.6", "qwen3.8"} else False,
         "mtp_draft_tokens": draft_tokens,
         "reasoning_effort": reasoning,
         "cpu_moe": bool(value.get("cpu_moe", False)) if backend in {"qwen3.6", "qwen3.8"} else False,
@@ -54,11 +54,12 @@ class HRQwen38DirectorConfig(io.ComfyNode):
             display_name="HR Qwen Director Config",
             category="model/sampling/custom",
             description=(
-                "One Gemma 4 or Qwen3.5/3.6/3.8 model/runtime configuration. The selected backend is used exactly by every connected operation."
+                "One Qwen3.5 or Qwen3.8 model/runtime configuration shared by storyboard planning and HR chunk directing. "
+                "Each operation still uses a disposable worker so the model does not remain beside H3 in VRAM."
             ),
             inputs=[
                 io.Combo.Input("model", options=director_model_options(), default="auto",
-                               tooltip="Local GGUF matching the selected Qwen family."),
+                               tooltip="Local GGUF matching the selected Qwen family. The same file is used by Planner and Sampler."),
                 io.Combo.Input("mmproj", options=director_model_options(projector=True), default="auto",
                                tooltip="Same-directory multimodal projector matching the selected Qwen family."),
                 io.Boolean.Input("mtp", default=True),
@@ -67,7 +68,7 @@ class HRQwen38DirectorConfig(io.ComfyNode):
                 io.Boolean.Input("cpu_moe", default=False, advanced=True),
                 io.Int.Input("n_cpu_moe", default=0, min=0, max=256, step=1, advanced=True),
                 io.Boolean.Input("debug", default=False, advanced=True),
-                io.Combo.Input("backend", options=list(DIRECTOR_BACKENDS), default="qwen3.8"),
+                io.Combo.Input("backend", options=["qwen3.5", "qwen3.6", "qwen3.8"], default="qwen3.8"),
             ],
             outputs=[HRDirectorConfig.Output(display_name="director_config")],
         )
@@ -76,10 +77,8 @@ class HRQwen38DirectorConfig(io.ComfyNode):
     def execute(cls, model="auto", mmproj="auto", mtp=True, mtp_draft_tokens=2,
                 reasoning_effort="medium", cpu_moe=False, n_cpu_moe=0, debug=False, backend="qwen3.8"):
         selection = resolve_director_selection(backend, model, mmproj)
-        if backend in QWEN_DIRECTOR_BACKENDS and (selection.model_path is None or selection.mmproj_path is None):
+        if selection.model_path is None or selection.mmproj_path is None:
             raise ValueError(f"HR Qwen Director Config requires a local {backend} GGUF and same-directory mmproj")
-        if backend == "gemma4" and ((selection.model_path is None) != (selection.mmproj_path is None)):
-            raise ValueError("Gemma 4 requires both a local GGUF model and mmproj, or auto for both")
         config = normalize_qwen38_config({
             "version": CONFIG_VERSION,
             "backend": backend,

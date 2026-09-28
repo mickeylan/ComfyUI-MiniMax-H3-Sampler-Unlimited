@@ -133,12 +133,12 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             ),
         )
 
-    def test_chunk_director_switch_is_explicit_and_defaults_to_enabled_with_typed_plan(self):
+    def test_typed_prompt_plan_disables_secondary_chunk_directing(self):
         shots = [(0, 0, 56, "fixed source description", True)]
-        self.assertTrue(nodes._needs_chunk_director(True, shots, None, False))
-        self.assertFalse(nodes._needs_chunk_director(False, shots, None, False))
-        self.assertFalse(nodes._needs_chunk_director(True, shots, {"checkpoint": True}, False))
-        self.assertFalse(nodes._needs_chunk_director(True, shots, None, True))
+        self.assertFalse(nodes._needs_chunk_director({"type": "HR_H3_PROMPT_PLAN"}, shots, None, False))
+        self.assertTrue(nodes._needs_chunk_director(None, shots, None, False))
+        self.assertFalse(nodes._needs_chunk_director(None, shots, {"checkpoint": True}, False))
+        self.assertFalse(nodes._needs_chunk_director(None, shots, None, True))
 
     def test_prompt_plan_filters_internal_conditioning_metadata_dicts(self):
         cross_attn = torch.zeros((1, 2, 3))
@@ -947,37 +947,109 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(keyframe["resolved_frame_index"], 0)
         self.assertIs(keyframe["latent"], boundary_latent)
 
-    def test_original_audio_overlap_ownership_trims_each_later_chunk_head(self):
-        plan = nodes._chunk_plan(
-            nodes._video_steps(107), nodes._audio_steps(107), 39, 5,
+    def test_continuation_prompt_describes_synchronized_reference_and_timeline_audio(self):
+        prompt = nodes._video_continuation_prompt(
+            "subject_definitions:\n<Subject 1> is ready.\n\nsummary:\nContinue.\n\n"
+            "retention_analysis:\nKeep continuity.\n\ndetailed_description:\nAction.",
+            "<Video 2>", "<Audio 1>",
         )
-        delivered_steps = sum(
-            int(chunk["audio_end"] - chunk["audio_start"])
-            - (0 if index == 0 else int(chunk["context_audio_t"]))
-            for index, chunk in enumerate(plan)
-        )
-        self.assertEqual(delivered_steps, nodes._audio_steps(107))
+        self.assertIn("<Audio 1> is the synchronized soundtrack of <Video 2> and the audio continuation source.", prompt)
+        self.assertIn("Continue directly from the end of <Video 2> and its synchronized <Audio 1>.", prompt)
+        self.assertIn("its ending is used as the audio continuation starting point", prompt)
+        self.assertNotIn("audio keyframe", prompt.lower())
+        self.assertNotIn("crossfade", prompt.lower())
+        self.assertNotIn("overlap ownership", prompt.lower())
 
-    def test_explicit_audio_guide_uses_previous_tail_without_post_assembly_replacement(self):
-        plan = nodes._chunk_plan(
-            nodes._video_steps(73), nodes._audio_steps(73), 39, 5,
+        context = nodes._gemma_conditioning_context(
+            True, 0, 0, 22, "<Video 2>", "<Audio 1>", True,
         )
+        self.assertIn("22-frame visual-only continuation reference as <Video 2>", context)
+        self.assertNotIn("<Audio 1>", context)
+        self.assertIn("a separate 24-frame-equivalent real previous audio-latent tail", context)
+        self.assertIn("ends exactly at that video boundary", context)
+
+    def test_planned_continuation_prompt_does_not_advertise_reference_audio(self):
+        plan = [
+            {"frame_start": 0, "frame_end": 39, "output_trim_frames": 0},
+            {"frame_start": 34, "frame_end": 73, "output_trim_frames": 5},
+        ]
+        prompt = (
+            "subject_definitions:\n<Subject 1> is ready.\n\nsummary:\nContinue.\n\n"
+            "retention_analysis:\nKeep continuity.\n\ndetailed_description:\n[Shot 1] Action."
+        )
+        planned = nodes._planned_chunk_prompts(prompt, plan, plan, 24.0, 0, 22, True, 1, 1)
+        continuation = planned[1][0]
+        self.assertIn("<Video 1> is the continuation source", continuation)
+        self.assertNotIn("<Audio 1>", continuation)
+        self.assertNotIn("synchronized soundtrack", continuation)
+
+    def test_video_audio_reference_helper_preserves_synchronized_audio_tail(self):
+        video = torch.zeros((1, 24, 7, 40, 68))
+        audio = torch.arange(36, dtype=torch.float32).reshape(1, 1, 1, 36).expand(1, 32, 2, 36).clone()
+        block = nodes._normalize_h3_video_ref(nodes._video_ref_block(video, audio))
+        self.assertEqual(block["kind"], "video_audio")
+        self.assertEqual(block["ref_audio_t"], 36)
+        self.assertIs(block["audio_latent"], audio)
+        self.assertTrue(torch.equal(block["audio_latent"], audio))
+
+    def test_timeline_audio_context_uses_one_second_real_tail_and_grid_aligned_end(self):
         previous = torch.arange(65, dtype=torch.float32).reshape(1, 1, 1, 65).expand(1, 32, 2, 65).clone()
-        tail_steps = int(plan[1]["context_audio_t"])
-        tail = previous[..., -tail_steps:].clone()
+        tail, end_frame = nodes._timeline_audio_context(previous, 39, 5)
+        self.assertEqual(tail.shape[-1], 40)
+        self.assertTrue(torch.equal(tail, previous[..., -40:]))
+        self.assertNotEqual(tail.data_ptr(), previous.data_ptr())
+        self.assertEqual(end_frame, 4.8)
+        start_frame = end_frame - tail.shape[-1] / nodes.FRAME_RESCALE
+        self.assertEqual(start_frame, -19.2)
+
+    def test_chunk_omits_previous_speech_audio_after_scripted_dialogue_ends(self):
+        previous = torch.ones((1, 32, 2, 65))
+        context, end_frame = nodes._chunk_timeline_audio_context(previous, 39, 5, True)
+        self.assertIsNone(context)
+        self.assertEqual(end_frame, 5.0)
+
+    def test_chunk_keeps_previous_audio_while_scripted_dialogue_is_active(self):
+        previous = torch.arange(65, dtype=torch.float32).reshape(1, 1, 1, 65).expand(1, 32, 2, 65).clone()
+        context, end_frame = nodes._chunk_timeline_audio_context(previous, 39, 5, False)
+        self.assertTrue(torch.equal(context, previous[..., -40:]))
+        self.assertEqual(end_frame, 4.8)
+
+    def test_timeline_audio_context_compensates_signed_overhang_before_grid_snap(self):
+        positive = torch.zeros((1, 32, 2, 207))
+        _tail, positive_end = nodes._timeline_audio_context(positive, 124, 5)
+        self.assertAlmostEqual(positive_end, 5.4)
+
+        negative = torch.zeros((1, 32, 2, 433))
+        _tail, negative_end = nodes._timeline_audio_context(negative, 260, 5)
+        self.assertAlmostEqual(negative_end, 4.8)
+
+    def test_timeline_audio_context_uses_all_available_short_audio(self):
+        previous = torch.arange(8, dtype=torch.float32).reshape(1, 1, 1, 8).expand(1, 32, 2, 8).clone()
+        tail, _end_frame = nodes._timeline_audio_context(previous, 5, 5)
+        self.assertEqual(tail.shape[-1], 8)
+        self.assertTrue(torch.equal(tail, previous))
+
+    def test_timeline_audio_layout_contract_accepts_fractional_negative_anchor_with_refs(self):
+        with patch.object(nodes, "_H3_TIMELINE_AUDIO_CONTRACT_CHECKED", False):
+            nodes._ensure_h3_timeline_audio_contract()
+            self.assertTrue(nodes._H3_TIMELINE_AUDIO_CONTRACT_CHECKED)
+
+    def test_chunk_conditioning_places_timeline_audio_before_the_join(self):
+        audio = torch.zeros((1, 32, 2, 40))
         conds = nodes._conditioning_for_chunk(
             {"positive": [{}], "negative": [{}]},
-            plan[1]["frame_start"], plan[1]["frame_end"],
-            (torch.zeros((1, 1, 1)), {}),
-            audio_context=tail, audio_end_frame=5.0,
+            39, 73, (torch.zeros((1, 1, 1)), {}),
+            audio_context=audio, audio_end_frame=4.8,
+            video_refs=[nodes._video_ref_block(torch.zeros((1, 24, 7, 4, 6)), None)],
         )
         for group in ("positive", "negative"):
-            keyframe = conds[group][0]["minimax_keyframes"][0]
-            self.assertIs(keyframe["audio_latent"], tail)
-            self.assertAlmostEqual(
-                keyframe["resolved_frame_index"],
-                5.0 - tail.shape[-1] / nodes.FRAME_RESCALE,
-            )
+            keyframes = conds[group][0]["minimax_keyframes"]
+            audio_keyframe = next(item for item in keyframes if item.get("audio_latent") is audio)
+            self.assertEqual(audio_keyframe["resolved_frame_index"], -19.2)
+            refs = conds[group][0]["minimax_refs"]
+            self.assertEqual(refs[-1]["kind"], "video")
+            self.assertEqual(refs[-1]["ref_audio_t"], 0)
+            self.assertIsNone(refs[-1]["audio_latent"])
 
     def test_continuation_keyframe_replaces_same_position_visual_anchor(self):
         old = torch.zeros((1, 24, 2, 2, 2))

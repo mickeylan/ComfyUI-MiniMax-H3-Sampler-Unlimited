@@ -1,3 +1,5 @@
+from .audio_seam_assemble import HREndlessAudioSeamAssemble
+from .audio_seam_probe import HREndlessAudioSeamProbe
 from .continuation import HREndlessContinuationAssemble, HREndlessContinuationCheckpoint, HREndlessContinuationPlan
 from .director_config import HRQwen38DirectorConfig
 from .external_continuation import (
@@ -6,19 +8,24 @@ from .external_continuation import (
 )
 from .nodes import HREndlessSampler
 from .preview import HREndlessSamplerPreview
-from .prompt_skill_node import HRH3PromptSkillCompiler
+from .prompt_skill_node import HRH3PromptPlanEditor, HRH3PromptSkillCompiler
 from .retake_director import HREndlessRetakeAssemble, HREndlessSegmentRetakeDirector
 from .reference_set import HRMiniMaxH3ReferenceConditioning, HRMiniMaxH3ReferenceSet
 from .storyboard import HRMiniMaxH3StoryboardPlanner
 from .video_io import HREndlessSamplerLoadVideo, HREndlessSamplerSaveVideo
 from .video_bridge import HRVideoBridgeAssemble, HRVideoBridgeConditioning, HRVideoBridgeDirector, HRVideoBridgeExtract
 from .jzl_storyboard import HRMiniMaxH3JZLStoryboard, HRMiniMaxH3JZLSegmentDispatcher
+from .qwen_image21 import QwenImage21PromptEnhancer, QwenImage21Translator
 
 __version__ = "0.9.0"
 
 
 NODE_CLASS_MAPPINGS = {
     "HREndlessSampler": HREndlessSampler,
+    "QwenImage21PromptEnhancer": QwenImage21PromptEnhancer,
+    "QwenImage21Translator": QwenImage21Translator,
+    "HREndlessAudioSeamProbe": HREndlessAudioSeamProbe,
+    "HREndlessAudioSeamAssemble": HREndlessAudioSeamAssemble,
     "HREndlessSamplerPreview": HREndlessSamplerPreview,
     "HREndlessSamplerSaveVideo": HREndlessSamplerSaveVideo,
     "HREndlessSamplerLoadVideo": HREndlessSamplerLoadVideo,
@@ -40,10 +47,15 @@ NODE_CLASS_MAPPINGS = {
     "HRVideoBridgeConditioning": HRVideoBridgeConditioning,
     "HRVideoBridgeAssemble": HRVideoBridgeAssemble,
     "HRH3PromptSkillCompiler": HRH3PromptSkillCompiler,
+    "HRH3PromptPlanEditor": HRH3PromptPlanEditor,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "HREndlessSampler": "HR Endless Sampler",
+    "QwenImage21PromptEnhancer": "Qwen Image 2.1 Prompt Enhancer",
+    "QwenImage21Translator": "Qwen Image 2.1 Translator",
+    "HREndlessAudioSeamProbe": "HR Endless Audio Seam Probe",
+    "HREndlessAudioSeamAssemble": "HR Endless Audio Seam Assemble",
     "HREndlessSamplerPreview": "HR Endless Sampler Preview",
     "HREndlessSamplerSaveVideo": "HR Endless Sampler Save Video",
     "HREndlessSamplerLoadVideo": "HR Endless Sampler Load Video",
@@ -65,6 +77,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "HRVideoBridgeConditioning": "HR Video Bridge Conditioning",
     "HRVideoBridgeAssemble": "HR Video Bridge Assemble",
     "HRH3PromptSkillCompiler": "HR H3 Prompt Skill Compiler",
+    "HRH3PromptPlanEditor": "HR H3 Prompt Plan Editor",
 }
 
 WEB_DIRECTORY = "./web"

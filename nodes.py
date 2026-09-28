@@ -39,9 +39,9 @@ from .gemma4 import (
 )
 from .preview import begin_preview_execution
 from .prompt_skill import (
-    active_prompt_plan_pictures, chunk_dialogue_contract, filter_prompt_plan_picture_items,
+    active_prompt_plan_pictures, filter_prompt_plan_events, filter_prompt_plan_picture_items,
     localize_prompt_from_plan, normalize_prompt_plan, project_prompt_plan_interval,
-    prompt_plan_shots, validate_h3_identity_contract,
+    prompt_plan_dialogue_complete, prompt_plan_shots, prompt_plan_speakers, validate_h3_identity_contract,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images, reference_presentation_items
@@ -86,7 +86,7 @@ GEMMA_PROMPT_LOG_DIRNAME = "comfyui-hr-endless-sampler"
 GEMMA_PROMPT_LOG_FILENAME = "last_gemma_chunk_prompts.txt"
 GEMMA_IMAGE_LOG_DIRNAME = "last_gemma_images"
 REPLAY_CACHE_DIRNAME = "last_run_replay"
-REPLAY_CACHE_FORMAT = 4
+REPLAY_CACHE_FORMAT = 3
 REPLAY_HISTORY_DIRNAME = "history"
 REPLAY_HISTORY_LIMIT = 5
 _REPLAY_RUN_ID = re.compile(r"^[a-f0-9]{32}$")
@@ -974,7 +974,7 @@ def _planned_chunk_prompts(prompt, plan, active_plan, fps, guide_frames, video_c
         continuation = index > 0
         content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
         continuation_video_label = f"<Video {video_number}>" if continuation and video_continuation else None
-        continuation_audio_label = f"<Audio {audio_number}>" if continuation and video_continuation else None
+        continuation_audio_label = None
         chunk_prompt = _prompt_for_chunk(
             prompt,
             chunk["frame_start"],
@@ -1022,8 +1022,8 @@ def _log_chunk_prompt_zh(index, chunk_count, chunk, picture_indices, mandatory_c
     )
 
 
-def _needs_chunk_director(enabled, shots, continuation_state, external_active):
-    return bool(enabled) and bool(shots) and continuation_state is None and not external_active
+def _needs_chunk_director(typed_prompt_plan, shots, continuation_state, external_active):
+    return typed_prompt_plan is None and bool(shots) and continuation_state is None and not external_active
 
 
 def _director_segment_values(segment):
@@ -1123,13 +1123,16 @@ def _gemma_conditioning_context(continuation, context_keyframes, guide_overlap, 
     if video_continuation:
         if include_video1_reference:
             sources.append(
-                f"a bounded {video_continuation}-frame continuation reference as {video_label} "
-                f"with synchronized {audio_label}"
+                f"a bounded {video_continuation}-frame visual-only continuation reference as {video_label}"
             )
         if not context_keyframes:
             sources.append(
                 "one fixed five-frame video keyframe clip made from the previous chunk's exact final tail, "
-                "anchored across the discarded packing prefix; it has no separate audio keyframe"
+                "anchored across the discarded packing prefix"
+            )
+            sources.append(
+                f"a separate {TIMELINE_AUDIO_CONTEXT_FRAMES}-frame-equivalent real previous audio-latent tail "
+                "pinned backwards on this chunk's timeline so it ends exactly at that video boundary"
             )
     if guide_overlap:
         sources.append(
@@ -1552,6 +1555,80 @@ def _visual_only_reference_conds(conds):
         ]} for cond in values]
         for name, values in conds.items()
     }
+
+
+TIMELINE_AUDIO_CONTEXT_FRAMES = 24
+_H3_TIMELINE_AUDIO_CONTRACT_CHECKED = False
+
+
+def _ensure_h3_timeline_audio_contract():
+    global _H3_TIMELINE_AUDIO_CONTRACT_CHECKED
+    if _H3_TIMELINE_AUDIO_CONTRACT_CHECKED:
+        return
+
+    text_len, latent_t, latent_h, latent_w, audio_t = 7, 7, 4, 6, 16
+    audio_steps = 40
+    end_frame = 5.0
+    start_frame = end_frame - audio_steps / FRAME_RESCALE
+    audio = torch.empty((1, 32, 2, audio_steps))
+    ref = {"kind": "video_audio", "ref_audio_t": 8, "latent_t": 2, "latent_h": 4, "latent_w": 6}
+    layout = PackedLayout(
+        text_len, latent_t, latent_h, latent_w, audio_t,
+        keyframes=[{"resolved_frame_index": start_frame, "audio_latent": audio}],
+        refs=[ref],
+    )
+    cond_segments = [(start, end) for start, end, kind in layout.segments if kind == "cond_audio"]
+    if len(cond_segments) != 1:
+        raise RuntimeError("HR Endless Sampler H3 layout produced an invalid timeline audio segment count")
+    start, end = cond_segments[0]
+    if end - start != audio_steps * 2:
+        raise RuntimeError("HR Endless Sampler H3 layout produced an invalid timeline audio row count")
+    target_start = next(start for start, _end, kind in layout.segments if kind == "audio")
+    target_origin = float(layout.position_ids[target_start, 0])
+    positions = layout.position_ids[start:end, 0]
+    actual_start = float(positions.min()) - target_origin
+    actual_end = float(positions.max()) - target_origin + 1.0
+    expected_start = FRAME_RESCALE * start_frame
+    expected_end = FRAME_RESCALE * end_frame
+    if abs(actual_start - expected_start) > 1e-9 or abs(actual_end - expected_end) > 1e-9:
+        raise RuntimeError(
+            "HR Endless Sampler H3 layout does not preserve fractional negative timeline audio anchors"
+        )
+    _H3_TIMELINE_AUDIO_CONTRACT_CHECKED = True
+
+
+def _timeline_audio_context(previous_audio, previous_frame_count, boundary_frames):
+    if previous_audio is None:
+        return None, 0.0
+    if previous_audio.ndim != 4:
+        raise ValueError(
+            f"HR Endless Sampler previous audio latent must be [B,C,T,L], got {tuple(previous_audio.shape)}"
+        )
+    previous_frames = int(previous_frame_count)
+    if previous_frames <= 0:
+        raise ValueError("HR Endless Sampler timeline audio continuation requires a positive previous frame count")
+
+    total_steps = int(previous_audio.shape[-1])
+    overhang = total_steps - FRAME_RESCALE * previous_frames
+    if not (-0.5 < overhang < 0.5):
+        raise ValueError(
+            f"HR Endless Sampler previous audio grid is inconsistent: "
+            f"{total_steps} steps for {previous_frames} frames"
+        )
+    context_steps = min(total_steps, round(TIMELINE_AUDIO_CONTEXT_FRAMES * FRAME_RESCALE))
+    if context_steps < 1:
+        raise ValueError("HR Endless Sampler timeline audio continuation window is empty")
+
+    end_frame = float(boundary_frames) + overhang / FRAME_RESCALE
+    end_frame = round(FRAME_RESCALE * end_frame) / FRAME_RESCALE
+    _ensure_h3_timeline_audio_contract()
+    return previous_audio[..., -context_steps:].clone(), end_frame
+
+
+def _chunk_timeline_audio_context(previous_audio, previous_frame_count, boundary_frames, dialogue_complete):
+    if dialogue_complete:
+        return None, float(boundary_frames)
+    return _timeline_audio_context(previous_audio, previous_frame_count, boundary_frames)
 
 
 def _validate_h3_audio_conditioning(conds):
@@ -2935,17 +3012,11 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                  tooltip="Qwen3.6/Qwen3.8: offload all MoE expert weights to CPU memory. This reduces VRAM but is usually slower."),
                 io.Int.Input("director_n_cpu_moe", default=0, min=0, max=256, step=1,
                              tooltip="Qwen3.6/Qwen3.8: offload experts in the first N layers. Ignored when director_cpu_moe is enabled."),
-                io.Boolean.Input(
-                    "chunk_director_enabled", default=True,
-                    tooltip=("Run the selected Gemma/Qwen visual director for every physical chunk. "
-                             "When prompt_plan is connected, the plan remains the hard timing, subject, camera, "
-                             "dialogue, and reference boundary while the director observes rendered continuity."),
-                ),
                 HRDirectorConfig.Input(
                     "director_config",
                     optional=True,
-                    tooltip=("Optional shared Gemma 4/Qwen director configuration. When connected, it overrides the legacy "
-                             "director widgets so compatible planners and Sampler use the same model and runtime settings."),
+                    tooltip=("Optional shared HR Qwen3.8 configuration. When connected, it overrides the legacy "
+                             "director widgets so Planner and Sampler use the same model and runtime settings."),
                 ),
                 HRReferenceSet.Input(
                     "reference_set",
@@ -2982,7 +3053,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 source_images=None, video_continuation=22, video_continuation_res="full", vae=None, retake_plan=None,
                 cache_gemma_preproduction=False, gemma4_mtp=True, director_mtp_draft_tokens=2,
                 director_reasoning_effort="xhigh", director_cpu_moe=False, director_n_cpu_moe=0,
-                chunk_director_enabled=True, pytorch_memory_fraction=DEFAULT_PYTORCH_MEMORY_FRACTION,
+                pytorch_memory_fraction=DEFAULT_PYTORCH_MEMORY_FRACTION,
                 debug=False, debug_stop_chunk=0, debug_start_chunk=0, director_backend="gemma4",
                 director_model="auto", director_mmproj="auto", director_config=None, reference_set=None,
                 continuation_plan=None, external_continuation=None, initial_event_ledger=None, prompt_plan=None,
@@ -3165,11 +3236,11 @@ class HREndlessSampler(SamplerCustomAdvanced):
             _gemma_description_end = None
         else:
             _gemma_markers, gemma_shots, _gemma_description_end = _parse_prompt_shots(prompt, plan[-1]["frame_end"], fps)
-        # The typed plan owns timing, subjects, references, dialogue, events, and camera cuts.
-        # The optional chunk director still observes rendered evidence and writes the bounded
-        # local description; connecting a plan must never disable that continuity pass.
+        # A connected typed prompt plan is already the validated semantic and camera contract.
+        # Physical sampler chunks may project it by frame range, but must not ask a second
+        # director to rewrite subjects, dialogue, actions, or camera language.
         gemma_director_needed = _needs_chunk_director(
-            chunk_director_enabled, gemma_shots, continuation_state, external_active
+            typed_prompt_plan, gemma_shots, continuation_state, external_active
         )
 
         original_conds = guider.original_conds
@@ -3209,13 +3280,18 @@ class HREndlessSampler(SamplerCustomAdvanced):
         )
         if typed_prompt_plan is not None:
             localized_prompts = []
+            previous_chunk_speakers = ()
             for index, (chunk, (chunk_prompt, _debug_prompt)) in enumerate(zip(active_plan, planned_prompts)):
                 content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
                 localized = localize_prompt_from_plan(
                     chunk_prompt, typed_prompt_plan,
                     frame_start=content_start, frame_end=chunk["frame_end"],
+                    previous_chunk_speakers=previous_chunk_speakers,
                 )
                 localized_prompts.append((localized, _debug_chunk_prompt(index, chunk, content_start, localized)))
+                previous_chunk_speakers = prompt_plan_speakers(
+                    typed_prompt_plan, content_start, chunk["frame_end"]
+                )
             planned_prompts = localized_prompts
         if debug:
             logging.info(
@@ -3516,7 +3592,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
         previous_gemma_timing_plan = None
         previous_gemma_end_state = None
         previous_gemma_last_seen_character_state = None
-        previous_dialogue_contract = None
         if initial_event_ledger is None:
             previous_event_ledger = {"completed": [], "active": [], "pending": [], "forbidden": []}
         else:
@@ -3553,7 +3628,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 previous_gemma_timing_plan = previous_state.get("gemma_timing_plan")
                 previous_gemma_end_state = previous_state.get("gemma_end_state")
                 previous_gemma_last_seen_character_state = previous_state.get("gemma_last_seen_character_state")
-                previous_dialogue_contract = previous_state.get("dialogue_contract")
                 previous_event_ledger = previous_state.get("gemma_event_ledger") or {
                     "completed": [], "active": [], "pending": [], "forbidden": [],
                 }
@@ -3569,7 +3643,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     previous_gemma_timing_plan = None
                     previous_gemma_end_state = None
                     previous_gemma_last_seen_character_state = None
-                    previous_dialogue_contract = None
                     previous_event_ledger = {"completed": [], "active": [], "pending": [], "forbidden": []}
                     logging.info(
                         "HR Endless Sampler replay: discarded stale prior Gemma text; "
@@ -3950,7 +4023,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 gemma_observation_prompt = None
                 gemma_response = None
                 gemma_validation_warnings = ()
-                current_dialogue_contract = chunk_dialogue_contract(planned_prompts[index][0])
                 if gemma_director is not None:
                     observation_frames = None
                     try:
@@ -4001,7 +4073,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                             ]
 
                         continuation_video_label = f"<Video {video_number}>" if include_video1_reference else None
-                        continuation_audio_label = f"<Audio {audio_number}>" if include_video1_reference else None
+                        continuation_audio_label = None
                         target_shots = _gemma_shot_records(
                             gemma_shots,
                             content_start,
@@ -4029,7 +4101,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                             "previous_gemma_end_state": previous_gemma_end_state,
                             "previous_last_seen_character_state": previous_gemma_last_seen_character_state,
                             "previous_event_ledger": previous_event_ledger,
-                            "previous_dialogue_contract": previous_dialogue_contract,
                             "target_shots": target_shots,
                             "preproduction_timing_plan": gemma_preproduction_timing_plan.for_target_shots(
                                 target_shots,
@@ -4052,7 +4123,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 include_video1_reference,
                             ),
                             "original_prompt": planned_prompts[index][0],
-                            "dialogue_contract": current_dialogue_contract,
                         }
                         if gemma_preproduction_cache_ready and gemma_preproduction_cache is not None:
                             request["preproduction_cache"] = gemma_preproduction_cache.worker_spec()
@@ -4192,36 +4262,36 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 audio_context = None if previous_audio is None or not guide_enabled else previous_audio[..., -guide_audio_t:].clone()
                 video_context_start = 0
                 audio_end_frame = float(keyframe_duration_frames)
-                audio_end_includes_grid_offset = False
+                if index > 0:
+                    silent_tail = (
+                        typed_prompt_plan is not None
+                        and prompt_plan_dialogue_complete(typed_prompt_plan, content_start)
+                    )
+                    audio_context, audio_end_frame = _chunk_timeline_audio_context(
+                        previous_audio,
+                        previous_frame_count,
+                        chunk.get("output_trim_frames", 0),
+                        silent_tail,
+                    )
+                    if debug:
+                        if silent_tail:
+                            logging.info(
+                                "HR Endless Sampler chunk %d/%d omits previous speech audio context because all scripted dialogue ended before frame %d.",
+                                index + 1, len(active_plan), content_start,
+                            )
+                        else:
+                            logging.info(
+                                "HR Endless Sampler chunk %d/%d timeline audio continuation: "
+                                "%d real previous latent steps end-aligned at local frame %.3f.",
+                                index + 1, len(active_plan), audio_context.shape[-1], audio_end_frame,
+                            )
                 if external_active and index == 0:
                     video_context = previous_video.clone()
                     audio_context = previous_audio.clone() if external_audio_mode == "continue" else None
                     audio_end_frame = float(external_frame_count)
-                if audio_context is not None and not audio_end_includes_grid_offset:
+                if audio_context is not None and index == 0:
                     overhang = previous_audio.shape[-1] - FRAME_RESCALE * previous_frame_count
                     audio_end_frame += overhang / FRAME_RESCALE
-                audio_context_steps = int(audio_context.shape[-1]) if audio_context is not None else 0
-                audio_context_start_frame = (
-                    audio_end_frame - audio_context_steps / FRAME_RESCALE
-                    if audio_context is not None else None
-                )
-                logging.info(
-                    "HR Endless Sampler audio timeline chunk %d/%d: "
-                    "frames=[%d,%d), audio=[%d,%d), context_audio_t=%d, "
-                    "audio_keyframe=%s, chunk_input_audio_t=%d.",
-                    index + 1,
-                    len(active_plan),
-                    int(chunk["frame_start"]),
-                    int(chunk["frame_end"]),
-                    int(chunk["audio_start"]),
-                    int(chunk["audio_end"]),
-                    int(context_audio_t),
-                    (
-                        f"[{audio_context_start_frame:.3f},{audio_end_frame:.3f}) frames/{audio_context_steps} steps"
-                        if audio_context is not None else "none"
-                    ),
-                    int(chunk_audio.shape[-1]),
-                )
                 video_items = []
                 video_refs = []
                 boundary_video_context = None
@@ -4258,19 +4328,15 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     if include_video1_reference:
                         reference_latent = previous_video[:, :, -_video_steps(video_continuation):].clone()
                         full_reference_latent = reference_latent
-                        reference_audio_t = _audio_steps(content_start) - _audio_steps(content_start - video_continuation)
-                        reference_audio = previous_audio[..., -reference_audio_t:].clone()
+                        reference_audio = None
                         if vram_monitor is not None:
                             vram_monitor.report(
                                 f"chunk {index + 1}/{len(active_plan)} before continuation VAE decode",
                                 {
                                     "continuation video latent": reference_latent,
-                                    "continuation audio latent": reference_audio,
+                                    "timeline audio latent": audio_context,
                                 },
                             )
-                        # ComfyUI's native video+soundtrack presentation emits the
-                        # audio label immediately before the matching video label.
-                        video_items.append({"type": "audio"})
                         timer_started = time.perf_counter()
                         try:
                             decoded_reference_frames = _decode_video_frames(vae, reference_latent)
@@ -4315,7 +4381,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                             full_reference_latent,
                         )
                         full_reference_latent = None
-                        video_refs.append(_video_ref_block(reference_latent, reference_audio))
+                        video_refs.append(_video_ref_block(reference_latent, None))
                 if continuation and qwen_full_history:
                     history_latent = torch.cat(output_video, dim=2)
                     if vram_monitor is not None:
@@ -4344,7 +4410,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     if gemma_description is None:
                         raise RuntimeError("Gemma director completed without a detailed_description")
                     continuation_video_label = f"<Video {video_number}>" if continuation and include_video1_reference else None
-                    continuation_audio_label = f"<Audio {audio_number}>" if continuation and include_video1_reference else None
+                    continuation_audio_label = None
                     chunk_prompt = _prompt_with_gemma_description(
                         planned_prompts[index][0] if typed_prompt_plan is not None else prompt,
                         gemma_description,
@@ -4422,6 +4488,13 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         name: [dict(item) for item in projection[name]]
                         for name in ("completed", "active", "pending")
                     }
+                    previous_event_ledger["active"] = [
+                        dict(item) for item in filter_prompt_plan_events(
+                            typed_prompt_plan,
+                            previous_event_ledger["active"],
+                            chunk["frame_start"] + chunk.get("output_trim_frames", 0),
+                        )
+                    ]
                     previous_event_ledger["forbidden"] = [
                         {"id": item["id"], "summary": text}
                         for item, text in zip(projection["completed"], projection["forbidden"])
@@ -4578,20 +4651,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     output_audio.append(assembled_audio)
                     denoised_video.append(assembled_denoised_video)
                     denoised_audio.append(assembled_denoised_audio)
-                cumulative_audio_t = sum(int(part.shape[-1]) for part in output_audio)
-                logging.info(
-                    "HR Endless Sampler audio assembly chunk %d/%d: raw_audio_t=%d, trim_audio_t=%d, "
-                    "overlap_owner=%s, assembled_chunk_audio_t=%d, cumulative_audio_t=%d, "
-                    "expected_cumulative_audio_t=%d.",
-                    index + 1,
-                    len(active_plan),
-                    int(previous_audio.shape[-1]),
-                    int(audio_trim),
-                    "previous_chunk",
-                    int(assembled_audio.shape[-1]),
-                    cumulative_audio_t,
-                    _audio_steps(int(chunk["frame_end"])),
-                )
                 chunk_progress.finish(index)
                 completed_chunks = index + 1
                 chunk_total_seconds = timing.finish_chunk(index) or 0.0
@@ -4627,7 +4686,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                             name: [dict(item) for item in ledger.get(name, ()) if isinstance(item, dict)]
                             for name in ("completed", "active", "pending", "forbidden")
                         }
-                    previous_dialogue_contract = current_dialogue_contract
                 if replay_cache is not None and retake_chunks:
                     try:
                         replay_cache.save_revision(index + 1, {
@@ -4663,7 +4721,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 "gemma_end_state": previous_gemma_end_state,
                                 "gemma_last_seen_character_state": previous_gemma_last_seen_character_state,
                                 "gemma_event_ledger": previous_event_ledger,
-                                "dialogue_contract": previous_dialogue_contract,
                                 "h3_render_seconds": h3_render_seconds,
                                 "gemma_seconds": chunk_gemma_seconds,
                                 "gemma_preproduction_seconds": chunk_preproduction_seconds,
@@ -4691,7 +4748,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 "director_end_state": previous_gemma_end_state,
                                 "director_last_seen_character_state": previous_gemma_last_seen_character_state,
                                 "director_event_ledger": previous_event_ledger,
-                                "dialogue_contract": previous_dialogue_contract,
                             },
                             observation_image_directory=gemma_image_log,
                         )
@@ -4800,29 +4856,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
         final_output_audio = torch.cat(output_audio, dim=-1)
         final_denoised_video = torch.cat(denoised_video, dim=2)
         final_denoised_audio = torch.cat(denoised_audio, dim=-1)
-        rendered_frames = active_plan[completed_chunks - 1]["frame_end"] if completed_chunks else 0
-        expected_video_t = _video_steps(rendered_frames)
-        expected_audio_t = _audio_steps(rendered_frames)
-        if final_output_video.shape[2] != expected_video_t or final_denoised_video.shape[2] != expected_video_t:
-            raise RuntimeError(
-                f"HR Endless Sampler assembled video length mismatch: expected {expected_video_t} latent steps, "
-                f"got output={final_output_video.shape[2]}, denoised={final_denoised_video.shape[2]}"
-            )
-        logging.info(
-            "HR Endless Sampler final AV timeline: rendered_frames=%d, expected_video_t=%d, "
-            "output_video_t=%d, expected_audio_t=%d, output_audio_t=%d, denoised_audio_t=%d.",
-            rendered_frames,
-            expected_video_t,
-            int(final_output_video.shape[2]),
-            expected_audio_t,
-            int(final_output_audio.shape[-1]),
-            int(final_denoised_audio.shape[-1]),
-        )
-        if final_output_audio.shape[-1] != expected_audio_t or final_denoised_audio.shape[-1] != expected_audio_t:
-            raise RuntimeError(
-                f"HR Endless Sampler assembled audio length mismatch: expected {expected_audio_t} latent steps, "
-                f"got output={final_output_audio.shape[-1]}, denoised={final_denoised_audio.shape[-1]}"
-            )
         # Cached earlier chunks intentionally stay in system RAM while a
         # replayed suffix samples. Return the normal device-resident latent
         # shape expected by downstream ComfyUI nodes only after assembly.
@@ -4833,6 +4866,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
             final_denoised_audio = final_denoised_audio.to(device=audio.device)
         output_template["samples"] = comfy.nested_tensor.NestedTensor((final_output_video, final_output_audio))
         denoised_template["samples"] = comfy.nested_tensor.NestedTensor((final_denoised_video, final_denoised_audio))
+        rendered_frames = active_plan[completed_chunks - 1]["frame_end"] if completed_chunks else 0
         timeline = normalize_timeline(
             {
                 "fps": fps,

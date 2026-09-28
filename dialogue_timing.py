@@ -6,6 +6,36 @@ import re
 
 _DIALOGUE = re.compile(r"<d>(.*?)</d>", re.IGNORECASE | re.DOTALL)
 _LANGUAGE = re.compile(r"^(\s*\[[^\]]+\]\s*)(.*)$", re.DOTALL)
+_TRAILING_PUNCTUATION = "，,。！？!?；;：:、"
+
+
+def _dialogue_split_index(text: str, position: int) -> int:
+    position = max(0, min(len(text), int(position)))
+    candidates = []
+    for index in range(max(0, position - 6), min(len(text), position + 6)):
+        if text[index] in _TRAILING_PUNCTUATION:
+            candidate = index + 1
+            if candidate <= 3 and text[index] in "，,、":
+                continue
+            candidates.append(candidate)
+        elif text[index].isspace():
+            candidates.append(index)
+    if candidates:
+        position = min(candidates, key=lambda index: (abs(index - position), index < position))
+    elif 0 < position < len(text):
+        run_start = position
+        while run_start > 0 and re.match(r"[\u3400-\u9fff]", text[run_start - 1]):
+            run_start -= 1
+        run_end = position
+        while run_end < len(text) and re.match(r"[\u3400-\u9fff]", text[run_end]):
+            run_end += 1
+        if run_end - run_start >= 4 and (position - run_start) % 2:
+            position -= 1
+    if position <= 2:
+        return 0
+    if position >= len(text) - 1:
+        return len(text)
+    return position
 
 
 def dialogue_duration_seconds(content: str) -> float:
@@ -28,7 +58,8 @@ def dialogue_frame_count(content: str, fps: float) -> int:
 
 
 def slice_dialogue_for_interval(content: str, source_start: int, source_end: int,
-                                overlap_start: int, overlap_end: int) -> str:
+                                overlap_start: int, overlap_end: int,
+                                continues_from_previous_chunk: bool = True) -> str:
     match = _DIALOGUE.search(content)
     duration = source_end - source_start
     if match is None or duration <= 0 or overlap_start <= source_start and overlap_end >= source_end:
@@ -36,29 +67,39 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     tagged = match.group(1)
     language = _LANGUAGE.match(tagged)
     prefix, text = (language.group(1), language.group(2)) if language else ("", tagged)
+    carries_in = text.startswith("<scenetrans>")
+    carries_out = text.endswith("<scenetrans>")
+    text = re.sub(r"^<scenetrans>\s*|\s*<scenetrans>$", "", text)
     length = len(text)
     first = max(0, min(length, math.floor(length * (overlap_start - source_start) / duration)))
     last = max(first, min(length, math.floor(length * (overlap_end - source_start) / duration)))
-    if overlap_end >= source_end:
+    if overlap_start > source_start:
+        first = _dialogue_split_index(text, first)
+    if overlap_end < source_end:
+        last = _dialogue_split_index(text, last)
+    else:
         last = length
+    last = max(first, last)
     fragment = text[first:last]
     if not fragment:
         return ""
+    fragment = (
+        ("<scenetrans> " if carries_in and overlap_start <= source_start else "")
+        + fragment
+        + (" <scenetrans>" if carries_out and overlap_end >= source_end else "")
+    )
     before = content[:match.start()]
     after = content[match.end():]
-    if overlap_start > source_start:
-        before = re.sub(r"\s*<scenetrans>\s*", " ", before, flags=re.IGNORECASE)
+    if overlap_start > source_start and continues_from_previous_chunk:
         before = re.sub(
-            r"(?i)\b(?:says|asks|replies|shouts|whispers)(?:\s*,[^:]*)?\s*:\s*$",
-            "continues speaking: ", before,
+            r"(?is)^(.+?\(S\d+\))\s+.*:\s*$",
+            r"\1 continues the same uninterrupted utterance from the previous chunk: ",
+            before,
         )
         if before == content[:match.start()]:
-            before = before.rstrip() + " continues speaking: "
+            before = before.rstrip() + " continues the same uninterrupted utterance from the previous chunk: "
     if overlap_end < source_end:
-        after = re.sub(
-            r"\s*<scenetrans>\s*The same utterance continues uninterrupted into the next shot\.?",
-            "", after, flags=re.IGNORECASE,
-        )
         after = re.sub(r"^\s*with synchronized visible lip movement\.?", "", after, flags=re.IGNORECASE)
-        after = " while the same utterance continues into the next chunk." + after
+        after = re.sub(r"^\s*<scenetrans>\s*", "", after, flags=re.IGNORECASE)
+        after = " while the same utterance continues into the next chunk without a pause or restart." + after
     return (before + f"<d>{prefix}{fragment}</d>" + after).strip()
