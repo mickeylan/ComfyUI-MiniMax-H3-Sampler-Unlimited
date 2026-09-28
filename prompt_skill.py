@@ -269,7 +269,7 @@ Return JSON with:
     return system, user
 
 
-def _merge_trailing_zero_length_shots(value: Any, total_frames: int) -> tuple[Any, list[str]]:
+def _merge_trailing_out_of_range_shots(value: Any, total_frames: int) -> tuple[Any, list[str]]:
     if not isinstance(value, dict) or not isinstance(value.get("shots"), list) or len(value["shots"]) < 2:
         return value, []
     shots = [dict(item) if isinstance(item, dict) else item for item in value["shots"]]
@@ -282,7 +282,7 @@ def _merge_trailing_zero_length_shots(value: Any, total_frames: int) -> tuple[An
             start, end = int(tail["start_frame"]), int(tail["end_frame"])
         except (KeyError, TypeError, ValueError, OverflowError):
             break
-        if start < total_frames or end != start:
+        if start < total_frames or end < start:
             break
         previous = shots[-2]
         if not isinstance(previous, dict):
@@ -305,14 +305,14 @@ def _merge_trailing_zero_length_shots(value: Any, total_frames: int) -> tuple[An
     normalized = dict(value)
     normalized["shots"] = shots
     return normalized, [
-        "Merged zero-length trailing Qwen shot(s) at frame "
+        "Merged trailing Qwen shot(s) beginning at or beyond target frame "
         + ", ".join(str(frame) for frame in merged)
-        + " into the preceding shot without dropping events, dialogue, narration, audio, or description."
+        + " into the preceding valid shot without dropping events, dialogue, narration, audio, or description."
     ]
 
 
 def _normalize_shot_intervals(value: Any, total_frames: int) -> tuple[Any, list[str]]:
-    value, merge_warnings = _merge_trailing_zero_length_shots(value, total_frames)
+    value, merge_warnings = _merge_trailing_out_of_range_shots(value, total_frames)
     if not isinstance(value, dict) or not isinstance(value.get("shots"), list) or not value["shots"]:
         return value, merge_warnings
     shots = value["shots"]

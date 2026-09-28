@@ -1044,7 +1044,35 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual((shot["start_frame"], shot["end_frame"]), (0, 634))
         self.assertEqual(shot["dialogues"][0]["text"], "故事仍将继续。")
         self.assertIn("<d>[Chinese] 故事仍将继续。</d>", compiled["prompt"])
-        self.assertIn("Merged zero-length trailing Qwen shot", compiled["warnings"][0])
+        self.assertIn("Merged trailing Qwen shot", compiled["warnings"][0])
+
+    def test_merges_positive_length_shot_starting_at_target_end(self):
+        value = self.result()
+        value["shots"][0].update(start_frame=0, end_frame=804)
+        value["shots"][1].update(
+            start_frame=804, end_frame=1008,
+            events=[{"id": "S6.V1", "actor": "asset_1", "action": "holds the final pose", "phase": "complete"}],
+            dialogues=[
+                {"id": "S6.D1", "kind": "voiceover", "speaker": "<Subject 1>", "speaker_id": "S1",
+                 "language": "Chinese", "text": "故事仍将继续。", "delivery": "平静地"},
+            ],
+        )
+        request = {**self.request(), "total_frames": 804, "required_spoken_lines": ["故事仍将继续。"]}
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        self.assertEqual(len(compiled["shot_plan"]["shots"]), 1)
+        shot = compiled["shot_plan"]["shots"][0]
+        self.assertEqual((shot["start_frame"], shot["end_frame"]), (0, 804))
+        self.assertEqual(shot["dialogues"][0]["text"], "故事仍将继续。")
+        self.assertTrue(any(event["action"] == "holds the final pose" for event in shot["events"]))
+        self.assertIn("beginning at or beyond target frame 804", compiled["warnings"][0])
+
+    def test_rejects_out_of_range_nonterminal_shot(self):
+        value = self.result()
+        value["shots"][0].update(start_frame=804, end_frame=1008)
+        value["shots"][1].update(start_frame=0, end_frame=804)
+        request = {**self.request(), "total_frames": 804}
+        with self.assertRaisesRegex(ValueError, "Shot 1 has invalid or non-contiguous"):
+            prompt_skill.compile_prompt_skill(value, request)
 
     def test_normalizes_nonzero_first_shot_origin(self):
         value = self.result()
