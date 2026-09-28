@@ -1378,6 +1378,25 @@ def normalize_h3_chunk_references(prompt: str, plan: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def normalize_h3_chunk_transitions(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
+    semantic_cuts = {
+        int(shot["start_frame"])
+        for shot in plan.get("shots", ())[1:]
+        if frame_start <= int(shot["start_frame"]) <= frame_end
+    }
+    if semantic_cuts:
+        return str(prompt)
+    text = re.sub(r"\s*<scenetrans>\s*", " ", str(prompt), flags=re.IGNORECASE)
+    text = re.sub(
+        r"\s*(?:The same voice and utterance )?(?:continues seamlessly across the cut|continues uninterrupted into the next shot|carries over from the previous shot|remains audible across the transition)\.?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r" +\n", "\n", text)
+
+
 def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> None:
     text = str(prompt)
     headings = (
@@ -2020,7 +2039,10 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         "overall_soundscape:\n" + soundscape,
         "non_diegetic_music:\n" + str(plan.get("non_diegetic_music", "N/A") or "N/A").strip(),
     ))
-    return normalize_h3_chunk_references(localized, plan)
+    localized = normalize_h3_chunk_references(localized, plan)
+    return normalize_h3_chunk_transitions(
+        localized, plan, frame_start=frame_start, frame_end=frame_end
+    )
 
 
 def _ascii_asset_name(value: Any, picture: int, *, fallback: bool = True) -> str:

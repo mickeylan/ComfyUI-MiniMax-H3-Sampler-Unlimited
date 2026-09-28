@@ -1422,6 +1422,28 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("<d>[English] Keep Asset3 exactly as spoken.</d>", normalized)
         self.assertIn("asset_9", normalized)
 
+    def test_chunk_transition_normalization_removes_false_scene_transition(self):
+        plan = {
+            "shots": [
+                {"start_frame": 0, "end_frame": 100},
+                {"start_frame": 100, "end_frame": 200},
+            ],
+        }
+        prompt = (
+            "<Subject 1> (S1) carries over from the previous shot: "
+            "<d>[Chinese] <scenetrans> 继续说话。</d> The same voice and utterance continues seamlessly across the cut."
+        )
+        normalized = prompt_skill.normalize_h3_chunk_transitions(
+            prompt, plan, frame_start=120, frame_end=160
+        )
+        self.assertNotIn("<scenetrans>", normalized)
+        self.assertNotIn("across the cut", normalized)
+        self.assertIn("<d>[Chinese] 继续说话。</d>", normalized)
+        crossing = prompt_skill.normalize_h3_chunk_transitions(
+            prompt, plan, frame_start=80, frame_end=120
+        )
+        self.assertIn("<scenetrans>", crossing)
+
     def test_chunk_prompt_validator_rejects_private_ids_and_false_scene_transitions(self):
         plan = {
             "shots": [{"start_frame": 0, "end_frame": 80, "dialogues": []}],
