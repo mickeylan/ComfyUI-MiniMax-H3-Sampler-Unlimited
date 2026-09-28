@@ -40,9 +40,8 @@ from .gemma4 import (
 from .preview import begin_preview_execution
 from .prompt_skill import (
     active_prompt_plan_pictures, filter_prompt_plan_events, filter_prompt_plan_picture_items,
-    normalize_prompt_plan, project_prompt_plan_interval,
-    prompt_plan_compiled_prompt, prompt_plan_dialogue_complete, prompt_plan_shots,
-    validate_h3_identity_contract,
+    localize_prompt_from_plan, normalize_prompt_plan, project_prompt_plan_interval,
+    prompt_plan_dialogue_complete, prompt_plan_shots, prompt_plan_speakers, validate_h3_identity_contract,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images, reference_presentation_items
@@ -3268,9 +3267,8 @@ class HREndlessSampler(SamplerCustomAdvanced):
         original_refs = positive[0].get("minimax_refs", ())
         video_number = 1 + sum(ref["kind"] in ("video", "video_audio") for ref in original_refs)
         audio_number = 1 + sum(ref["kind"] in ("audio", "video_audio") for ref in original_refs)
-        semantic_prompt = prompt if typed_prompt_plan is None else prompt_plan_compiled_prompt(typed_prompt_plan)
         planned_prompts = _planned_chunk_prompts(
-            semantic_prompt,
+            prompt,
             plan,
             active_plan,
             fps,
@@ -3280,6 +3278,21 @@ class HREndlessSampler(SamplerCustomAdvanced):
             video_number,
             audio_number,
         )
+        if typed_prompt_plan is not None:
+            localized_prompts = []
+            previous_chunk_speakers = ()
+            for index, (chunk, (chunk_prompt, _debug_prompt)) in enumerate(zip(active_plan, planned_prompts)):
+                content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
+                localized = localize_prompt_from_plan(
+                    chunk_prompt, typed_prompt_plan,
+                    frame_start=content_start, frame_end=chunk["frame_end"],
+                    previous_chunk_speakers=previous_chunk_speakers,
+                )
+                localized_prompts.append((localized, _debug_chunk_prompt(index, chunk, content_start, localized)))
+                previous_chunk_speakers = prompt_plan_speakers(
+                    typed_prompt_plan, content_start, chunk["frame_end"]
+                )
+            planned_prompts = localized_prompts
         if debug:
             logging.info(
                 "HR Endless Sampler independent continuation controls: "
