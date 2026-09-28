@@ -1351,6 +1351,22 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotRegex(compiled["prompt"], r"\basset_\d+\b")
         self.assertIn("<Subject 1> opens the door", compiled["prompt"])
 
+    def test_chunk_reference_normalization_preserves_dialogue_and_rejects_unknown_ids(self):
+        plan = {
+            "image_subjects": [
+                {"entity_id": "asset_3", "picture": 3, "subject": 3},
+                {"entity_id": "asset_4", "picture": 4, "subject": 4},
+            ],
+        }
+        prompt = (
+            "Asset3 approaches asset_4 while <Subject 4> watches. "
+            "<d>[English] Keep Asset3 exactly as spoken.</d> unknown asset_9."
+        )
+        normalized = prompt_skill.normalize_h3_chunk_references(prompt, plan)
+        self.assertIn("<Subject 3> approaches <Subject 4>", normalized)
+        self.assertIn("<d>[English] Keep Asset3 exactly as spoken.</d>", normalized)
+        self.assertIn("asset_9", normalized)
+
     def test_chunk_prompt_validator_rejects_private_ids_and_false_scene_transitions(self):
         plan = {
             "shots": [{"start_frame": 0, "end_frame": 80, "dialogues": []}],

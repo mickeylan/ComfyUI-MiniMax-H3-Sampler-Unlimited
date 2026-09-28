@@ -1350,6 +1350,34 @@ def validate_h3_identity_contract(prompt: str, plan: dict[str, Any]) -> None:
             raise ValueError(f"H3 identity contract violation: Subject {number} speaks but is not a character")
 
 
+def normalize_h3_chunk_references(prompt: str, plan: dict[str, Any]) -> str:
+    aliases = {}
+    for item in plan.get("image_subjects", ()):
+        if not isinstance(item, dict):
+            continue
+        subject = int(item.get("subject", 0) or 0)
+        picture = int(item.get("picture", 0) or 0)
+        if subject <= 0:
+            continue
+        label = f"<Subject {subject}>"
+        entity_id = str(item.get("entity_id", "")).strip()
+        if entity_id:
+            aliases[entity_id.casefold()] = label
+        if picture > 0:
+            aliases[f"asset_{picture}"] = label
+            aliases[f"asset{picture}"] = label
+
+    parts = re.split(r"(<d>.*?</d>)", str(prompt), flags=re.IGNORECASE | re.DOTALL)
+    for index in range(0, len(parts), 2):
+        parts[index] = re.sub(
+            r"(?<![A-Za-z0-9_])asset_?\d+(?![A-Za-z0-9_])",
+            lambda match: aliases.get(match.group(0).casefold(), match.group(0)),
+            parts[index],
+            flags=re.IGNORECASE,
+        )
+    return "".join(parts)
+
+
 def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> None:
     text = str(prompt)
     headings = (
@@ -1932,7 +1960,7 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
     soundscape = _soundscape_sentence(
         local_soundscape or _nonverbal_soundscape(plan.get("overall_soundscape", ""))
     )
-    return "\n\n".join((
+    localized = "\n\n".join((
         "subject_definitions:\n" + ("\n".join(subjects) or "None."),
         "summary:\n" + summary,
         "retention_analysis:\n" + "\n".join(retention),
@@ -1940,6 +1968,7 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         "overall_soundscape:\n" + soundscape,
         "non_diegetic_music:\n" + str(plan.get("non_diegetic_music", "N/A") or "N/A").strip(),
     ))
+    return normalize_h3_chunk_references(localized, plan)
 
 
 def _ascii_asset_name(value: Any, picture: int, *, fallback: bool = True) -> str:
