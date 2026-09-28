@@ -1133,6 +1133,33 @@ class PromptSkillTests(unittest.TestCase):
         edited["shots"][0]["events"] = [dict(event, action="walks inside once") for event in edited["shots"][0]["events"]]
         prompt_skill.validate_prompt_plan_edit(original, edited)
 
+    def test_stale_editor_timeline_rebases_to_connected_compiler_plan(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        original = prompt_skill.normalize_prompt_plan(
+            prompt_skill.build_typed_prompt_plan(compiled, fps=24.0), fps=24.0, total_frames=56
+        )
+        current = {**original, "total_frames": 73, "shots": [dict(shot) for shot in original["shots"]]}
+        current["shots"][-1]["end_frame"] = 73
+        current = prompt_skill.normalize_prompt_plan(current, fps=24.0, total_frames=73)
+        stale = {**original, "shots": [dict(shot) for shot in original["shots"]]}
+        stale["shots"][0]["camera"] = "manually edited locked camera"
+        rebased, warnings = prompt_skill.rebase_prompt_plan_timeline(current, stale)
+        normalized = prompt_skill.normalize_prompt_plan(rebased, fps=24.0, total_frames=73)
+        self.assertEqual(normalized["total_frames"], 73)
+        self.assertEqual(normalized["shots"][-1]["end_frame"], 73)
+        self.assertEqual(normalized["shots"][0]["camera"], "manually edited locked camera")
+        self.assertTrue(any("Rebased stale editor timeline" in item for item in warnings))
+
+    def test_stale_editor_with_changed_shot_count_uses_current_plan(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        original = prompt_skill.normalize_prompt_plan(
+            prompt_skill.build_typed_prompt_plan(compiled, fps=24.0), fps=24.0, total_frames=56
+        )
+        stale = {**original, "total_frames": 39, "shots": original["shots"][:1]}
+        rebased, warnings = prompt_skill.rebase_prompt_plan_timeline(original, stale)
+        self.assertEqual(rebased, original)
+        self.assertTrue(any("Replaced stale editor JSON" in item for item in warnings))
+
     def test_prompt_plan_edit_rejects_dialogue_or_identity_changes(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         original = prompt_skill.normalize_prompt_plan(
