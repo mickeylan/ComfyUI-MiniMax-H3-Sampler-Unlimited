@@ -217,6 +217,7 @@ class Qwen35Tests(unittest.TestCase):
             }],
             "preproduction_timing_plan": "timing schedule",
             "mandatory_coverage": [{"id": "S1.V1"}],
+            "immutable_prompt_plan_contract": "LOCK SHOT 1 AND ITS DIALOGUE",
             "character_name_table": "Hero -> <Subject 1>",
             "conditioning_context": "<Video 1> and <Audio 1>",
             "observation_frame_numbers": [40, 60],
@@ -232,7 +233,7 @@ class Qwen35Tests(unittest.TestCase):
         self.assertIn("for a Chinese original prompt, write those values in Chinese", system)
         for text in (
             "[Shot 1] At 00:00.208,", "Hero -> <Subject 1>", "<Video 1> and <Audio 1>",
-            "40, 60", "previous prompt", "previous timing", "previous state", '"character": "Hero"',
+            "LOCK SHOT 1 AND ITS DIALOGUE", "40, 60", "previous prompt", "previous timing", "previous state", '"character": "Hero"',
         ):
             self.assertIn(text, prompt)
 

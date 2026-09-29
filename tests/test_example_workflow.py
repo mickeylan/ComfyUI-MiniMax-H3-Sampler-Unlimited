@@ -25,6 +25,9 @@ class ExampleWorkflowTests(unittest.TestCase):
     def test_compiler_and_sampler_use_same_chunk_frames(self):
         self.assertEqual(self.widget_value(2602, "chunk_frames"), self.widget_value(2576, "chunk_frames"))
 
+    def test_sampler_exposes_enabled_director_toggle(self):
+        self.assertTrue(self.widget_value(2576, "director_enabled"))
+
     def test_prompt_skill_planned_frames_drive_conditioning_length(self):
         link_id = self.input_link(2603, "length")
         link = self.links[link_id]

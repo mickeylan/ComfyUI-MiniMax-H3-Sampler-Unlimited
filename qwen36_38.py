@@ -247,6 +247,9 @@ def _chunk_messages(request: dict[str, Any]) -> tuple[str, str]:
         "shot_context": _source_shots(request.get("target_shots", ())),
         "preproduction_timing_plan": request.get("preproduction_timing_plan", ""),
         "mandatory_coverage": json.dumps(request.get("mandatory_coverage", ()), ensure_ascii=False),
+        "immutable_prompt_plan_contract": request.get(
+            "immutable_prompt_plan_contract", "No typed prompt plan is connected."
+        ),
         "character_name_table": request.get("character_name_table", "none"),
         "conditioning_context": request.get("conditioning_context", "none"),
         "observation_frames": ", ".join(str(value) for value in request.get("observation_frame_numbers", ())) or "none",

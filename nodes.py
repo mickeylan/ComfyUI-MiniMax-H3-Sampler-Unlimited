@@ -402,7 +402,7 @@ def _reference_set_fingerprint(value):
 
 def _replay_fingerprint(video, audio, plan, *, fps, chunk_frames,
                         context_keyframes, guide_overlap, video_continuation,
-                        video_continuation_res, ref2va, director_backend="gemma4",
+                        video_continuation_res, ref2va, director_enabled=True, director_backend="gemma4",
                         director_model="auto", director_mmproj="auto", external_continuation=None):
     """Describe the immutable tensor/layout inputs required for an exact replay.
 
@@ -422,6 +422,7 @@ def _replay_fingerprint(video, audio, plan, *, fps, chunk_frames,
         "video_continuation": int(video_continuation),
         "video_continuation_res": str(video_continuation_res),
         "ref2va": bool(ref2va),
+        "director_enabled": bool(director_enabled),
         "director_backend": str(director_backend),
         "director_model": director_model,
         "director_mmproj": director_mmproj,
@@ -3013,6 +3014,10 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                                     tooltip="Qwen3.5-analyzed ordinary-video continuation. Applies its source tail only to the first physical chunk."),
                 HREndlessRetakePlan.Input("retake_plan", optional=True,
                                           tooltip="Optional validated chunk plan from HR Endless Segment Retake Director."),
+                io.Boolean.Input(
+                    "director_enabled", default=True,
+                    tooltip="Run the selected Gemma/Qwen visual continuity director before every chunk. Disable to save planning time and use deterministic prompt projection only.",
+                ),
                 io.Boolean.Input("cache_gemma_preproduction", default=False,
                                  tooltip="Save one clean post-preproduction Gemma KV context in temporary RAM and restore it for each chunk. Avoids re-feeding static source intent and timing plans; needs several GiB of system RAM."),
                 io.Boolean.Input("gemma4_mtp", default=True,
@@ -3081,7 +3086,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
     @classmethod
     def execute(cls, noise, guider, sampler, sigmas, latent_image, clip, prompt, fps=24.0, chunk_frames=124, images=None,
                 source_images=None, video_continuation=22, video_continuation_res="full", vae=None, retake_plan=None,
-                cache_gemma_preproduction=False, gemma4_mtp=True, director_mtp_draft_tokens=2,
+                director_enabled=True, cache_gemma_preproduction=False, gemma4_mtp=True, director_mtp_draft_tokens=2,
                 director_reasoning_effort="xhigh", director_cpu_moe=False, director_n_cpu_moe=0,
                 pytorch_memory_fraction=DEFAULT_PYTORCH_MEMORY_FRACTION,
                 debug=False, debug_stop_chunk=0, debug_start_chunk=0, director_backend="gemma4",
@@ -3141,14 +3146,14 @@ class HREndlessSampler(SamplerCustomAdvanced):
         # serialized legacy values too: an old workflow must not quietly enable
         # an experimental overlap, keyframe, Qwen-history, or preview-only path.
         director_selection = resolve_director_selection(director_backend, director_model, director_mmproj)
-        if director_selection.backend in QWEN_DIRECTOR_BACKENDS:
+        if director_enabled and director_selection.backend in QWEN_DIRECTOR_BACKENDS:
             if director_selection.model_path is None or director_selection.mmproj_path is None:
                 raise ValueError("Qwen requires a local GGUF model and mmproj")
             if cache_gemma_preproduction:
                 raise ValueError("Qwen does not support the Gemma preproduction KV cache")
-        elif (director_selection.model_path is None) != (director_selection.mmproj_path is None):
+        elif director_enabled and (director_selection.model_path is None) != (director_selection.mmproj_path is None):
             raise ValueError("Gemma 4 requires both a local GGUF model and mmproj, or auto for both")
-        elif gemma4_mtp and director_selection.model_path is not None and not is_official_gemma4_pair(
+        elif director_enabled and gemma4_mtp and director_selection.model_path is not None and not is_official_gemma4_pair(
             director_selection.model_path,
             director_selection.mmproj_path,
         ):
@@ -3269,7 +3274,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
         # A connected typed prompt plan owns immutable shots, cuts, dialogue and
         # events. The selected director still observes each completed physical
         # chunk and authors only the next chunk's reachable visual continuation.
-        gemma_director_needed = _needs_chunk_director(
+        gemma_director_needed = bool(director_enabled) and _needs_chunk_director(
             typed_prompt_plan, gemma_shots, continuation_state, external_active
         )
 
@@ -3391,6 +3396,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
             video_continuation=video_continuation,
             video_continuation_res=video_continuation_res,
             ref2va=ref2va,
+            director_enabled=director_enabled,
             director_backend=director_selection.backend,
             director_model=_director_file_fingerprint(director_selection.model_path),
             director_mmproj=_director_file_fingerprint(director_selection.mmproj_path),

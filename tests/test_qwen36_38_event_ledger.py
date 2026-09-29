@@ -27,6 +27,12 @@ class QwenEventLedgerTests(unittest.TestCase):
         self.assertIn("EVENT OWNERSHIP LEDGER", prompt)
         self.assertIn("S1.V1", prompt)
         self.assertIn("MUST NOT stage, replay", prompt)
+        self.assertIn("No typed prompt plan is connected.", prompt)
+
+    def test_chunk_prompt_includes_typed_plan_contract(self):
+        request = {**self.request(), "immutable_prompt_plan_contract": "LOCK SHOT 3 AND DIALOGUE S2"}
+        _system, prompt = runtime._chunk_messages(request)
+        self.assertIn("LOCK SHOT 3 AND DIALOGUE S2", prompt)
 
     def test_parser_normalizes_and_forbids_completed_events(self):
         result = runtime._chunk_prompt({

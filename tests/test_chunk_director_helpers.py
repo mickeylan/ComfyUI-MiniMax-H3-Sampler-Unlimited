@@ -90,7 +90,7 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             "prompt_preview_only",
         } & set(input_ids))
         self.assertEqual(input_ids[input_ids.index("retake_plan") + 1:input_ids.index("director_backend")], [
-            "cache_gemma_preproduction", "gemma4_mtp", "pytorch_memory_fraction",
+            "director_enabled", "cache_gemma_preproduction", "gemma4_mtp", "pytorch_memory_fraction",
             "debug", "debug_stop_chunk", "debug_start_chunk",
         ])
         self.assertEqual(input_ids[input_ids.index("director_backend"):input_ids.index("director_mtp_draft_tokens")],
@@ -107,6 +107,8 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertNotIn("qwen_full_history", execute_params)
         self.assertNotIn("prompt_preview_only", execute_params)
         self.assertIn("debug_start_chunk", execute_params)
+        self.assertIn("director_enabled", execute_params)
+        self.assertTrue(execute_params["director_enabled"].default)
         self.assertIn("cache_gemma_preproduction", execute_params)
         self.assertIn("gemma4_mtp", execute_params)
         parameter_ids = list(execute_params)
@@ -218,6 +220,14 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             video_continuation_res="full",
             ref2va=False,
         )
+        self.assertTrue(fingerprint["director_enabled"])
+        disabled_fingerprint = nodes._replay_fingerprint(
+            video, audio, plan, fps=24.0, chunk_frames=5, context_keyframes=0,
+            guide_overlap=0, video_continuation=0, video_continuation_res="full",
+            ref2va=False, director_enabled=False,
+        )
+        self.assertFalse(disabled_fingerprint["director_enabled"])
+        self.assertNotEqual(fingerprint, disabled_fingerprint)
         with tempfile.TemporaryDirectory() as temp_root, \
                 patch.object(nodes.tempfile, "gettempdir", return_value=temp_root):
             cache = nodes._LastRunReplayCache()
