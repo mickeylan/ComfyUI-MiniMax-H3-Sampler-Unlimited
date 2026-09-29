@@ -11,7 +11,8 @@ from .director_backend import resolve_director_selection
 from .director_config import HRDirectorConfig, normalize_qwen38_config
 from .prompt_skill import (
     CONTINUITY_MODES, build_prompt_skill_request, build_typed_prompt_plan,
-    normalize_prompt_plan, rebase_prompt_plan_edit, rebase_prompt_plan_timeline, validate_prompt_plan_edit,
+    normalize_physical_chunk_frames, normalize_prompt_plan, rebase_prompt_plan_edit,
+    rebase_prompt_plan_timeline, validate_prompt_plan_edit,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images
@@ -36,6 +37,10 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
                 io.String.Input("story", multiline=True, dynamic_prompts=True),
                 io.Float.Input("duration_seconds", default=10.0, min=0.21, max=3600.0, step=0.001),
                 io.Float.Input("fps", default=24.0, min=1.0, max=120.0, step=0.001),
+                io.Int.Input(
+                    "chunk_frames", default=124, min=22, max=3600, step=17,
+                    tooltip="Set this to the same chunk_frames value used by HR Endless Sampler. It does not create shots at chunk boundaries.",
+                ),
                 HRReferenceSet.Input("reference_set"),
                 HRDirectorConfig.Input("director_config"),
                 io.String.Input("style", default="cinematic realism", advanced=True),
@@ -57,7 +62,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, story, duration_seconds, fps, reference_set, director_config,
+    def execute(cls, story, duration_seconds, fps, chunk_frames, reference_set, director_config,
                 style="cinematic realism", shot_density="medium", continuity_mode="balanced", prompt_lang="zh"):
         images = reference_images(reference_set)
         if not images:
@@ -69,7 +74,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
         request = build_prompt_skill_request(
             story, duration_seconds=duration_seconds, fps=fps, image_count=len(images),
             style=style, shot_density=shot_density, continuity_mode=continuity_mode,
-            prompt_lang=prompt_lang,
+            prompt_lang=prompt_lang, chunk_frames=chunk_frames,
         )
         comfy.model_management.unload_all_models()
         comfy.model_management.soft_empty_cache()
@@ -87,6 +92,8 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
         report = {
             "backend": config["backend"],
             "continuity_mode": continuity_mode,
+            "chunk_frames": normalize_physical_chunk_frames(chunk_frames),
+            "retained_chunk_frames": normalize_physical_chunk_frames(chunk_frames) - 5,
             "subjects": len(plan.get("image_subjects", ())),
             "shots": len(plan.get("shots", ())),
             "events": sum(len(item.get("events", ())) for item in plan.get("shots", ())),
@@ -96,7 +103,7 @@ class HRH3PromptSkillCompiler(io.ComfyNode):
             "duration_source": request["duration_source"],
             "warnings": list(warnings),
         }
-        typed_plan = build_typed_prompt_plan(result, fps=fps)
+        typed_plan = build_typed_prompt_plan(result, fps=fps, chunk_frames=chunk_frames)
         return io.NodeOutput(
             str(result["prompt"]),
             json.dumps(plan, ensure_ascii=False, indent=2),

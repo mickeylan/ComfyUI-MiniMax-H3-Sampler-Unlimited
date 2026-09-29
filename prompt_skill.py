@@ -231,6 +231,7 @@ User-requested duration: {requested_duration:g} seconds.
 Estimated duration for the exact spoken content, including natural pauses and visual lead-in/out: {spoken_duration:g} seconds.
 Duration authority: {request.get('duration_source', 'user')}. When dialogue is present, its estimated natural duration owns the complete timeline and the user-requested duration is only a reference; the result may be shorter or longer. When dialogue is absent, preserve the user-requested duration.
 Allocate every dialogue fragment enough frames for natural delivery. Do not repeat actions, shots, or camera moves merely to fill the user-requested duration.
+Physical sampling contract: the sampler processes at most {int(request.get('chunk_frames', 124))} frames per chunk; after the first chunk, its five-frame packing prefix is discarded, so a normal later chunk retains {int(request.get('retained_chunk_frames', 119))} new frames. This is not a shot boundary. Plan semantic shots independently, but keep dialogue and action projection feasible across these short retained windows without inventing cuts or restarts.
 Style: {request.get('style', 'cinematic realism')}.
 Shot density: {request.get('shot_density', 'medium')}.
 Connected pictures:
@@ -1520,13 +1521,15 @@ def compile_prompt_skill(value: Any, request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_typed_prompt_plan(compiled: dict[str, Any], *, fps: float) -> dict[str, Any]:
+def build_typed_prompt_plan(compiled: dict[str, Any], *, fps: float, chunk_frames: int = 124) -> dict[str, Any]:
     plan = compiled["shot_plan"]
     return {
         "type": "HR_H3_PROMPT_PLAN",
         "version": 1,
         "fps": float(fps),
         "total_frames": int(compiled["planned_frames"]),
+        "chunk_frames": normalize_physical_chunk_frames(chunk_frames),
+        "retained_chunk_frames": normalize_physical_chunk_frames(chunk_frames) - 5,
         "image_subjects": [dict(item) for item in plan.get("image_subjects", ())],
         "shots": [dict(item) for item in plan.get("shots", ())],
         "summary": str(plan.get("summary", "")),
@@ -1537,7 +1540,8 @@ def build_typed_prompt_plan(compiled: dict[str, Any], *, fps: float) -> dict[str
     }
 
 
-def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[str, Any]:
+def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int,
+                          chunk_frames: int | None = None) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("type") != "HR_H3_PROMPT_PLAN":
         raise ValueError("prompt_plan must come from HR H3 Prompt Skill Compiler or a compatible adapter")
     if value.get("version") != 1:
@@ -1546,6 +1550,14 @@ def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[
         raise ValueError("prompt_plan FPS does not match HR Endless Sampler FPS")
     if int(value.get("total_frames", 0)) != int(total_frames):
         raise ValueError("prompt_plan total_frames does not match the MiniMax H3 latent")
+    if chunk_frames is not None:
+        expected_chunk_frames = normalize_physical_chunk_frames(chunk_frames)
+        planned_chunk_frames = value.get("chunk_frames")
+        if planned_chunk_frames is not None and int(planned_chunk_frames) != expected_chunk_frames:
+            raise ValueError(
+                "prompt_plan chunk_frames does not match HR Endless Sampler chunk_frames; "
+                f"Compiler planned {int(planned_chunk_frames)}, Sampler uses {expected_chunk_frames}"
+            )
     subjects, shots = value.get("image_subjects", ()), value.get("shots", ())
     if not isinstance(subjects, (list, tuple)) or not isinstance(shots, (list, tuple)) or not shots:
         raise ValueError("prompt_plan requires image_subjects and at least one shot")
@@ -2123,8 +2135,16 @@ def _ascii_asset_name(value: Any, picture: int, *, fallback: bool = True) -> str
     return name or f"Asset{picture}"
 
 
+def normalize_physical_chunk_frames(chunk_frames: int) -> int:
+    value = int(chunk_frames)
+    if value < 22:
+        raise ValueError("chunk_frames must be at least 22")
+    return value - (value - 5) % 17
+
+
 def build_prompt_skill_request(story: str, *, duration_seconds: float, fps: float, image_count: int,
-                               style: str, shot_density: str, continuity_mode: str, prompt_lang: str) -> dict[str, Any]:
+                               style: str, shot_density: str, continuity_mode: str, prompt_lang: str,
+                               chunk_frames: int = 124) -> dict[str, Any]:
     if not isinstance(story, str) or not story.strip():
         raise ValueError("Prompt Skill Compiler requires a non-empty story")
     if continuity_mode not in CONTINUITY_MODES:
@@ -2157,6 +2177,8 @@ def build_prompt_skill_request(story: str, *, duration_seconds: float, fps: floa
         "duration_source": duration_source,
         "fps": float(fps),
         "total_frames": total_frames,
+        "chunk_frames": normalize_physical_chunk_frames(chunk_frames),
+        "retained_chunk_frames": normalize_physical_chunk_frames(chunk_frames) - 5,
         "image_count": int(image_count),
         "style": str(style), "shot_density": str(shot_density),
         "continuity_mode": continuity_mode, "prompt_lang": prompt_lang,

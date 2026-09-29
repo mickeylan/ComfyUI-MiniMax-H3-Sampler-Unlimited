@@ -17,6 +17,14 @@ class ExampleWorkflowTests(unittest.TestCase):
         node = self.nodes[node_id]
         return next(item["link"] for item in node["inputs"] if item["name"] == name)
 
+    def widget_value(self, node_id, name):
+        node = self.nodes[node_id]
+        widget_names = [item["name"] for item in node["inputs"] if item.get("widget")]
+        return node["widgets_values"][widget_names.index(name)]
+
+    def test_compiler_and_sampler_use_same_chunk_frames(self):
+        self.assertEqual(self.widget_value(2602, "chunk_frames"), self.widget_value(2576, "chunk_frames"))
+
     def test_prompt_skill_planned_frames_drive_conditioning_length(self):
         link_id = self.input_link(2603, "length")
         link = self.links[link_id]

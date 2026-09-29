@@ -1166,6 +1166,26 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(captured["director_backend"], "qwen3.5")
         self.assertEqual(result["planned_frames"], 56)
 
+    def test_prompt_plan_records_normalized_sampler_chunk_geometry(self):
+        request = prompt_skill.build_prompt_skill_request(
+            "A hero waits.", duration_seconds=2.0, fps=24.0, image_count=1,
+            style="cinematic", shot_density="low", continuity_mode="balanced",
+            prompt_lang="en", chunk_frames=60,
+        )
+        self.assertEqual(request["chunk_frames"], 56)
+        self.assertEqual(request["retained_chunk_frames"], 51)
+        compiled = prompt_skill.compile_prompt_skill(self.result(), request)
+        typed = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0, chunk_frames=60)
+        self.assertEqual(typed["chunk_frames"], 56)
+        self.assertEqual(typed["retained_chunk_frames"], 51)
+        prompt_skill.normalize_prompt_plan(
+            typed, fps=24.0, total_frames=typed["total_frames"], chunk_frames=56
+        )
+        with self.assertRaisesRegex(ValueError, "chunk_frames does not match"):
+            prompt_skill.normalize_prompt_plan(
+                typed, fps=24.0, total_frames=typed["total_frames"], chunk_frames=39
+            )
+
     def test_builds_versioned_typed_plan_without_changing_legacy_outputs(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         typed_plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)

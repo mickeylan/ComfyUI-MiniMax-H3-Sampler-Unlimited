@@ -3253,7 +3253,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                   output_trim_frames=0, synthetic_prefix=True)
             plan = active_plan if debug_stop_chunk == 0 else [*active_plan, *plan[len(active_plan):]]
         typed_prompt_plan = None if prompt_plan is None else normalize_prompt_plan(
-            prompt_plan, fps=fps, total_frames=plan[-1]["frame_end"]
+            prompt_plan, fps=fps, total_frames=plan[-1]["frame_end"], chunk_frames=chunk_frames
         )
         source_prompt_identity = prompt
         if typed_prompt_plan is not None:
