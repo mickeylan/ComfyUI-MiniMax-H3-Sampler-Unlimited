@@ -1547,6 +1547,33 @@ def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: 
         raise ValueError("H3 final dialogue fragment incorrectly claims continuation into the next chunk")
 
 
+def normalize_h3_chunk_dialogue(prompt: str, expected_prompt: str) -> str:
+    text = str(prompt)
+    if _DIALOGUE_TAG.search(str(expected_prompt)):
+        return text
+    bounds = _h3_section_bounds(text, "detailed_description:", "overall_soundscape:")
+    if bounds is None or not _DIALOGUE_TAG.search(text):
+        return text
+    start, end = bounds
+    description = text[start + len("detailed_description:"):end]
+    description = re.sub(
+        r"(?:<Subject\s+\d+>\s*\(S\d+\)\s*)?(?:says?|asks?|replies?|answers?|whispers?|shouts?|continues?|说|说道|问|询问|回答|答道|低语|喊|喊道)\s*[:：]?\s*<d>.*?</d>",
+        "",
+        description,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    description = _DIALOGUE_TAG.sub("", description)
+    description = re.sub(r"[ \t]+", " ", description)
+    description = re.sub(r"\n\s*\n+", "\n", description).strip()
+    silence = (
+        "No character vocalizes in this interval. Every character keeps their lips sealed with no mouth or jaw movement."
+    )
+    if silence.casefold() not in description.casefold():
+        description = (description + "\n" + silence).strip()
+    replacement = "detailed_description:\n" + description + "\n\n"
+    return text[:start] + replacement + text[end:]
+
+
 def validate_h3_chunk_dialogue_contract(prompt: str, expected_prompt: str) -> None:
     """Reject director-authored speech that differs from deterministic typed projection."""
     actual = tuple(re.sub(r"\s+", " ", item).strip() for item in _DIALOGUE_TAG.findall(str(prompt)))

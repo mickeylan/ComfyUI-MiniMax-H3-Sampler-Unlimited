@@ -1703,6 +1703,30 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("mouth and jaw remains completely still", prompt)
         self.assertNotIn("natural breathing, lip movement", prompt)
 
+    def test_silent_chunk_removes_director_invented_dialogue_before_validation(self):
+        expected = (
+            "subject_definitions:\nNone.\n\nsummary:\nsummary.\n\n"
+            "retention_analysis:\n<Video 1>: fully_preserved - continuity.\n\n"
+            "detailed_description:\nNo character vocalizes in this interval.\n\n"
+            "overall_soundscape:\nWind.\n\nnon_diegetic_music:\nN/A"
+        )
+        directed = expected.replace(
+            "No character vocalizes in this interval.",
+            "The sisters face each other. <Subject 4> (S2) says: "
+            "<d>[Chinese] 姐姐，自从你跟太运宗使者比试之后，这十年你都没有怎么好好闭关修炼过。</d>",
+        )
+        normalized = prompt_skill.normalize_h3_chunk_dialogue(directed, expected)
+        self.assertNotIn("<d>", normalized)
+        self.assertNotIn("姐姐", normalized)
+        self.assertIn("The sisters face each other", normalized)
+        self.assertIn("No character vocalizes in this interval", normalized)
+        prompt_skill.validate_h3_chunk_dialogue_contract(normalized, expected)
+
+    def test_chunk_with_dialogue_does_not_silently_rewrite_director_words(self):
+        expected = "detailed_description:\n<Subject 1> (S1) says: <d>[English] Stay.</d>\n\noverall_soundscape:\nWind."
+        directed = expected.replace("Stay.", "Go.")
+        self.assertEqual(prompt_skill.normalize_h3_chunk_dialogue(directed, expected), directed)
+
     def test_director_dialogue_contract_rejects_invented_or_missing_words(self):
         expected = "detailed_description:\n<Subject 1> (S1) says: <d>[English] Stay.</d>"
         prompt_skill.validate_h3_chunk_dialogue_contract(expected, expected)
