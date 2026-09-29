@@ -1477,8 +1477,13 @@ def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: 
     positions = [text.find(heading) for heading in headings]
     if any(position < 0 for position in positions) or positions != sorted(positions):
         raise ValueError("H3 chunk prompt must contain the six full-reference sections in guide order")
-    if re.search(r"(?<![A-Za-z0-9_])asset_?\d+(?![A-Za-z0-9_])", text, re.IGNORECASE):
-        raise ValueError("H3 chunk prompt leaks private asset_N identifiers")
+    non_dialogue = re.sub(r"<d>.*?</d>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    leaked = re.search(r"(?<![A-Za-z0-9_])asset_?\d+(?![A-Za-z0-9_])", non_dialogue, re.IGNORECASE)
+    if leaked:
+        excerpt_start = max(0, leaked.start() - 60)
+        excerpt_end = min(len(non_dialogue), leaked.end() + 60)
+        excerpt = re.sub(r"\s+", " ", non_dialogue[excerpt_start:excerpt_end]).strip()
+        raise ValueError(f"H3 chunk prompt leaks an unmapped private identifier near: {excerpt}")
 
     retention = text[positions[2] + len(headings[2]):positions[3]]
     if re.search(r"(?:Camera contract|Current state|Required ending state|Forbidden replay|Only the active events)", retention, re.IGNORECASE):

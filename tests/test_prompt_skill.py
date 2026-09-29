@@ -1508,11 +1508,14 @@ class PromptSkillTests(unittest.TestCase):
             "detailed_description:\n[Shot 1] <d>[Chinese] <scenetrans> 继续。</d>\n\n"
             "overall_soundscape:\nSoft wind.\n\nnon_diegetic_music:\nN/A"
         )
-        with self.assertRaisesRegex(ValueError, "private asset_N"):
+        with self.assertRaisesRegex(ValueError, "unmapped private identifier near:.*asset_1"):
             prompt_skill.validate_h3_chunk_prompt(prompt, plan, frame_start=0, frame_end=40)
         prompt = prompt.replace("asset_1", "<Subject 1>")
         with self.assertRaisesRegex(ValueError, "without a real semantic shot cut"):
             prompt_skill.validate_h3_chunk_prompt(prompt, plan, frame_start=0, frame_end=40)
+
+        dialogue_prompt = prompt.replace("<scenetrans> 继续。", "用户逐字说 Asset3。")
+        prompt_skill.validate_h3_chunk_prompt(dialogue_prompt, plan, frame_start=0, frame_end=40)
 
     def test_localized_event_action_removes_internal_asset_ids(self):
         subjects = {

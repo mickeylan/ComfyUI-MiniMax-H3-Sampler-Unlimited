@@ -4501,6 +4501,11 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     if gemma_report is not None:
                         debug_prompt = _debug_chunk_prompt(index, chunk, content_start, chunk_prompt, gemma_report)
                 if typed_prompt_plan is not None:
+                    chunk_prompt = normalize_h3_chunk_references(chunk_prompt, typed_prompt_plan)
+                    chunk_prompt = normalize_h3_chunk_transitions(
+                        chunk_prompt, typed_prompt_plan,
+                        frame_start=content_start, frame_end=chunk["frame_end"],
+                    )
                     validate_h3_chunk_dialogue_contract(chunk_prompt, planned_prompts[index][0])
                     validate_h3_chunk_prompt(
                         chunk_prompt, typed_prompt_plan,
@@ -4553,11 +4558,6 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     # chunks and let scenes become speaking characters.
                 if typed_prompt_plan is not None:
                     content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
-                    chunk_prompt = normalize_h3_chunk_references(chunk_prompt, typed_prompt_plan)
-                    chunk_prompt = normalize_h3_chunk_transitions(
-                        chunk_prompt, typed_prompt_plan,
-                        frame_start=content_start, frame_end=chunk["frame_end"],
-                    )
                     validate_h3_chunk_prompt(
                         chunk_prompt, typed_prompt_plan,
                         frame_start=content_start, frame_end=chunk["frame_end"],
