@@ -1040,6 +1040,17 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertTrue(torch.equal(context, previous[..., -40:]))
         self.assertEqual(end_frame, 4.8)
 
+    def test_audio_context_stops_at_speech_silence_and_new_speaker_boundaries(self):
+        speaking = "detailed_description:\n<Subject 1> (S1) continues the same uninterrupted utterance from the previous chunk: <d>[English] hello</d>"
+        continued = "detailed_description:\n<Subject 1> (S1) continues the same uninterrupted utterance from the previous chunk: <d>[English] world</d>"
+        silent = "detailed_description:\nNo character vocalizes in this interval."
+        new_speaker = "detailed_description:\n<Subject 2> (S2) says: <d>[English] reply</d>"
+        self.assertFalse(nodes._suppress_previous_audio_context(speaking, continued))
+        self.assertTrue(nodes._suppress_previous_audio_context(speaking, silent))
+        self.assertTrue(nodes._suppress_previous_audio_context(silent, new_speaker))
+        self.assertTrue(nodes._suppress_previous_audio_context(speaking, new_speaker))
+        self.assertFalse(nodes._suppress_previous_audio_context(silent, silent))
+
     def test_timeline_audio_context_compensates_signed_overhang_before_grid_snap(self):
         positive = torch.zeros((1, 32, 2, 207))
         _tail, positive_end = nodes._timeline_audio_context(positive, 124, 5)

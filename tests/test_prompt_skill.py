@@ -1658,6 +1658,30 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("begin the line", prompt)
         self.assertIn("Every mouth and jaw remains still", prompt)
 
+    def test_no_dialogue_interval_seals_mouths_even_before_later_dialogue(self):
+        shot = {
+            "start_frame": 0, "end_frame": 80, "start_state": "both women face each other",
+            "end_state": "both women hold position", "dialogues": [{
+                "speaker": "<Subject 1>", "speaker_id": "S1", "kind": "dialogue",
+                "language": "English", "text": "Later.", "delivery": "quietly",
+                "start_frame": 40, "end_frame": 80,
+            }],
+        }
+        prompt = prompt_skill._localized_shot_description(shot, 0, 40, 24.0, (), {}, False)
+        self.assertIn("No character vocalizes in this interval", prompt)
+        self.assertIn("mouth and jaw remains completely still", prompt)
+        self.assertNotIn("natural breathing, lip movement", prompt)
+
+    def test_director_dialogue_contract_rejects_invented_or_missing_words(self):
+        expected = "detailed_description:\n<Subject 1> (S1) says: <d>[English] Stay.</d>"
+        prompt_skill.validate_h3_chunk_dialogue_contract(expected, expected)
+        with self.assertRaisesRegex(ValueError, "changed the typed-plan dialogue contract"):
+            prompt_skill.validate_h3_chunk_dialogue_contract(
+                "detailed_description:\n<Subject 1> (S1) says: <d>[English] Go.</d>", expected
+            )
+        silent = "detailed_description:\nNo character vocalizes in this interval."
+        prompt_skill.validate_h3_chunk_dialogue_contract(silent, silent)
+
     def test_localized_sections_do_not_reintroduce_future_action_or_internal_ids(self):
         plan = {
             "fps": 24.0, "total_frames": 80, "non_diegetic_music": "N/A",

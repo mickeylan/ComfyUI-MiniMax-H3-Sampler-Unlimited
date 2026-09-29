@@ -1508,6 +1508,23 @@ def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: 
         raise ValueError("H3 final dialogue fragment incorrectly claims continuation into the next chunk")
 
 
+def validate_h3_chunk_dialogue_contract(prompt: str, expected_prompt: str) -> None:
+    """Reject director-authored speech that differs from deterministic typed projection."""
+    actual = tuple(re.sub(r"\s+", " ", item).strip() for item in _DIALOGUE_TAG.findall(str(prompt)))
+    expected = tuple(re.sub(r"\s+", " ", item).strip() for item in _DIALOGUE_TAG.findall(str(expected_prompt)))
+    if actual != expected:
+        raise ValueError(
+            "H3 chunk director changed the typed-plan dialogue contract: "
+            f"expected {list(expected)!r}, got {list(actual)!r}"
+        )
+    if not expected and re.search(
+        r"\b(?:vocalizes?|speaks?|says?|replies?|answers?|whispers?|shouts?|dialogue|voiceover|monologue|singing)\b",
+        _description_text(str(prompt)),
+        re.IGNORECASE,
+    ) and "no character vocalizes" not in str(prompt).lower():
+        raise ValueError("H3 chunk without scripted dialogue must explicitly prohibit character vocalization")
+
+
 def compile_prompt_skill(value: Any, request: dict[str, Any]) -> dict[str, Any]:
     plan = validate_prompt_skill_result(value, request)
     prompt = compile_h3_prompt(plan, fps=float(request["fps"]))
@@ -1924,11 +1941,16 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
             for event in allowed_events
         ))
         parts.extend(dict.fromkeys(event_parts))
+        if not dialogue_fragments:
+            parts.append(
+                "No character vocalizes in this interval. Every mouth and jaw remains completely still; "
+                "no dialogue, voiceover, monologue, singing, or other human vocalization occurs."
+            )
     elif active_events or frame_start > int(shot["start_frame"]):
         state = _visual_state(shot.get("start_state" if frame_start <= int(shot["start_frame"]) else "end_state", ""), subjects_by_entity)
         parts.append(
             "The characters maintain their established positions, body orientation, eye lines, and framing."
-            + (" Every mouth and jaw remains still." if scripted_dialogue_complete else "")
+            + (" Every mouth and jaw remains still; no character vocalizes." if not dialogue_fragments else "")
             + (f" The visible state remains: {state}." if state and not active_speakers else "")
         )
     elif frame_start <= int(shot["start_frame"]):
@@ -1938,7 +1960,17 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
     elif scripted_dialogue_complete:
         parts.append("Maintain the established post-action body orientation, positions, and composition; allow only subtle eye and facial-expression changes while every mouth and jaw remains completely still.")
     else:
-        parts.append("Maintain the established post-action body orientation, positions, and composition; allow only natural breathing, lip movement, and subtle expression changes.")
+        parts.append(
+            "Maintain the established post-action body orientation, positions, and composition; allow only subtle "
+            "eye and facial-expression changes while every mouth and jaw remains completely still. No character "
+            "vocalizes in this interval."
+        )
+
+    if not parts and not dialogue_fragments:
+        parts.append(
+            "Maintain the established composition and visible states. No character vocalizes in this interval. "
+            "Every mouth and jaw remains completely still."
+        )
 
     for speaker, fragment, first_fragment, overlap_start, overlap_end in dialogue_fragments:
         silent = [
@@ -2064,7 +2096,12 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         localized_descriptions.append(description)
         local_shots.append(f"{marker} {description}")
     local_description = "\n".join(local_shots)
-    chunk_speakers = set(prompt_plan_speakers(plan, frame_start, frame_end))
+    chunk_speakers = {
+        match.group(1)
+        for description in localized_descriptions
+        for match in re.finditer(r"Only\s+(<Subject\s+\d+>)\s+vocalizes", description, re.IGNORECASE)
+        if "<d>" in description.lower()
+    }
     summary_events = []
     for event in projected_events:
         if len(chunk_speakers) > 1:

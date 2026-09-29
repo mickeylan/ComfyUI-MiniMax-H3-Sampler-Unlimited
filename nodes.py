@@ -42,7 +42,7 @@ from .prompt_skill import (
     active_prompt_plan_pictures, filter_prompt_plan_events, filter_prompt_plan_picture_items,
     localize_prompt_from_plan, normalize_prompt_plan, project_prompt_plan_interval,
     prompt_plan_dialogue_complete, prompt_plan_shots, prompt_plan_speakers,
-    validate_h3_chunk_prompt, validate_h3_identity_contract,
+    validate_h3_chunk_dialogue_contract, validate_h3_chunk_prompt, validate_h3_identity_contract,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images, reference_presentation_items
@@ -1656,10 +1656,31 @@ def _timeline_audio_context(previous_audio, previous_frame_count, boundary_frame
     return previous_audio[..., -context_steps:].clone(), end_frame
 
 
-def _chunk_timeline_audio_context(previous_audio, previous_frame_count, boundary_frames, dialogue_complete):
-    if dialogue_complete:
+def _chunk_timeline_audio_context(previous_audio, previous_frame_count, boundary_frames, suppress_context):
+    if suppress_context:
         return None, float(boundary_frames)
     return _timeline_audio_context(previous_audio, previous_frame_count, boundary_frames)
+
+
+def _prompt_has_dialogue(prompt):
+    return bool(re.search(r"<d>.*?</d>", str(prompt), re.IGNORECASE | re.DOTALL))
+
+
+def _prompt_continues_dialogue(prompt):
+    return bool(re.search(
+        r"continues the same uninterrupted utterance from the previous chunk",
+        str(prompt), re.IGNORECASE,
+    ))
+
+
+def _suppress_previous_audio_context(previous_prompt, current_prompt):
+    previous_has = _prompt_has_dialogue(previous_prompt)
+    current_has = _prompt_has_dialogue(current_prompt)
+    if previous_has != current_has:
+        return True
+    if previous_has and current_has and not _prompt_continues_dialogue(current_prompt):
+        return True
+    return False
 
 
 def _validate_h3_audio_conditioning(conds):
@@ -4307,21 +4328,23 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 video_context_start = 0
                 audio_end_frame = float(keyframe_duration_frames)
                 if index > 0:
-                    silent_tail = (
+                    suppress_audio_context = (
                         typed_prompt_plan is not None
-                        and prompt_plan_dialogue_complete(typed_prompt_plan, content_start)
+                        and _suppress_previous_audio_context(
+                            planned_prompts[index - 1][0], planned_prompts[index][0]
+                        )
                     )
                     audio_context, audio_end_frame = _chunk_timeline_audio_context(
                         previous_audio,
                         previous_frame_count,
                         chunk.get("output_trim_frames", 0),
-                        silent_tail,
+                        suppress_audio_context,
                     )
                     if debug:
-                        if silent_tail:
+                        if suppress_audio_context:
                             logging.info(
-                                "HR Endless Sampler chunk %d/%d omits previous speech audio context because all scripted dialogue ended before frame %d.",
-                                index + 1, len(active_plan), content_start,
+                                "HR Endless Sampler chunk %d/%d omits previous audio context at a scripted speech/silence or speaker boundary.",
+                                index + 1, len(active_plan),
                             )
                         else:
                             logging.info(
@@ -4476,6 +4499,12 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         debug_prompt = _debug_chunk_prompt(index, chunk, content_start, chunk_prompt, None)
                     if gemma_report is not None:
                         debug_prompt = _debug_chunk_prompt(index, chunk, content_start, chunk_prompt, gemma_report)
+                if typed_prompt_plan is not None:
+                    validate_h3_chunk_dialogue_contract(chunk_prompt, planned_prompts[index][0])
+                    validate_h3_chunk_prompt(
+                        chunk_prompt, typed_prompt_plan,
+                        frame_start=content_start, frame_end=chunk["frame_end"],
+                    )
                 if return_prompts:
                     debug_prompts.append(debug_prompt)
                 if gemma_director is not None:
