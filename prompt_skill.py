@@ -147,7 +147,6 @@ def prompt_skill_messages(request: dict[str, Any]) -> tuple[str, str]:
     total_frames = int(request["total_frames"])
     fps = float(request["fps"])
     continuity = str(request.get("continuity_mode", "balanced"))
-    language = "Chinese" if request.get("prompt_lang", "zh") == "zh" else "English"
     source_contract = {
         str(item["entity_id"]): item
         for item in request.get("source_image_contract", ())
@@ -171,7 +170,7 @@ def prompt_skill_messages(request: dict[str, Any]) -> tuple[str, str]:
     ) or "- no explicit source binding"
     system = f"""You are an HR Endless Sampler prompt skill compiler for MiniMax H3.
 Convert the user's ordinary story into a strict structured shot plan. Return exactly one JSON object, no markdown.
-Write descriptions in {language}, while preserving dialogue, lyrics, visible text, H3 labels, and required field names exactly.
+Write every prose field in English. Preserve the original language only for dialogue, lyrics, and text visibly present in the scene; keep H3 labels and required field names exact.
 
 Hard rules:
 - Classify every connected asset as kind=character, scene, or prop in image_subjects, keyed only by its supplied entity_id.
@@ -187,7 +186,7 @@ Hard rules:
 - When one utterance crosses a shot cut, both adjoining fragments belong to the same uninterrupted vocal event. Do not restart it with says/asks/replies, do not insert a pause or new breath, and never begin a later fragment with isolated punctuation. The compiler adds the required H3 <scenetrans> markers.
 - The numbered mandatory spoken-line list is chronological and authoritative. dialogues across shots and within each shot must follow that exact global order; never swap speakers or reorder fragments for dramatic effect.
 - Each dialogue contains id, kind, speaker, speaker_id, language, text, and delivery. kind is dialogue, monologue, or voiceover. Use stable speaker IDs S1, S2, ... across all shots.
-- dialogue.text contains only the exact spoken words without quotation marks or <d> tags. dialogue.language names the spoken language, regardless of prompt_lang.
+- dialogue.text contains only the exact spoken words without quotation marks or <d> tags. dialogue.language names the spoken language, regardless of prompt_lang. All surrounding speaker, delivery, action, camera, environment, soundscape, music, summary, retention, state, and event prose stays in English.
 - Visible referenced speakers use speaker="asset_N". That entity must be classified as kind=character and included in the same shot's pictures list. A scene or prop can own a visual event but can never speak.
 - For kind=voiceover, the compiled prompt will state that the corresponding on-screen speaker's lips remain completely closed.
 - kind=dialogue is spoken to another character; kind=monologue is audible self-directed speech with visible lip movement; kind=voiceover is off-screen narration or internal narration with no lip movement.

@@ -21,6 +21,18 @@ class PromptSkillTests(unittest.TestCase):
             continuity_mode=continuity_mode, prompt_lang="en",
         )
 
+    def test_prompt_skill_uses_english_prose_with_source_language_dialogue(self):
+        request = prompt_skill.build_prompt_skill_request(
+            '<Subject 1> (S1) says: <d>[Chinese] 保持原句。</d>',
+            duration_seconds=2.0, fps=24.0, image_count=1, style="cinematic",
+            shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
+        )
+        system, user = prompt_skill.prompt_skill_messages(request)
+        self.assertIn("Write every prose field in English", system)
+        self.assertIn("original language only for dialogue, lyrics, and text visibly present", system)
+        self.assertNotIn("Write descriptions in Chinese", system)
+        self.assertIn("保持原句。", user)
+
     def result(self):
         return {
             "image_subjects": [{"entity_id": "asset_1", "kind": "character", "name": "Hero", "observable_features": "black hair"}],

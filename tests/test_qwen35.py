@@ -64,6 +64,15 @@ class Qwen35Tests(unittest.TestCase):
         self.assertIn("Immutable target canvas contract", prompt)
         self.assertIn("1920x1088 pixels (landscape)", prompt)
 
+    def test_director_prompts_require_english_prose(self):
+        timing_system, _prompt = qwen35._timing_messages(self.request())
+        self.assertIn("planning and descriptive prose in English", timing_system)
+        chunk_request = {**self.request(), "chunk_number": 1}
+        chunk_system, _prompt = qwen35._chunk_messages(chunk_request)
+        self.assertIn("detailed_description in English", chunk_system)
+        self.assertIn("original language only for dialogue, lyrics, and text visibly present", chunk_system)
+        self.assertNotIn("dominant language of the original prompt", chunk_system)
+
     def test_timing_prompt_has_only_local_duration_coordinates(self):
         _system, prompt = qwen35._timing_messages(self.request())
         self.assertIn("valid local interval [0,68)", prompt)
@@ -263,7 +272,8 @@ class Qwen35Tests(unittest.TestCase):
         self.assertIn("Camera scale is persistent and one-way across physical chunks", system)
         self.assertIn("Never reset to a wide shot merely to repeat a push-in", system)
         self.assertIn("push-in/pull-back oscillation", system)
-        self.assertIn("for a Chinese original prompt, write those values in Chinese", system)
+        self.assertIn("detailed_description in English", system)
+        self.assertIn("original language only for dialogue, lyrics, and text visibly present", system)
         for text in (
             "[Shot 1] At 00:00.208,", "Hero -> <Subject 1>", "<Video 1> and <Audio 1>",
             "LOCK SHOT 1 AND ITS DIALOGUE", "40, 60", "previous prompt", "previous timing", "previous state", '"character": "Hero"',
