@@ -1497,6 +1497,33 @@ class PromptSkillTests(unittest.TestCase):
         )
         self.assertIn("<scenetrans>", crossing)
 
+    def test_chunk_retention_normalization_removes_execution_text_and_rebuilds_active_subjects(self):
+        plan = {
+            "shots": [{"start_frame": 0, "end_frame": 80, "pictures": [2, 3], "dialogues": []}],
+            "image_subjects": [
+                {"picture": 2, "subject": 2},
+                {"picture": 3, "subject": 3},
+                {"picture": 4, "subject": 4},
+            ],
+        }
+        prompt = (
+            "subject_definitions:\nNone.\n\nsummary:\nsummary.\n\n"
+            "retention_analysis:\nCamera contract: portrait close-up.\nCurrent state: standing.\n"
+            "Forbidden replay: entering again.\n<Video 1>: fully_preserved - continuation source.\n\n"
+            "detailed_description:\n[Shot 1] Continue.\n\noverall_soundscape:\nSoft wind.\n\n"
+            "non_diegetic_music:\nN/A"
+        )
+        normalized = prompt_skill.normalize_h3_chunk_retention(prompt, plan, frame_start=0, frame_end=40)
+        retention = normalized.split("retention_analysis:\n", 1)[1].split("\n\ndetailed_description:", 1)[0]
+        self.assertNotIn("Camera contract", retention)
+        self.assertNotIn("Current state", retention)
+        self.assertNotIn("Forbidden replay", retention)
+        self.assertIn("<Video 1>: fully_preserved", retention)
+        self.assertIn("<Subject 2>: fully_preserved", retention)
+        self.assertIn("<Subject 3>: fully_preserved", retention)
+        self.assertNotIn("<Subject 4>", retention)
+        prompt_skill.validate_h3_chunk_prompt(normalized, plan, frame_start=0, frame_end=40)
+
     def test_chunk_prompt_validator_rejects_private_ids_and_false_scene_transitions(self):
         plan = {
             "shots": [{"start_frame": 0, "end_frame": 80, "dialogues": []}],
