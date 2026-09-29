@@ -79,6 +79,38 @@ class PromptSkillTests(unittest.TestCase):
         )
         self.assertTrue(any("Redistributed mandatory dialogue" in warning for warning in warnings))
 
+    def test_same_shot_fragments_merge_without_scene_transition(self):
+        shots = [
+            {"dialogues": [
+                {"speaker": "<Subject 1>", "speaker_id": "S1", "kind": "dialogue", "language": "Chinese", "delivery": "calm", "text": "前半句", "continues_from_previous": True, "continues_to_next": True},
+                {"speaker": "<Subject 1>", "speaker_id": "S1", "kind": "dialogue", "language": "Chinese", "delivery": "calm", "text": "后半句。", "continues_from_previous": True, "continues_to_next": True},
+            ]},
+        ]
+        warnings = prompt_skill._normalize_cross_shot_dialogue_flags(shots)
+        self.assertEqual(len(shots[0]["dialogues"]), 1)
+        self.assertEqual(shots[0]["dialogues"][0]["text"], "前半句后半句。")
+        self.assertFalse(shots[0]["dialogues"][0]["continues_from_previous"])
+        self.assertFalse(shots[0]["dialogues"][0]["continues_to_next"])
+        self.assertTrue(any("real cuts" in warning for warning in warnings))
+
+    def test_final_shot_never_carries_dialogue_to_nonexistent_next_shot(self):
+        shots = [
+            {"dialogues": [{"text": "第一段", "continues_from_previous": False, "continues_to_next": True}]},
+            {"dialogues": [{"text": "最后一段", "continues_from_previous": True, "continues_to_next": True}]},
+        ]
+        prompt_skill._normalize_cross_shot_dialogue_flags(shots)
+        self.assertTrue(shots[0]["dialogues"][-1]["continues_to_next"])
+        self.assertTrue(shots[1]["dialogues"][0]["continues_from_previous"])
+        self.assertFalse(shots[1]["dialogues"][-1]["continues_to_next"])
+
+    def test_moving_camera_drops_contradictory_static_wording(self):
+        camera, warning = prompt_skill._normalize_camera_contract(
+            "Medium wide shot, eye-level, static. The camera pulls back slightly"
+        )
+        self.assertNotIn("static", camera.casefold())
+        self.assertIn("pulls back", camera.casefold())
+        self.assertIn("contradictory", warning)
+
     def test_dialogue_does_not_move_before_speaker_first_visible_shot(self):
         story = '<Subject 1> (S1) says: <d>[Chinese] 现在开始说话。</d>'
         request = prompt_skill.build_prompt_skill_request(

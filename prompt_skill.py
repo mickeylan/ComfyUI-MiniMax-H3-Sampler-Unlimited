@@ -632,6 +632,45 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     return normalized, [message]
 
 
+def _normalize_cross_shot_dialogue_flags(shots: list[dict[str, Any]]) -> list[str]:
+    """Keep carry markers at real shot cuts, never between fragments in one shot."""
+    warnings = []
+    for shot_index, shot in enumerate(shots):
+        dialogues = shot.get("dialogues", [])
+        if not isinstance(dialogues, list):
+            continue
+        merged = []
+        for item in dialogues:
+            if not isinstance(item, dict):
+                merged.append(item)
+                continue
+            current = dict(item)
+            if merged and isinstance(merged[-1], dict):
+                previous = merged[-1]
+                same_voice = all(
+                    str(previous.get(name, "")).strip() == str(current.get(name, "")).strip()
+                    for name in ("speaker", "speaker_id", "kind", "language", "delivery")
+                )
+                internal_carry = bool(previous.get("continues_to_next")) and bool(current.get("continues_from_previous"))
+                if same_voice and internal_carry:
+                    previous["text"] = str(previous.get("text", "")) + str(current.get("text", ""))
+                    previous["continues_to_next"] = bool(current.get("continues_to_next"))
+                    warnings.append(
+                        f"Merged same-shot dialogue fragments in shot {shot_index + 1}; <scenetrans> is reserved for real cuts."
+                    )
+                    continue
+            merged.append(current)
+        if merged:
+            merged[0]["continues_from_previous"] = bool(merged[0].get("continues_from_previous")) and shot_index > 0
+            for item in merged[1:]:
+                item["continues_from_previous"] = False
+            for item in merged[:-1]:
+                item["continues_to_next"] = False
+            merged[-1]["continues_to_next"] = bool(merged[-1].get("continues_to_next")) and shot_index < len(shots) - 1
+        shot["dialogues"] = merged
+    return warnings
+
+
 def _close_dialogue_timeline_gaps(shots: list[dict[str, Any]]) -> None:
     dialogues = [
         item
@@ -697,6 +736,20 @@ def _normalize_boundary_states(value: Any) -> tuple[Any, list[str]]:
     normalized = dict(value)
     normalized["shots"] = normalized_shots
     return normalized, warnings
+
+
+def _normalize_camera_contract(camera: str) -> tuple[str, str]:
+    text = re.sub(r"\s+", " ", str(camera or "")).strip()
+    static = re.search(r"\b(?:static|locked[- ]?off|fixed camera)\b", text, re.IGNORECASE)
+    moving = re.search(
+        r"\b(?:pulls? back|push(?:es)? in|doll(?:y|ies)|tracks?|tracking|pans?|tilts?|zooms?|orbits?|cranes?|pedestal)\b",
+        text, re.IGNORECASE,
+    )
+    if not static or not moving:
+        return text, ""
+    normalized = re.sub(r"(?:\s*,?\s*)\b(?:static|locked[- ]?off|fixed camera)\b(?:\s*,?\s*)", " ", text, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+,", ",", re.sub(r"\s+", " ", normalized)).strip(" ,")
+    return normalized, f"Removed contradictory static-camera wording from moving camera contract: {text!r}."
 
 
 def _dialogue_description(item: dict[str, str]) -> str:
@@ -1025,6 +1078,8 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
     value, dialogue_restore_warnings = _restore_required_dialogues(value, request)
     value, dialogue_order_warnings = _normalize_dialogue_order(value, required_spoken)
     value, dialogue_timing_warnings = _redistribute_dialogues(value, request)
+    dialogue_boundary_warnings = _normalize_cross_shot_dialogue_flags(value.get("shots", []))
+    dialogue_timing_warnings.extend(dialogue_boundary_warnings)
     total_frames = int(request["total_frames"])
     plan = validate_storyboard_plan(value, image_count=image_count, total_frames=total_frames)
     required_character_subjects = {
@@ -1050,9 +1105,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         if kind == "character":
             character_subjects.append(f"<Subject {subject_number}>")
     entity_labels = {
-        str(item.get("entity_id", "")): " ".join(filter(None, (
-            f"<Subject {int(item['subject'])}>", str(item.get("name", "")).strip(),
-        )))
+        str(item.get("entity_id", "")): f"<Subject {int(item['subject'])}>"
         for item in plan["image_subjects"] if str(item.get("entity_id", "")).strip()
     }
     entity_subjects = {
@@ -1254,7 +1307,9 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 f"shots[{index}] assigns {dialogue_frames} natural-speech frames to a {shot_frames}-frame shot; "
                 "split the dialogue across consecutive shots without overlap or acceleration"
             )
-        camera = str(raw["camera"]).strip()
+        camera, camera_warning = _normalize_camera_contract(str(raw["camera"]).strip())
+        if camera_warning:
+            warnings.append(camera_warning)
         if previous_camera and camera.casefold() == previous_camera.casefold() and request.get("continuity_mode") == "strict":
             warnings.append(
                 f"Shots {index - 1} and {index} preserve the same camera in strict continuity mode; no corrective model retry was requested."
@@ -1297,12 +1352,18 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
     if split_spoken and not exact_spoken:
         warnings.append("Accepted chronologically adjacent dialogue fragments whose concatenation exactly preserves the source spoken text.")
     plan["summary"] = "[reference generation] " + " ".join(
-        str(shot.get("visual_description", "")).strip() for shot in plan["shots"]
-        if str(shot.get("visual_description", "")).strip()
+        f"Shot {index} moves from {shot['start_state']} to {shot['end_state']}."
+        for index, shot in enumerate(plan["shots"], 1)
     )
+    used_subjects = {picture for shot in plan["shots"] for picture in shot.get("pictures", ())}
+    unused_subjects = [item for item in plan["image_subjects"] if int(item["subject"]) not in used_subjects]
+    if unused_subjects:
+        warnings.append("Excluded unused image subjects from retention and chunk reference selection: " + ", ".join(str(item["entity_id"]) for item in unused_subjects) + ".")
     subject_retention = [
-        f"<Subject {int(item['subject'])}>: fully_preserved - preserve the identity and visible attributes defined from <Picture {int(item['picture'])}>."
-        for item in plan["image_subjects"]
+        f"<Subject {int(item['subject'])}> (used in shots "
+        + ", ".join(str(index) for index, shot in enumerate(plan["shots"], 1) if int(item["subject"]) in shot.get("pictures", ()))
+        + f"): preserve the identity and visible attributes defined from <Picture {int(item['picture'])}>."
+        for item in plan["image_subjects"] if int(item["subject"]) in used_subjects
     ]
     shot_retention = [
         f"Shot {index}: opening={shot['start_state']}; ending={shot['end_state']}; forbidden="
