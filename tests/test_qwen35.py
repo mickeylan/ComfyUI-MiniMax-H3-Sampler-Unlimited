@@ -676,7 +676,8 @@ class Qwen35Tests(unittest.TestCase):
 
     def test_qwen35_multimodal_batch_contains_one_complete_image_embedding(self):
         self.assertGreaterEqual(qwen35.QWEN35_BATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
-        self.assertLess(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_BATCH_SIZE)
+        self.assertGreaterEqual(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
+        self.assertLessEqual(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_BATCH_SIZE)
 
     def test_prompt_skill_unwraps_known_result_containers(self):
         plan = {"image_subjects": [], "shots": []}
