@@ -136,10 +136,6 @@ class HRH3PromptPlanEditor(io.ComfyNode):
                         "Leave empty to pass through the connected plan."
                     ),
                 ),
-                io.Int.Input(
-                    "chunk_frames", default=90, min=5, max=4096, step=1, advanced=True,
-                    tooltip="Physical HR Endless chunk size shown on the editor timeline; does not change the prompt plan.",
-                ),
             ],
             outputs=[
                 HRH3PromptPlan.Output(display_name="edited prompt plan"),
@@ -151,10 +147,11 @@ class HRH3PromptPlanEditor(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, prompt_plan, edited_plan_json="", chunk_frames=90):
+    def execute(cls, prompt_plan, edited_plan_json="", chunk_frames=None):
         fps = float(prompt_plan.get("fps", 0.0))
         total_frames = int(prompt_plan.get("total_frames", 0))
         original = normalize_prompt_plan(prompt_plan, fps=fps, total_frames=total_frames)
+        plan_chunk_frames = normalize_physical_chunk_frames(original.get("chunk_frames", 124))
         text = str(edited_plan_json or "").strip()
         rebase_warnings = []
         if text:
@@ -182,7 +179,8 @@ class HRH3PromptPlanEditor(io.ComfyNode):
             "subjects": len(edited["image_subjects"]),
             "shots": len(edited["shots"]),
             "dialogues": sum(len(shot.get("dialogues", ())) for shot in edited["shots"]),
-            "timeline_chunk_frames": int(chunk_frames),
+            "timeline_chunk_frames": plan_chunk_frames,
+            "timeline_retained_chunk_frames": int(original.get("retained_chunk_frames", plan_chunk_frames - 5)),
             "warnings": rebase_warnings,
         }
         validated_json = json.dumps(edited, ensure_ascii=False, indent=2)

@@ -33,8 +33,9 @@ function jsonWidget(node) {
 }
 
 function chunkFrames(node) {
-    const value = Number(node.widgets?.find(item => item.name === "chunk_frames")?.value ?? 90);
-    return Number.isFinite(value) && value > 0 ? Math.round(value) : 90;
+    const plan = parsePlan(node);
+    const value = Number(plan?.chunk_frames ?? 124);
+    return Number.isFinite(value) && value >= 22 ? Math.round(value) : 124;
 }
 
 function setWidgetText(node, text, render = true) {
@@ -300,11 +301,6 @@ app.registerExtension({
             const timeline = createTimeline(this);
             const widget = jsonWidget(this);
             widget?.inputEl?.addEventListener("input", () => timeline.render());
-            const chunk = this.widgets?.find(item => item.name === "chunk_frames");
-            if (chunk) {
-                const callback = chunk.callback;
-                chunk.callback = value => { callback?.(value); timeline.render(); };
-            }
             timeline.render();
         };
         const original = nodeType.prototype.onExecuted;
