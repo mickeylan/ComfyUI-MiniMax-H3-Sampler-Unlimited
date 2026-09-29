@@ -503,8 +503,8 @@ class PromptSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown compiler-owned Subject/Picture 9"):
             prompt_skill.compile_prompt_skill(value, self.request())
 
-    def test_rejects_scene_entity_as_visual_event_actor(self):
-        story = "<Picture 1> is a stone temple; <Picture 2> is Hero; Hero says: “Ready.”"
+    def test_allows_scene_entity_as_visual_event_actor(self):
+        story = "<Picture 1> is a stone temple; <Picture 2> is Hero waiting silently inside it."
         request = prompt_skill.build_prompt_skill_request(
             story, duration_seconds=3.0, fps=24.0, image_count=2, style="cinematic",
             shot_density="medium", continuity_mode="strict", prompt_lang="en",
@@ -521,8 +521,9 @@ class PromptSkillTests(unittest.TestCase):
             "dialogues": [], "end_state": "<Entity asset_2> remains ready", "forbidden_replays": [],
             "audio": "room tone", "description": "<Entity asset_2> waits inside <Entity asset_1>.",
         }]
-        with self.assertRaisesRegex(ValueError, "actor asset_1 is not a character"):
-            prompt_skill.compile_prompt_skill(value, request)
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        self.assertEqual(compiled["shot_plan"]["image_subjects"][0]["kind"], "scene")
+        self.assertEqual(compiled["shot_plan"]["shots"][0]["events"][0]["actor"], "asset_1")
 
     def test_removes_model_invented_dialogue_when_source_story_has_none(self):
         request = self.request()
@@ -606,7 +607,7 @@ class PromptSkillTests(unittest.TestCase):
             "language": "Chinese", "text": "继续说话。", "delivery": "平静地",
         }]
         request = {**self.request(), "required_spoken_lines": ["继续说话。"]}
-        with self.assertRaisesRegex(ValueError, "actor asset_1 is not a character"):
+        with self.assertRaisesRegex(ValueError, "dialogue speaker asset_1 is not a character"):
             prompt_skill.compile_prompt_skill(value, request)
 
     def test_empty_audio_is_normalized_without_inventing_sound(self):

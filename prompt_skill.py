@@ -177,7 +177,7 @@ Hard rules:
 - Classify every connected asset as kind=character, scene, or prop in image_subjects, keyed only by its supplied entity_id.
 - Source-declared entity names are immutable. Never move a name to another entity_id, swap two assets, or replace a declared name based on visual analysis.
 - Never emit <Picture N>, <Subject N>, numeric picture/subject fields, or infer an asset from a speaker number. Those H3 labels are private compiler output.
-- In every shot, pictures is an array of entity_id strings. Dialogue speaker and each visual event actor are entity_id strings.
+- In every shot, pictures is an array of entity_id strings. Dialogue speaker and each visual event actor are entity_id strings. A visual event actor may be a character, scene, or prop; only dialogue speakers must be characters.
 - In prose fields, reference an asset only as <Entity asset_N>; never combine a human name with another entity marker.
 - Speaker IDs such as S1 and S2 are voice identities only and have no relationship to asset_N.
 - Every event has one stable ID such as S2.V1 and may start in only one shot.
@@ -188,7 +188,7 @@ Hard rules:
 - The numbered mandatory spoken-line list is chronological and authoritative. dialogues across shots and within each shot must follow that exact global order; never swap speakers or reorder fragments for dramatic effect.
 - Each dialogue contains id, kind, speaker, speaker_id, language, text, and delivery. kind is dialogue, monologue, or voiceover. Use stable speaker IDs S1, S2, ... across all shots.
 - dialogue.text contains only the exact spoken words without quotation marks or <d> tags. dialogue.language names the spoken language, regardless of prompt_lang.
-- Visible referenced speakers use speaker="asset_N". That entity must be classified as kind=character and included in the same shot's pictures list. A scene or prop can never speak.
+- Visible referenced speakers use speaker="asset_N". That entity must be classified as kind=character and included in the same shot's pictures list. A scene or prop can own a visual event but can never speak.
 - For kind=voiceover, the compiled prompt will state that the corresponding on-screen speaker's lips remain completely closed.
 - kind=dialogue is spoken to another character; kind=monologue is audible self-directed speech with visible lip movement; kind=voiceover is off-screen narration or internal narration with no lip movement.
 - Dialogue is concurrent with visual events, not a replacement visual event. Do not repeat dialogue in audio or overall_soundscape.
@@ -847,12 +847,17 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             )
         return result
 
-    character_entities = {
-        str(item.get(field, "")).strip()
+    speaking_entities = {
+        str(item.get("speaker", "")).strip()
         for shot in value.get("shots", ()) if isinstance(shot, dict)
-        for collection, field in ((shot.get("events", ()), "actor"), (shot.get("dialogues", ()), "speaker"))
-        for item in (collection if isinstance(collection, list) else ()) if isinstance(item, dict)
-        if str(item.get(field, "")).strip()
+        for item in (shot.get("dialogues", ()) if isinstance(shot.get("dialogues", ()), list) else ())
+        if isinstance(item, dict) and str(item.get("speaker", "")).strip()
+    }
+    event_entities = {
+        str(item.get("actor", "")).strip()
+        for shot in value.get("shots", ()) if isinstance(shot, dict)
+        for item in (shot.get("events", ()) if isinstance(shot.get("events", ()), list) else ())
+        if isinstance(item, dict) and str(item.get("actor", "")).strip()
     }
 
     def subject_object(raw: Any, index: int) -> dict[str, Any]:
@@ -916,15 +921,21 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
         source_kind = str(source.get("kind") or "").strip().lower()
         if source_kind:
             kind = source_kind
-        elif entity_id in character_entities:
+        elif entity_id in speaking_entities:
             if model_kinds and model_kinds != {"character"}:
                 raise ValueError(
-                    f"event actor {entity_id} is not a character: image_subjects classifies it as "
-                    f"{', '.join(sorted(model_kinds))}, while the same entity is used as an actor or speaker"
+                    f"dialogue speaker {entity_id} is not a character: image_subjects classifies it as "
+                    f"{', '.join(sorted(model_kinds))}"
                 )
             kind = "character"
             if not model_kinds:
-                warnings.append(f"Resolved {entity_id} kind=character from its event actor/dialogue speaker use.")
+                warnings.append(f"Resolved {entity_id} kind=character from its dialogue speaker use.")
+        elif entity_id in event_entities and not model_kinds:
+            kind = "character"
+            warnings.append(
+                f"Resolved {entity_id} kind=character from an unclassified visual event actor; "
+                "explicit scene/prop classifications remain authoritative."
+            )
         elif len(model_kinds) == 1:
             kind = next(iter(model_kinds))
         else:
@@ -990,8 +1001,6 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
                     f"Inferred missing shots[{shot_index}].events[{event_index}].actor={actor_id} from the shot's only character."
                 )
             actor = resolved_contract[entity(actor_id, f"shots[{shot_index}].events[{event_index}].actor")["entity_id"]]
-            if str(actor.get("kind") or "").lower() != "character":
-                raise ValueError(f"shots[{shot_index}].events[{event_index}] actor {actor['entity_id']} is not a character")
             event["actor"] = str(actor["entity_id"])
             if int(actor["picture"]) not in shot["pictures"]:
                 shot["pictures"].append(int(actor["picture"]))
