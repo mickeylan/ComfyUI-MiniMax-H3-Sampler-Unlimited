@@ -1549,12 +1549,23 @@ def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: 
 
 def normalize_h3_chunk_dialogue(prompt: str, expected_prompt: str) -> str:
     text = str(prompt)
-    if _DIALOGUE_TAG.search(str(expected_prompt)):
-        return text
     bounds = _h3_section_bounds(text, "detailed_description:", "overall_soundscape:")
-    if bounds is None or not _DIALOGUE_TAG.search(text):
+    if bounds is None:
         return text
     start, end = bounds
+    expected = str(expected_prompt)
+    if _DIALOGUE_TAG.search(expected):
+        expected_bounds = _h3_section_bounds(expected, "detailed_description:", "overall_soundscape:")
+        if expected_bounds is None:
+            return text
+        expected_start, expected_end = expected_bounds
+        expected_description = expected[
+            expected_start + len("detailed_description:"):expected_end
+        ].strip()
+        replacement = "detailed_description:\n" + expected_description + "\n\n"
+        return text[:start] + replacement + text[end:]
+    if not _DIALOGUE_TAG.search(text):
+        return text
     description = text[start + len("detailed_description:"):end]
     description = re.sub(
         r"(?:<Subject\s+\d+>\s*\(S\d+\)\s*)?(?:says?|asks?|replies?|answers?|whispers?|shouts?|continues?|说|说道|问|询问|回答|答道|低语|喊|喊道)\s*[:：]?\s*<d>.*?</d>",

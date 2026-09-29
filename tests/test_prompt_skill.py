@@ -1722,10 +1722,27 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("No character vocalizes in this interval", normalized)
         prompt_skill.validate_h3_chunk_dialogue_contract(normalized, expected)
 
-    def test_chunk_with_dialogue_does_not_silently_rewrite_director_words(self):
-        expected = "detailed_description:\n<Subject 1> (S1) says: <d>[English] Stay.</d>\n\noverall_soundscape:\nWind."
-        directed = expected.replace("Stay.", "Go.")
-        self.assertEqual(prompt_skill.normalize_h3_chunk_dialogue(directed, expected), directed)
+    def test_chunk_with_dialogue_restores_complete_typed_description(self):
+        expected = (
+            "detailed_description:\nThe planned framing continues. "
+            "<Subject 1> (S1) says: <d>[Chinese] <scenetrans> 这十年</d>\n\n"
+            "overall_soundscape:\nWind."
+        )
+        directed = (
+            "detailed_description:\nThe director changes the framing. "
+            "<Subject 1> (S1) continues: <d>[Chinese] 从你跟太运宗使者比试之后，</d> "
+            "<Subject 1> (S1) says: <d>[Chinese] <scenetrans> 这十年</d>\n\n"
+            "overall_soundscape:\nWind."
+        )
+        normalized = prompt_skill.normalize_h3_chunk_dialogue(directed, expected)
+        self.assertNotIn("从你跟太运宗使者比试之后", normalized)
+        self.assertNotIn("The director changes the framing", normalized)
+        self.assertIn("The planned framing continues", normalized)
+        self.assertEqual(
+            prompt_skill._DIALOGUE_TAG.findall(normalized),
+            ["[Chinese] <scenetrans> 这十年"],
+        )
+        prompt_skill.validate_h3_chunk_dialogue_contract(normalized, expected)
 
     def test_director_dialogue_contract_rejects_invented_or_missing_words(self):
         expected = "detailed_description:\n<Subject 1> (S1) says: <d>[English] Stay.</d>"
