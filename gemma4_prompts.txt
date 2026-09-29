@@ -167,6 +167,9 @@ Last-seen character-state update contract:
 Source prompt for shots that the current retained output must generate:
 {{target_shots}}
 
+Immutable target canvas contract:
+{{target_canvas_contract}}
+
 Typed-plan authority when connected:
 {{immutable_prompt_plan_contract}}
 

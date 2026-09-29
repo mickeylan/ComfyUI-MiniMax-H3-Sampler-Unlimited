@@ -1173,6 +1173,16 @@ def _gemma_conditioning_context(continuation, context_keyframes, guide_overlap, 
     return "; ".join(sources) if sources else "No fixed opening frames or native Video/Audio continuation reference."
 
 
+def _target_canvas_contract(width, height):
+    orientation = "landscape" if width > height else "portrait" if height > width else "square"
+    ratio = width / height
+    return (
+        f"The target canvas is fixed at {width}x{height} pixels ({ratio:.3f}:1, {orientation}). "
+        f"Preserve this {orientation} canvas, camera roll, and horizontal/vertical frame orientation. "
+        "Reference assets guide identity and environment only; never rotate the camera or adopt a reference asset's framing as a different target aspect ratio."
+    )
+
+
 def _last_seen_retention_lines(description, last_seen_character_state):
     """Expose only current subjects' persistent observed state to H3."""
     lines = []
@@ -3916,6 +3926,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     "source_shots": preproduction_shots,
                     "chunks": _gemma_preproduction_chunks(active_plan),
                     "original_prompt": semantic_prompt,
+                    "target_canvas_contract": _target_canvas_contract(width, height),
                 }
                 if gemma_preproduction_cache is not None:
                     preproduction_request["preproduction_cache"] = gemma_preproduction_cache.worker_spec()
@@ -4186,6 +4197,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 include_video1_reference,
                             ),
                             "original_prompt": semantic_prompt,
+                            "target_canvas_contract": _target_canvas_contract(width, height),
                             "immutable_prompt_plan_contract": _typed_chunk_director_contract(
                                 typed_prompt_plan, content_start, chunk["frame_end"]
                             ),
@@ -4479,9 +4491,10 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         raise RuntimeError("Gemma director completed without a detailed_description")
                     continuation_video_label = f"<Video {video_number}>" if continuation and include_video1_reference else None
                     continuation_audio_label = None
+                    directed_description = _target_canvas_contract(width, height) + " " + gemma_description
                     chunk_prompt = _prompt_with_gemma_description(
                         planned_prompts[index][0] if typed_prompt_plan is not None else prompt,
-                        gemma_description,
+                        directed_description,
                         drop_picture_anchors=continuation and not ref2va,
                         continuation_video_label=continuation_video_label,
                         continuation_audio_label=continuation_audio_label,

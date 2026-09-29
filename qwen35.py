@@ -313,6 +313,7 @@ def _chunk_messages(request: dict[str, Any]) -> tuple[str, str]:
         ),
         "character_name_table": request.get("character_name_table", "none"),
         "conditioning_context": request.get("conditioning_context", "none"),
+        "target_canvas_contract": request.get("target_canvas_contract", "Preserve the target canvas orientation supplied by the latent."),
         "observation_frames": ", ".join(str(value) for value in request.get("observation_frame_numbers", ())) or "none",
         "previous_description": request.get("previous_gemma_description", "none") or "none",
         "previous_timing_plan": request.get("previous_gemma_timing_plan", "none") or "none",

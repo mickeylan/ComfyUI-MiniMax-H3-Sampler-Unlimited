@@ -135,6 +135,13 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             ),
         )
 
+    def test_target_canvas_contract_preserves_landscape_orientation(self):
+        contract = nodes._target_canvas_contract(1920, 1088)
+        self.assertIn("1920x1088", contract)
+        self.assertIn("1.765:1, landscape", contract)
+        self.assertIn("never rotate the camera", contract)
+        self.assertNotIn("portrait", contract)
+
     def test_typed_prompt_plan_keeps_selected_chunk_director_enabled(self):
         shots = [(0, 0, 56, "fixed source description", True)]
         self.assertTrue(nodes._needs_chunk_director({"type": "HR_H3_PROMPT_PLAN"}, shots, None, False))

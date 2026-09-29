@@ -53,6 +53,17 @@ class Qwen35Tests(unittest.TestCase):
         self.assertNotIn("gemma4", qwen35.__dict__)
         self.assertTrue(all("gemma4" not in value for value in qwen35.Qwen35ContinuityDirector.__mro__[1].__module__.split()))
 
+    def test_chunk_prompt_includes_target_canvas_contract(self):
+        request = {
+            **self.request(),
+            "chunk_number": 1,
+            "director_backend": "qwen3.5",
+            "target_canvas_contract": "The target canvas is fixed at 1920x1088 pixels (landscape).",
+        }
+        _system, prompt = qwen35._chunk_messages(request)
+        self.assertIn("Immutable target canvas contract", prompt)
+        self.assertIn("1920x1088 pixels (landscape)", prompt)
+
     def test_timing_prompt_has_only_local_duration_coordinates(self):
         _system, prompt = qwen35._timing_messages(self.request())
         self.assertIn("valid local interval [0,68)", prompt)

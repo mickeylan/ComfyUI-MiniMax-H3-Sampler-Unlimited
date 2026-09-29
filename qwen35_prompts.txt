@@ -70,6 +70,9 @@ Named-character mapping:
 H3 conditioning/reference context:
 {{conditioning_context}}
 
+Immutable target canvas contract:
+{{target_canvas_contract}}
+
 The attached images are chronological stills from the immediately previous generated chunk. Their corresponding global frame numbers, in the same order, are:
 {{observation_frames}}
 
