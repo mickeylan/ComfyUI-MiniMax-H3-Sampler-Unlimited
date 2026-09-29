@@ -3297,8 +3297,9 @@ class HREndlessSampler(SamplerCustomAdvanced):
         original_refs = positive[0].get("minimax_refs", ())
         video_number = 1 + sum(ref["kind"] in ("video", "video_audio") for ref in original_refs)
         audio_number = 1 + sum(ref["kind"] in ("audio", "video_audio") for ref in original_refs)
+        semantic_prompt = prompt
         planned_prompts = _planned_chunk_prompts(
-            prompt,
+            semantic_prompt,
             plan,
             active_plan,
             fps,
