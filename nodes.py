@@ -1023,8 +1023,37 @@ def _log_chunk_prompt_zh(index, chunk_count, chunk, picture_indices, mandatory_c
     )
 
 
+def _typed_chunk_director_contract(plan, frame_start, frame_end):
+    if plan is None:
+        return "No typed prompt plan is connected."
+    shots = []
+    for shot in plan.get("shots", ()):
+        if int(shot["start_frame"]) >= frame_end or int(shot["end_frame"]) <= frame_start:
+            continue
+        shots.append({
+            "shot": int(shot.get("shot", len(shots) + 1)),
+            "start_frame": int(shot["start_frame"]),
+            "end_frame": int(shot["end_frame"]),
+            "cut": bool(shot.get("cut", True)),
+            "camera": str(shot.get("camera", "")),
+            "events": [dict(item) for item in shot.get("events", ())],
+            "dialogues": [dict(item) for item in shot.get("dialogues", ())],
+        })
+    return (
+        "IMMUTABLE TYPED PROMPT PLAN CONTRACT. You may describe observed visual progress, but must not add, "
+        "remove, move, merge, reorder, or rewrite these shots, cuts, events, speakers, dialogue texts, or frame "
+        "intervals. A mandatory current-slice dialogue fragment is only a projection of its unchanged full "
+        "utterance; use that supplied fragment exactly and never re-segment it yourself. Do not invent a camera "
+        "or scene change inside one typed shot.\n"
+        + json.dumps({"frame_start": frame_start, "frame_end": frame_end, "shots": shots}, ensure_ascii=False)
+    )
+
+
 def _needs_chunk_director(typed_prompt_plan, shots, continuation_state, external_active):
-    return typed_prompt_plan is None and bool(shots) and continuation_state is None and not external_active
+    # A typed plan is the immutable story/timing contract, not a replacement for
+    # the selected visual continuity director. Long semantic shots still span
+    # many physical chunks and require observation-based directing.
+    return bool(shots) and continuation_state is None and not external_active
 
 
 def _director_segment_values(segment):
@@ -3237,9 +3266,9 @@ class HREndlessSampler(SamplerCustomAdvanced):
             _gemma_description_end = None
         else:
             _gemma_markers, gemma_shots, _gemma_description_end = _parse_prompt_shots(prompt, plan[-1]["frame_end"], fps)
-        # A connected typed prompt plan is already the validated semantic and camera contract.
-        # Physical sampler chunks may project it by frame range, but must not ask a second
-        # director to rewrite subjects, dialogue, actions, or camera language.
+        # A connected typed prompt plan owns immutable shots, cuts, dialogue and
+        # events. The selected director still observes each completed physical
+        # chunk and authors only the next chunk's reachable visual continuation.
         gemma_director_needed = _needs_chunk_director(
             typed_prompt_plan, gemma_shots, continuation_state, external_active
         )
@@ -3839,7 +3868,7 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     "prompt_mode": "ref" if ref2va else "base",
                     "source_shots": preproduction_shots,
                     "chunks": _gemma_preproduction_chunks(active_plan),
-                    "original_prompt": prompt,
+                    "original_prompt": semantic_prompt,
                 }
                 if gemma_preproduction_cache is not None:
                     preproduction_request["preproduction_cache"] = gemma_preproduction_cache.worker_spec()
@@ -4109,7 +4138,10 @@ class HREndlessSampler(SamplerCustomAdvanced):
                                 continuation_audio_label,
                                 include_video1_reference,
                             ),
-                            "original_prompt": planned_prompts[index][0],
+                            "original_prompt": semantic_prompt,
+                            "immutable_prompt_plan_contract": _typed_chunk_director_contract(
+                                typed_prompt_plan, content_start, chunk["frame_end"]
+                            ),
                         }
                         if gemma_preproduction_cache_ready and gemma_preproduction_cache is not None:
                             request["preproduction_cache"] = gemma_preproduction_cache.worker_spec()

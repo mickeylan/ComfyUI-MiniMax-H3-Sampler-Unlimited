@@ -79,6 +79,9 @@ Immutable preproduction schedule:
 Mandatory current-slice coverage records; explicitly include every listed action as beginning, continuing, or completing now, even if it begins near the slice end:
 {{mandatory_coverage}}
 
+Typed-plan authority when connected:
+{{immutable_prompt_plan_contract}}
+
 Previous generated detailed_description for the attached stills:
 --- BEGIN PREVIOUS DESCRIPTION ---
 {{previous_description}}

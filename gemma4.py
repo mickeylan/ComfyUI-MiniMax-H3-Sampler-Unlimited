@@ -2405,6 +2405,9 @@ def _render_observation_messages(
             "previous_last_seen_character_state": previous_last_seen_character_state,
             "last_seen_character_state_contract": _last_seen_character_state_contract(request),
             "target_shots": _shot_context(target_shots, fps, include_target=True),
+            "immutable_prompt_plan_contract": str(request.get(
+                "immutable_prompt_plan_contract", "No typed prompt plan is connected."
+            )),
             "chunk_generation_request": _chunk_generation_request(target_shots, current),
             "original_prompt": str(request["original_prompt"]),
         },

@@ -266,6 +266,11 @@ review date, versions/commits checked, and outcome below.
   identify a different vendored llama.cpp commit. No confirmed upstream fix was
   found, so this change leaves the disposable worker and operation-local non-MTP
   retry unchanged.
+- 2026-09-29 (typed-plan chunk-director restoration): issue #27439 remains open,
+  labeled `bug-unconfirmed` and `stale`, with no development branch or pull
+  request. PyPI still reports 0.3.35 as the latest official release; its JSON
+  metadata does not identify a newer vendored llama.cpp commit containing a fix.
+  Preserve disposable workers and the operation-local non-MTP retry unchanged.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at

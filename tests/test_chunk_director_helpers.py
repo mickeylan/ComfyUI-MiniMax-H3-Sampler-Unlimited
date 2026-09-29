@@ -133,12 +133,28 @@ class ChunkDirectorHelperTest(unittest.TestCase):
             ),
         )
 
-    def test_typed_prompt_plan_disables_secondary_chunk_directing(self):
+    def test_typed_prompt_plan_keeps_selected_chunk_director_enabled(self):
         shots = [(0, 0, 56, "fixed source description", True)]
-        self.assertFalse(nodes._needs_chunk_director({"type": "HR_H3_PROMPT_PLAN"}, shots, None, False))
+        self.assertTrue(nodes._needs_chunk_director({"type": "HR_H3_PROMPT_PLAN"}, shots, None, False))
         self.assertTrue(nodes._needs_chunk_director(None, shots, None, False))
         self.assertFalse(nodes._needs_chunk_director(None, shots, {"checkpoint": True}, False))
         self.assertFalse(nodes._needs_chunk_director(None, shots, None, True))
+
+    def test_typed_chunk_director_contract_keeps_shots_dialogue_and_events_immutable(self):
+        plan = {"shots": [{
+            "shot": 3, "start_frame": 480, "end_frame": 1229, "cut": True,
+            "camera": "locked over-the-shoulder medium close-up",
+            "events": [{"id": "S3.V1", "actor": "asset_3", "start_frame": 480, "end_frame": 854}],
+            "dialogues": [{"id": "S3.D1", "speaker": "<Subject 3>", "text": "完整对白", "start_frame": 480, "end_frame": 861}],
+        }]}
+        contract = nodes._typed_chunk_director_contract(plan, 510, 566)
+        self.assertIn("must not add, remove, move, merge, reorder, or rewrite", contract)
+        self.assertIn("never re-segment it yourself", contract)
+        payload = json.loads(contract.split("\n", 1)[1])
+        self.assertEqual(payload["frame_start"], 510)
+        self.assertEqual(payload["shots"][0]["shot"], 3)
+        self.assertEqual(payload["shots"][0]["events"][0]["id"], "S3.V1")
+        self.assertEqual(payload["shots"][0]["dialogues"][0]["text"], "完整对白")
 
     def test_prompt_plan_filters_internal_conditioning_metadata_dicts(self):
         cross_attn = torch.zeros((1, 2, 3))

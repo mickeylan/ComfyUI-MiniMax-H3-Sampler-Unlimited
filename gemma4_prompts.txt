@@ -44,6 +44,8 @@
 # {{last_seen_character_state_contract}}
 #                         Exact schema and update/carry-forward rules for that table.
 # {{target_shots}}          Complete source shots intersecting this chunk plus required markers.
+# {{immutable_prompt_plan_contract}}
+#                         Connected typed plan's immutable shot/cut/event/dialogue contract.
 # {{chunk_generation_request}}
 #                         The direct required frame-range and shot-portion task.
 # {{original_prompt}}       Complete unchanged user prompt for global intent and reference meaning.
@@ -164,6 +166,9 @@ Last-seen character-state update contract:
 
 Source prompt for shots that the current retained output must generate:
 {{target_shots}}
+
+Typed-plan authority when connected:
+{{immutable_prompt_plan_contract}}
 
 Complete original user prompt, supplied unchanged so you retain all global intent, reference definitions, soundscape, music, dialogue, and relationships:
 --- BEGIN ORIGINAL PROMPT ---
