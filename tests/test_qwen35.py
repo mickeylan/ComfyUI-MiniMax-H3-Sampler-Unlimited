@@ -103,6 +103,28 @@ class Qwen35Tests(unittest.TestCase):
         with self.assertRaisesRegex(qwen35.Qwen35ObservationError, "not contiguous at 25-68 after 24"):
             qwen35._timing_plan(value, self.request(), json.dumps(value), "system", "prompt")
 
+    def test_parent_recovers_zero_length_timing_beat_from_worker_failure(self):
+        raw_value = {
+            "shots": [{
+                "source_shot": 1,
+                "visual_beats": [
+                    {"start_frame": 0, "end_frame": 68, "action": "walk"},
+                    {"start_frame": 68, "end_frame": 68, "action": "duplicate boundary"},
+                ],
+            }],
+        }
+        failure = {
+            "ok": False,
+            "error_type": "Qwen35ObservationError",
+            "message": "Qwen3.5 Source Shot 1 visual beats are not contiguous at 68-68 after 68",
+            "raw_json": json.dumps(raw_value),
+        }
+        request = {**self.request(), "director_backend": "qwen3.5", "director_mtp": False}
+        with patch.object(qwen35, "_run_worker_once", return_value=(types.SimpleNamespace(returncode=1), failure)) as worker:
+            plan = qwen35._run_worker(request, True)
+        self.assertEqual([(beat.start_frame, beat.end_frame) for beat in plan.shots[0].visual_beats], [(0, 68)])
+        self.assertEqual(worker.call_count, 1)
+
     def test_timing_parser_normalizes_global_frames_to_shot_local_frames(self):
         request = self.request()
         request["source_shots"][0].update(shot_start=68, shot_end=163)

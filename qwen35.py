@@ -1198,6 +1198,30 @@ def _run_worker_once(payload: dict[str, Any], *, timeout: int | None = None) -> 
     return process, json.loads(line) if line is not None else None
 
 
+def _recover_zero_length_timing_plan(value: dict[str, Any] | None, payload: dict[str, Any]):
+    if not isinstance(value, dict) or value.get("ok"):
+        return None
+    message = str(value.get("message", ""))
+    if re.search(r"visual beats are not contiguous at (\d+)-\1 after \1$", message) is None:
+        return None
+    raw = str(value.get("raw_json", "")).strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if payload.get("director_backend") in {"qwen3.6", "qwen3.8"}:
+        try:
+            from . import qwen36_38 as timing_runtime
+        except ImportError:
+            import qwen36_38 as timing_runtime
+        system, prompt = timing_runtime._timing_messages(payload)
+        return timing_runtime._timing_plan(parsed, payload, raw, system, prompt)
+    system, prompt = _timing_messages(payload)
+    return _timing_plan(parsed, payload, raw, system, prompt)
+
+
 def _run_worker(request: dict[str, Any], timing: bool):
     payload = json.loads(json.dumps(request, ensure_ascii=False))
     payload["operation"] = "timing_plan" if timing else "chunk"
@@ -1214,6 +1238,11 @@ def _run_worker(request: dict[str, Any], timing: bool):
             f"Qwen worker exited with status {process.returncode} without a result: {detail}",
             returncode=process.returncode,
         )
+    if timing:
+        recovered = _recover_zero_length_timing_plan(value, payload)
+        if recovered is not None:
+            logging.warning("HR Endless Sampler removed a zero-length Qwen timing beat in the parent process without another inference call.")
+            return recovered
     timing_repair_attempts = 0
     while (timing and not value.get("ok")
            and value.get("error_type") == "Qwen35ObservationError"
