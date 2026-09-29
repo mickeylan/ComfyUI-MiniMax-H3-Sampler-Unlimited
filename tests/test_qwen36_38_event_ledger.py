@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -21,6 +22,30 @@ class QwenEventLedgerTests(unittest.TestCase):
                 "forbidden": [{"id": "S1.V1", "summary": "stood up"}],
             },
         }
+
+    def test_timing_parser_removes_zero_length_terminal_beat(self):
+        request = {
+            "fps": 24.0,
+            "source_shots": [{"shot_number": 2, "shot_start": 0, "shot_end": 144}],
+        }
+        value = {
+            "shots": [{
+                "source_shot": 2,
+                "visual_beats": [
+                    {"start_frame": 0, "end_frame": 144, "action": "hold"},
+                    {"start_frame": 144, "end_frame": 144, "action": "duplicate boundary"},
+                ],
+                "overlays": [],
+            }],
+        }
+        plan = runtime._timing_plan(value, request, json.dumps(value), "system", "prompt")
+        self.assertEqual(
+            [(beat.start_frame, beat.end_frame, beat.action) for beat in plan.shots[0].visual_beats],
+            [(0, 144, "hold")],
+        )
+        self.assertEqual(plan.validation_warnings, (
+            "Removed zero-length Source Shot 2 visual beat 2 at frame 144.",
+        ))
 
     def test_chunk_prompt_includes_previous_event_ownership(self):
         _system, prompt = runtime._chunk_messages(self.request())

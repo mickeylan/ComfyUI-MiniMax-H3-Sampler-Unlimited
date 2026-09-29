@@ -359,6 +359,7 @@ def _timing_plan(value: dict[str, Any], request: dict[str, Any], raw: str, syste
             raw_json=raw,
         )
     shots = []
+    timing_warnings = []
     for item, source in zip(supplied, expected):
         number = int(source["shot_number"])
         if not isinstance(item, dict):
@@ -397,6 +398,11 @@ def _timing_plan(value: dict[str, Any], request: dict[str, Any], raw: str, syste
                     f"Qwen3.5 Source Shot {number} visual beat {index + 1} needs integer start_frame and end_frame; returned keys: {', '.join(sorted(str(key) for key in beat))}",
                     raw_json=raw,
                 ) from error
+            if start == end == previous:
+                timing_warnings.append(
+                    f"Removed zero-length Source Shot {number} visual beat {index + 1} at frame {start}."
+                )
+                continue
             if start != previous or end <= start or end > duration:
                 raise Qwen35ObservationError(f"Qwen3.5 Source Shot {number} visual beats are not contiguous at {start}-{end} after {previous}", raw_json=raw)
             action = next(
@@ -436,7 +442,11 @@ def _timing_plan(value: dict[str, Any], request: dict[str, Any], raw: str, syste
             seen.add(key)
             table.append(QwenCharacterSubject(name, subject))
     attempt = QwenPromptAttempt("initial response", raw)
-    return QwenShotTimingPlan(str(value.get("confidence", "unknown")), str(value.get("analysis", "")).strip(), tuple(shots), tuple(table), raw, system, prompt, attempts=(attempt,))
+    return QwenShotTimingPlan(
+        str(value.get("confidence", "unknown")), str(value.get("analysis", "")).strip(),
+        tuple(shots), tuple(table), raw, system, prompt,
+        validation_warnings=tuple(timing_warnings), attempts=(attempt,),
+    )
 
 
 def _event_ledger(value: Any) -> dict[str, tuple[dict[str, Any], ...]]:
