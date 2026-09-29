@@ -183,7 +183,7 @@ Hard rules:
 - Every event has one stable ID such as S2.V1 and may start in only one shot.
 - Every shot has camera, start_state, events, dialogues, end_state, forbidden_replays, audio, start_frame, and end_frame.
 - Each event contains id, action, and phase (start, continue, or complete).
-- Preserve every user-provided spoken line verbatim; never translate, paraphrase, shorten, or invent dialogue. A long line may be split into consecutive dialogue fragments across adjacent shots only when those fragments concatenate to the exact original line.
+- Preserve every user-provided spoken line verbatim; never translate, paraphrase, shorten, or invent dialogue; never split it. One complete utterance belongs to exactly one real shot.
 - When one utterance crosses a shot cut, both adjoining fragments belong to the same uninterrupted vocal event. Do not restart it with says/asks/replies, do not insert a pause or new breath, and never begin a later fragment with isolated punctuation. The compiler adds the required H3 <scenetrans> markers.
 - The numbered mandatory spoken-line list is chronological and authoritative. dialogues across shots and within each shot must follow that exact global order; never swap speakers or reorder fragments for dramatic effect.
 - Each dialogue contains id, kind, speaker, speaker_id, language, text, and delivery. kind is dialogue, monologue, or voiceover. Use stable speaker IDs S1, S2, ... across all shots.
@@ -193,7 +193,7 @@ Hard rules:
 - kind=dialogue is spoken to another character; kind=monologue is audible self-directed speech with visible lip movement; kind=voiceover is off-screen narration or internal narration with no lip movement.
 - Dialogue is concurrent with visual events, not a replacement visual event. Do not repeat dialogue in audio or overall_soundscape.
 - A visible speaker must already be present in that shot's start_state, pictures, and description before their first spoken fragment begins. Never schedule a character to enter in a later shot after they have already spoken.
-- Allocate enough shot duration for natural speech at approximately 4 Chinese characters per second or 2.5 English words per second, plus punctuation pauses. When dialogue exists, its complete natural delivery duration owns the total timeline even when shorter or longer than the requested duration. The sum of dialogue delivery time assigned to one shot must never exceed that shot's frame interval. Split long lines across consecutive shots instead of accelerating or overlapping them.
+- Allocate enough shot duration for natural speech at approximately 4 Chinese characters per second or 2.5 English words per second, plus punctuation pauses. When dialogue exists, its complete natural delivery duration owns the total timeline even when shorter or longer than the requested duration. Extend one real shot instead of splitting, accelerating, or overlapping an utterance.
 - In a two-person conversation, classify addressed questions and replies as dialogue, not monologue. Keep the question on its actual asker and the reply on its actual respondent.
 - A later shot must use already/completed language instead of restarting an earlier action.
 - Preserve the same camera across adjacent shots when the story action or dialogue is continuous. Change camera side, scale, height, movement, or subject arrangement only for an intentional story cut; never invent a cut merely to make adjacent camera strings different.
@@ -236,7 +236,7 @@ Shot density: {request.get('shot_density', 'medium')}.
 Connected pictures:
 {inventory}
 
-Mandatory spoken lines detected verbatim in the story, in authoritative chronological order. Preserve every numbered occurrence in dialogues.text and this exact global order. A long line may be divided into consecutive fragments across adjacent shots, but concatenating all fragments must reproduce the original lines exactly. Do not omit, reorder, or rewrite any character or punctuation:
+Mandatory spoken lines detected verbatim in the story, in authoritative chronological order. Preserve every numbered occurrence as one complete dialogues.text value in this exact global order. Never split a line across shots, and do not omit, reorder, or rewrite any character or punctuation:
 {spoken_inventory}
 
 Authoritative speaker-to-character bindings extracted from the source story. Apply these bindings to every fragment and every shot; never remap a speaker ID:
@@ -368,8 +368,29 @@ def _restore_required_dialogues(value: Any, request: dict[str, Any]) -> tuple[An
             if isinstance(dialogue, dict):
                 slots.append((shot_index, dialogue_index, dialogue))
     returned = [str(dialogue.get("text", "")).strip() for _shot, _index, dialogue in slots]
-    if returned == list(required) or "".join(returned) == "".join(required):
+    if returned == list(required):
         return value, []
+    if "".join(returned) == "".join(required):
+        normalized = dict(value)
+        normalized["shots"] = [dict(shot, dialogues=[]) for shot in value["shots"]]
+        slot_index = 0
+        for text in required:
+            first_shot, _dialogue_index, template = slots[slot_index]
+            consumed = ""
+            while slot_index < len(slots) and len(consumed) < len(text):
+                consumed += str(slots[slot_index][2].get("text", "")).strip()
+                slot_index += 1
+            if consumed != text:
+                raise ValueError("Model-split dialogue fragments do not align with authoritative complete utterances")
+            item = dict(template)
+            item["id"] = f"S{first_shot + 1}.D{len(normalized['shots'][first_shot]['dialogues']) + 1}"
+            item["text"] = text
+            item.pop("continues_from_previous", None)
+            item.pop("continues_to_next", None)
+            normalized["shots"][first_shot]["dialogues"].append(item)
+        return normalized, [
+            "Recombined model-split dialogue fragments into authoritative complete utterances before shot scheduling."
+        ]
     if len(slots) < len(required):
         subjects = [str(item).strip() for item in request.get("required_spoken_subjects", ())]
         if len(subjects) != len(required) or any(not subject for subject in subjects):
@@ -482,6 +503,20 @@ def _extend_shot_intervals(shots: list[dict[str, Any]], normalized_shots: list[d
     return delta
 
 
+def _extend_single_shot_interval(shots: list[dict[str, Any]], normalized_shots: list[dict[str, Any]],
+                                 shot_index: int, extra_frames: int) -> int:
+    old_total = int(shots[-1]["end_frame"])
+    new_total = planned_frame_count(old_total + max(1, int(extra_frames)), 1.0)
+    delta = new_total - old_total
+    shots[shot_index]["end_frame"] = int(shots[shot_index]["end_frame"]) + delta
+    normalized_shots[shot_index]["end_frame"] = int(normalized_shots[shot_index]["end_frame"]) + delta
+    for index in range(shot_index + 1, len(shots)):
+        for collection in (shots, normalized_shots):
+            collection[index]["start_frame"] = int(collection[index]["start_frame"]) + delta
+            collection[index]["end_frame"] = int(collection[index]["end_frame"]) + delta
+    return delta
+
+
 def _first_visible_shot(shots: list[dict[str, Any]], subject: str, request: dict[str, Any]) -> int:
     match = re.fullmatch(r"<Subject\s+(\d+)>", subject, re.IGNORECASE)
     if match is None:
@@ -549,86 +584,35 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     fps = float(request["fps"])
     used = [0] * len(shots)
     current_shot = 0
-    split_count = 0
     extended_frames = 0
-    for _original_shot, dialogue in dialogues:
+    for original_shot, dialogue in dialogues:
+        full_text = str(dialogue["text"]).strip()
+        required_frames = math.ceil(_line_spoken_duration_seconds(full_text) * fps)
+        selected = max(current_shot, min(int(original_shot), len(shots) - 1))
         if str(dialogue.get("kind", "dialogue")).strip().lower() != "voiceover":
-            current_shot = max(current_shot, _first_visible_shot(shots, str(dialogue.get("speaker", "")), request))
-        remaining = str(dialogue["text"]).strip()
-        required_line_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
-        available_line_frames = sum(
-            int(shots[index]["end_frame"]) - int(shots[index]["start_frame"]) - used[index]
-            for index in range(current_shot, len(shots))
-        )
-        if required_line_frames > available_line_frames:
-            added = _extend_shot_intervals(
-                shots, normalized_shots, current_shot, required_line_frames - available_line_frames
-            )
+            selected = max(selected, _first_visible_shot(shots, str(dialogue.get("speaker", "")), request))
+        capacity = int(shots[selected]["end_frame"]) - int(shots[selected]["start_frame"]) - used[selected]
+        if required_frames > capacity:
+            added = _extend_single_shot_interval(shots, normalized_shots, selected, required_frames - capacity)
             extended_frames += added
             request["total_frames"] = int(shots[-1]["end_frame"])
             request["duration_seconds"] = request["total_frames"] / fps
             request["duration_source"] = "dialogue_plus_visual_lead"
-        fragment_index = 0
-        while remaining:
-            while current_shot < len(shots):
-                capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
-                if capacity > 0:
-                    break
-                current_shot += 1
-            if current_shot >= len(shots):
-                remaining_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
-                added = _extend_shot_intervals(
-                    shots, normalized_shots, len(shots) - 1, remaining_frames
-                )
-                extended_frames += added
-                request["total_frames"] = int(shots[-1]["end_frame"])
-                request["duration_seconds"] = request["total_frames"] / fps
-                request["duration_source"] = "dialogue_plus_visual_lead"
-                current_shot = len(shots) - 1
-            required_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
-            capacity = int(shots[current_shot]["end_frame"]) - int(shots[current_shot]["start_frame"]) - used[current_shot]
-            if required_frames <= capacity:
-                fragment = remaining
-            else:
-                if not re.search(r"[\u3400-\u9fff]", remaining):
-                    current_shot += 1
-                    continue
-                cut = _dialogue_prefix_for_frames(remaining, capacity, fps)
-                if cut <= 0:
-                    current_shot += 1
-                    continue
-                cut = _dialogue_semantic_cut(remaining, cut)
-                while cut > 0 and cut < len(remaining) and remaining[cut] in "，,。！？!?；;：:":
-                    cut -= 1
-                fragment_text = re.sub(r"[，,。！？!?；;：:\s]", "", remaining[:cut])
-                if cut <= 0 or len(fragment_text) < 3:
-                    current_shot += 1
-                    continue
-                fragment = remaining[:cut]
-                split_count += 1
-            item = dict(dialogue)
-            item["text"] = fragment
-            item["id"] = f"S{current_shot + 1}.D{len(normalized_shots[current_shot]['dialogues']) + 1}"
-            item["continues_from_previous"] = fragment_index > 0
-            item["continues_to_next"] = len(fragment) < len(remaining)
-            normalized_shots[current_shot]["dialogues"].append(item)
-            used[current_shot] += math.ceil(_line_spoken_duration_seconds(fragment) * fps)
-            remaining = remaining[len(fragment):]
-            fragment_index += 1
-            if remaining:
-                current_shot += 1
-    returned = "".join(
-        str(item.get("text", ""))
-        for shot in normalized_shots for item in shot["dialogues"]
-    )
-    required = "".join(str(item) for item in request.get("required_spoken_lines", ()))
+        item = dict(dialogue)
+        item["text"] = full_text
+        item["id"] = f"S{selected + 1}.D{len(normalized_shots[selected]['dialogues']) + 1}"
+        item.pop("continues_from_previous", None)
+        item.pop("continues_to_next", None)
+        normalized_shots[selected]["dialogues"].append(item)
+        used[selected] += required_frames
+        current_shot = selected
+    returned = [str(item.get("text", "")) for shot in normalized_shots for item in shot["dialogues"]]
+    required = [str(item) for item in request.get("required_spoken_lines", ())]
     if required and returned != required:
-        raise ValueError("Deterministic dialogue redistribution did not preserve the exact mandatory spoken text")
-    if normalized_shots == shots:
-        return value, []
-    message = f"Redistributed mandatory dialogue across shot frame capacity at natural speech speed; split {split_count} fragment(s)."
+        raise ValueError("Deterministic dialogue redistribution did not preserve complete mandatory spoken lines")
+    message = "Redistributed mandatory dialogue as complete atomic utterances; no line was split across shots."
     if extended_frames:
-        message += f" Extended the H3 timeline by {extended_frames} frame(s) so visible speakers appear before speaking."
+        message += f" Extended the H3 timeline by {extended_frames} frame(s) so each utterance fits one shot."
     return normalized, [message]
 
 
@@ -1305,7 +1289,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         if float(request.get("minimum_spoken_duration_seconds", 0.0)) > 0.0 and dialogue_frames > shot_frames:
             raise ValueError(
                 f"shots[{index}] assigns {dialogue_frames} natural-speech frames to a {shot_frames}-frame shot; "
-                "split the dialogue across consecutive shots without overlap or acceleration"
+                "extend the owning shot so every utterance remains complete without overlap or acceleration"
             )
         camera, camera_warning = _normalize_camera_contract(str(raw["camera"]).strip())
         if camera_warning:
@@ -1318,7 +1302,8 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         event_descriptions = []
         for raw_event, event in zip(events, normalized_events):
             actor_label = entity_labels.get(str(raw_event.get("actor", "")).strip(), "")
-            event_descriptions.append(" ".join(filter(None, (actor_label + ":" if actor_label else "", event["action"]))))
+            action = _visual_state(event["action"]) if normalized_dialogues else event["action"]
+            event_descriptions.append(" ".join(filter(None, (actor_label + ":" if actor_label else "", action))))
         visual_description = " ".join(filter(None, (
             f"Camera: {camera}.",
             f"Opening state: {str(raw['start_state']).strip()}.",
@@ -1526,6 +1511,11 @@ def build_typed_prompt_plan(compiled: dict[str, Any], *, fps: float) -> dict[str
         "non_diegetic_music": str(plan.get("non_diegetic_music", "")),
         "warnings": list(compiled.get("warnings", ())),
     }
+
+
+def prompt_plan_compiled_prompt(plan: dict[str, Any]) -> str:
+    """Compile the complete semantic plan before physical chunk projection."""
+    return compile_h3_prompt(plan, fps=float(plan["fps"]))
 
 
 def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int) -> dict[str, Any]:
@@ -1827,7 +1817,7 @@ def _subject_text(text: Any, subjects_by_entity: dict[str, dict[str, Any]]) -> s
         for alias in (entity_id, str(subject.get("name", "")).strip()):
             if alias:
                 value = re.sub(rf"(?<!\w){re.escape(alias)}(?!\w)", label, value, flags=re.IGNORECASE)
-    return value
+    return re.sub(r"(<Subject\s+\d+>)(?:\s+\1)+", r"\1", value, flags=re.IGNORECASE)
 
 
 def _visual_state(text: Any, subjects_by_entity: dict[str, dict[str, Any]] | None = None) -> str:

@@ -72,11 +72,10 @@ class PromptSkillTests(unittest.TestCase):
             "language": "Chinese", "text": "这是第一句很长的对白，需要使用前面镜头的时间。", "delivery": "自然地",
         }]
         normalized, warnings = prompt_skill._redistribute_dialogues(value, request)
-        self.assertTrue(normalized["shots"][0]["dialogues"])
-        self.assertEqual(
-            "".join(item["text"] for shot in normalized["shots"] for item in shot["dialogues"]),
-            request["required_spoken_lines"][0],
-        )
+        dialogues = [item for shot in normalized["shots"] for item in shot["dialogues"]]
+        self.assertEqual([item["text"] for item in dialogues], request["required_spoken_lines"])
+        self.assertTrue(all(not item.get("continues_from_previous") for item in dialogues))
+        self.assertTrue(all(not item.get("continues_to_next") for item in dialogues))
         self.assertTrue(any("Redistributed mandatory dialogue" in warning for warning in warnings))
 
     def test_same_shot_fragments_merge_without_scene_transition(self):
@@ -238,12 +237,11 @@ class PromptSkillTests(unittest.TestCase):
         shots = compiled["shot_plan"]["shots"]
         spoken = "".join(item["text"] for shot in shots for item in shot["dialogues"])
         self.assertEqual(spoken, "".join(required))
-        self.assertTrue(shots[1]["dialogues"])
-        fragments = [item for shot in shots for item in shot["dialogues"]]
-        for item in fragments:
-            self.assertNotRegex(item["text"], r"^[，,。！？!?；;：:]")
-        continued = next(item for item in fragments if item.get("continues_from_previous"))
-        self.assertIn("<scenetrans>", prompt_skill._dialogue_description(continued))
+        utterances = [item for shot in shots for item in shot["dialogues"]]
+        self.assertEqual([item["text"] for item in utterances], required)
+        self.assertTrue(all(not item.get("continues_from_previous") for item in utterances))
+        self.assertTrue(all(not item.get("continues_to_next") for item in utterances))
+        self.assertTrue(all("<scenetrans>" not in prompt_skill._dialogue_description(item) for item in utterances))
         self.assertTrue(any("Redistributed mandatory dialogue" in warning for warning in compiled["warnings"]))
 
     def test_model_invented_music_is_removed_without_story_music_request(self):
@@ -686,7 +684,8 @@ class PromptSkillTests(unittest.TestCase):
         request = {**self.request(), "required_spoken_lines": ["前半句后半句"]}
         compiled = prompt_skill.compile_prompt_skill(value, request)
         dialogues = [item for shot in compiled["shot_plan"]["shots"] for item in shot["dialogues"]]
-        self.assertEqual([item["speaker_id"] for item in dialogues], ["S1", "S1"])
+        self.assertEqual([item["speaker_id"] for item in dialogues], ["S1"])
+        self.assertEqual([item["text"] for item in dialogues], ["前半句后半句"])
 
     def test_authoritative_source_speaker_binding_corrects_qwen_remap(self):
         value = self.result()
@@ -713,8 +712,9 @@ class PromptSkillTests(unittest.TestCase):
         }
         compiled = prompt_skill.compile_prompt_skill(value, request)
         dialogues = [item for shot in compiled["shot_plan"]["shots"] for item in shot["dialogues"]]
-        self.assertEqual([item["speaker"] for item in dialogues], ["<Subject 1>", "<Subject 1>"])
-        self.assertTrue(any("authoritative source binding" in warning for warning in compiled["warnings"]))
+        self.assertEqual([item["speaker"] for item in dialogues], ["<Subject 1>"])
+        self.assertEqual([item["text"] for item in dialogues], ["前半句，后半句。"])
+        self.assertTrue(any("Recombined model-split dialogue fragments" in warning for warning in compiled["warnings"]))
 
     def test_request_extracts_authoritative_speaker_subject_bindings(self):
         request = prompt_skill.build_prompt_skill_request(
@@ -889,7 +889,7 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(returned, required)
         self.assertTrue(any("Restored mandatory spoken lines verbatim" in warning for warning in compiled["warnings"]))
 
-    def test_accepts_long_spoken_line_split_across_adjacent_shots(self):
+    def test_recombines_long_spoken_line_split_across_adjacent_shots(self):
         value = self.result()
         value["shots"][0]["dialogues"] = [
             {"id": "S1.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
@@ -901,9 +901,10 @@ class PromptSkillTests(unittest.TestCase):
         ]
         request = {**self.request(), "required_spoken_lines": ["姐姐，自从比试之后，这样真的来得及吗？"]}
         compiled = prompt_skill.compile_prompt_skill(value, request)
-        self.assertIn("<d>[Chinese] 姐姐，自从比试之后，</d>", compiled["prompt"])
-        self.assertIn("<d>[Chinese] 这样真的来得及吗？</d>", compiled["prompt"])
-        self.assertIn("concatenation exactly preserves", compiled["warnings"][0])
+        self.assertIn("<d>[Chinese] 姐姐，自从比试之后，这样真的来得及吗？</d>", compiled["prompt"])
+        self.assertNotIn("<d>[Chinese] 姐姐，自从比试之后，</d>", compiled["prompt"])
+        dialogues = [item for shot in compiled["shot_plan"]["shots"] for item in shot["dialogues"]]
+        self.assertEqual([item["text"] for item in dialogues], request["required_spoken_lines"])
 
     def test_restores_reordered_spoken_fragments(self):
         value = self.result()
@@ -1767,6 +1768,37 @@ class PromptSkillTests(unittest.TestCase):
         ]
         prompt_skill._close_dialogue_timeline_gaps(shots)
         self.assertEqual(shots[0]["dialogues"][0]["end_frame"], 240)
+
+    def test_replay_style_plan_compiles_two_complete_dialogues_without_fragments(self):
+        first = "姐姐，自从你跟太运宗使者比试之后，这十年你都没有怎么好好闭关修炼过。还有不到四十年，太运宗就会派更强的弟子，这样真的来得及吗？"
+        second = "我现在功力已经达到顶峰，再闭关苦修已是无用。与其毫无头绪的闭关，不如将舒寒当年传授给我的武学反复磨练磨练来得有意思。"
+        value = self.result()
+        value["shots"][0]["dialogues"] = [{
+            "id": "S1.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
+            "language": "Chinese", "text": first, "delivery": "担忧地",
+        }]
+        value["shots"][1]["dialogues"] = [{
+            "id": "S2.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
+            "language": "Chinese", "text": second, "delivery": "平静地",
+        }]
+        request = {**self.request(), "required_spoken_lines": [first, second], "total_frames": 991}
+        value["shots"][0]["end_frame"] = 500
+        value["shots"][1]["start_frame"] = 500
+        value["shots"][1]["end_frame"] = 991
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        typed = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        semantic = prompt_skill.prompt_plan_compiled_prompt(typed)
+        spoken = re.findall(r"<d>\[Chinese\]\s*(.*?)</d>", semantic, re.DOTALL)
+        self.assertEqual(spoken, [first, second])
+        self.assertNotIn("<d>[Chinese] 姐姐，自</d>", semantic)
+        self.assertNotIn("<d>[Chinese] 达到顶</d>", semantic)
+
+    def test_subject_text_collapses_duplicate_subject_labels(self):
+        subjects = {"asset_4": {"subject": 4, "name": "Asset4"}}
+        self.assertEqual(
+            prompt_skill._subject_text("<Subject 4> Asset4 turns toward asset_4", subjects),
+            "<Subject 4> turns toward <Subject 4>",
+        )
 
     def test_event_timeline_advances_once_across_physical_chunks(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
