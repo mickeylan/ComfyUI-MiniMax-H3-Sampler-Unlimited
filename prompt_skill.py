@@ -1468,42 +1468,38 @@ def normalize_h3_chunk_transitions(prompt: str, plan: dict[str, Any], *, frame_s
     return re.sub(r" +\n", "\n", text)
 
 
+def _h3_section_bounds(text: str, heading: str, next_heading: str) -> tuple[int, int] | None:
+    start = text.find(heading)
+    end = text.find(next_heading, start + len(heading)) if start >= 0 else -1
+    return None if start < 0 or end < 0 else (start, end)
+
+
 def normalize_h3_chunk_retention(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
     text = str(prompt)
-    retention_match = re.search(
-        r"(?ims)^retention_analysis:\s*\n(.*?)(?=^detailed_description:\s*$)", text
-    )
-    if retention_match is None:
+    bounds = _h3_section_bounds(text, "retention_analysis:", "detailed_description:")
+    if bounds is None:
         return text
-    valid = []
-    relationship = re.compile(
-        r"^<(?:Subject|Picture|Video|Audio)\s+\d+>.*(?:fully_preserved|partially_preserved|attribute_transfer|weak_reference|fully_copy|partially_copy|reference)\b",
-        re.IGNORECASE,
-    )
-    for line in retention_match.group(1).splitlines():
-        line = line.strip()
-        if line and relationship.search(line):
-            valid.append(line)
-
+    start, end = bounds
     active_pictures = set(active_prompt_plan_pictures(plan, frame_start=frame_start, frame_end=frame_end))
-    existing_subjects = {
-        int(number)
-        for line in valid
-        for number in re.findall(r"^<Subject\s+(\d+)>", line, re.IGNORECASE)
-    }
+    retention = []
     for item in plan.get("image_subjects", ()):
         if not isinstance(item, dict):
             continue
         picture = int(item.get("picture", 0) or 0)
         subject = int(item.get("subject", picture) or 0)
-        if picture in active_pictures and subject > 0 and subject not in existing_subjects:
-            valid.append(
+        if picture in active_pictures and subject > 0:
+            retention.append(
                 f"<Subject {subject}>: fully_preserved - the identity and visible attributes defined by <Picture {picture}> remain consistent."
             )
-    if not valid:
-        valid.append("<Video 1>: fully_preserved - the established target-video continuity remains consistent.")
-    replacement = "retention_analysis:\n" + "\n".join(dict.fromkeys(valid)) + "\n\n"
-    return text[:retention_match.start()] + replacement + text[retention_match.end():]
+    for kind in ("Video", "Audio"):
+        for number in sorted({int(value) for value in re.findall(rf"<{kind}\s+(\d+)>", text, re.IGNORECASE)}):
+            relationship = "fully_preserved" if kind == "Video" else "reference"
+            role = "target-video continuity" if kind == "Video" else "audible continuity"
+            retention.append(f"<{kind} {number}>: {relationship} - the established {role} remains consistent.")
+    if not retention:
+        retention.append("<Video 1>: fully_preserved - the established target-video continuity remains consistent.")
+    replacement = "retention_analysis:\n" + "\n".join(retention) + "\n\n"
+    return text[:start] + replacement + text[end:]
 
 
 def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> None:

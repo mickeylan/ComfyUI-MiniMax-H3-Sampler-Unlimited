@@ -1509,7 +1509,8 @@ class PromptSkillTests(unittest.TestCase):
         prompt = (
             "subject_definitions:\nNone.\n\nsummary:\nsummary.\n\n"
             "retention_analysis:\nCamera contract: portrait close-up.\nCurrent state: standing.\n"
-            "Forbidden replay: entering again.\n<Video 1>: fully_preserved - continuation source.\n\n"
+            "Forbidden replay: entering again.\n"
+            "<Video 1>: fully_preserved - continuation source. Current state: portrait framing.\n\n"
             "detailed_description:\n[Shot 1] Continue.\n\noverall_soundscape:\nSoft wind.\n\n"
             "non_diegetic_music:\nN/A"
         )
