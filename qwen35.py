@@ -1293,12 +1293,6 @@ def _stream_prompt_skill_worker(command, payload_text, *, cwd, env, timeout):
                 stdout = error.output.decode("utf-8", errors="replace") if isinstance(error.output, bytes) else error.output
             if error.stderr is not None:
                 stderr = error.stderr.decode("utf-8", errors="replace") if isinstance(error.stderr, bytes) else error.stderr
-            if "find_slot: non-consecutive token position" in stderr:
-                process.kill()
-                process.communicate()
-                raise DirectorWorkerError(
-                    "Qwen3.5 MTMD produced non-consecutive token positions during prompt evaluation; worker stopped immediately"
-                )
             now = time.monotonic()
             if now >= next_heartbeat:
                 progress = [line.strip() for line in stdout.splitlines() if line.strip()]
@@ -1466,12 +1460,18 @@ def _run_worker(request: dict[str, Any], timing: bool):
 
 
 def _raise_prompt_skill_mtmd_error(process, value: dict[str, Any]) -> None:
-    if "find_slot: non-consecutive token position" in str(getattr(process, "stderr", "")):
-        raise DirectorWorkerError(
-            "Qwen3.5 MTMD produced non-consecutive token positions; the multimodal runtime failed before producing a trustworthy prompt plan",
-            returncode=process.returncode,
-            raw_json=str(value.get("raw_json", "")),
+    if "find_slot: non-consecutive token position" not in str(getattr(process, "stderr", "")):
+        return
+    if process.returncode == 0 and value.get("ok"):
+        logging.warning(
+            "Qwen3.5 MTMD reported a non-consecutive token position, but the worker completed and the prompt plan passed deterministic validation."
         )
+        return
+    raise DirectorWorkerError(
+        "Qwen3.5 MTMD produced non-consecutive token positions and did not produce a valid prompt plan",
+        returncode=process.returncode,
+        raw_json=str(value.get("raw_json", "")),
+    )
 
 
 def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:

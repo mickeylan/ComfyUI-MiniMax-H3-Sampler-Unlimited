@@ -757,8 +757,21 @@ class Qwen35Tests(unittest.TestCase):
             "message": "Qwen Prompt Skill returned an empty JSON object", "raw_json": "{}",
         }
         with patch.object(qwen35, "_run_worker_once", return_value=(process, failure)) as worker:
-            with self.assertRaisesRegex(qwen35.DirectorWorkerError, "runtime failed"):
+            with self.assertRaisesRegex(qwen35.DirectorWorkerError, "did not produce a valid prompt plan"):
                 qwen35._run_prompt_skill_worker({"director_mtp": False, "image_urls": ["image"]})
+        worker.assert_called_once()
+
+    def test_prompt_skill_accepts_valid_result_despite_nonfatal_find_slot_log(self):
+        process = types.SimpleNamespace(
+            returncode=0,
+            stderr="find_slot: non-consecutive token position 1170 after 1169 for sequence 0 with 256 new tokens",
+        )
+        success = {"ok": True, "prompt_skill_compile": {"prompt": "valid", "shot_plan": {}}}
+        with patch.object(qwen35, "_run_worker_once", return_value=(process, success)) as worker:
+            with self.assertLogs(level="WARNING") as logs:
+                result = qwen35._run_prompt_skill_worker({"director_mtp": False})
+        self.assertEqual(result["prompt"], "valid")
+        self.assertIn("passed deterministic validation", "\n".join(logs.output))
         worker.assert_called_once()
 
     def test_prompt_skill_repair_reuses_images_when_visual_plan_is_missing(self):
