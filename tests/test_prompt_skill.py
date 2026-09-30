@@ -653,6 +653,22 @@ class PromptSkillTests(unittest.TestCase):
         self.assertTrue(any("Normalized empty shots[2].audio to N/A" in warning
                             for warning in compiled["warnings"]))
 
+    def test_restores_missing_speaker_from_matching_source_line(self):
+        value = self.result()
+        value["shots"][1]["dialogues"] = [{
+            "speaker_id": "S1", "text": "后半句。", "language": "Chinese", "delivery": "calmly",
+        }]
+        request = {
+            **self.request(),
+            "required_spoken_lines": ["前半句，后半句。"],
+            "required_spoken_subjects": ["<Subject 1>"],
+            "required_speaker_subjects": {},
+        }
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        dialogue = compiled["shot_plan"]["shots"][1]["dialogues"][0]
+        self.assertEqual(dialogue["speaker"], "<Subject 1>")
+        self.assertTrue(any("fields: id, kind, speaker" in warning for warning in compiled["warnings"]))
+
     def test_fills_deterministic_dialogue_metadata(self):
         value = self.result()
         value["shots"][1]["dialogues"] = [{

@@ -35,7 +35,7 @@ QWEN35_CONTEXT_TOKENS = 65536
 QWEN35_IMAGE_MIN_TOKENS = 256
 QWEN35_IMAGE_MAX_TOKENS = 1344
 QWEN35_BATCH_SIZE = 2048
-QWEN35_MTMD_BATCH_SIZE = 256
+QWEN35_MTMD_USE_GPU = False
 # Qwen3.5 MTMD image embeddings must remain microbatched. Setting n_ubatch to
 # the full 2048-token logical batch can make llama.cpp skip physical positions
 # between image blocks ("find_slot: non-consecutive token position").
@@ -905,12 +905,12 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         clip_model_path=request["director_mmproj_path"],
         image_min_tokens=QWEN35_IMAGE_MIN_TOKENS,
         image_max_tokens=QWEN35_IMAGE_MAX_TOKENS,
-        batch_max_tokens=QWEN35_MTMD_BATCH_SIZE,
+        batch_max_tokens=QWEN35_BATCH_SIZE,
         verbose=False,
-        use_gpu=True,
+        use_gpu=QWEN35_MTMD_USE_GPU,
     )
     print(
-        f"[MINIMAX_H3_WORKER] MTMDChatHandler(mmgrpo) done mtmd_batch={QWEN35_MTMD_BATCH_SIZE} "
+        f"[MINIMAX_H3_WORKER] MTMDChatHandler(mmgrpo) done mtmd_device=cpu "
         f"n_batch={QWEN35_BATCH_SIZE} n_ubatch={QWEN35_UBATCH_SIZE} t={time.monotonic()-t0:.1f}s",
         flush=True,
     )
@@ -1294,6 +1294,15 @@ def _run_worker(request: dict[str, Any], timing: bool):
     return _from_payload(value["timing_plan" if timing else "chunk_prompt"], timing)
 
 
+def _raise_prompt_skill_mtmd_error(process, value: dict[str, Any]) -> None:
+    if "find_slot: non-consecutive token position" in str(getattr(process, "stderr", "")):
+        raise DirectorWorkerError(
+            "Qwen3.5 MTMD produced non-consecutive token positions; restart ComfyUI with the CPU mmproj path enabled by the latest plugin code",
+            returncode=process.returncode,
+            raw_json=str(value.get("raw_json", "")),
+        )
+
+
 def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(request, ensure_ascii=False))
     payload["operation"] = "prompt_skill_compile"
@@ -1309,6 +1318,7 @@ def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
             f"Qwen prompt skill worker exited with status {process.returncode} without a result",
             returncode=process.returncode,
         )
+    _raise_prompt_skill_mtmd_error(process, value)
     repair_attempt = 0
     while (not value.get("ok")
             and value.get("error_type") in {"Qwen35ObservationError", "ValueError"}
@@ -1336,6 +1346,7 @@ def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
                 f"Qwen prompt skill repair worker exited with status {process.returncode} without a result",
                 returncode=process.returncode,
             )
+        _raise_prompt_skill_mtmd_error(process, value)
     if not value.get("ok"):
         raise Qwen35ObservationError(
             str(value.get("message", "Qwen prompt skill worker failed")),

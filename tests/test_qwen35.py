@@ -684,11 +684,10 @@ class Qwen35Tests(unittest.TestCase):
     def test_prompt_skill_has_large_deterministic_response_budget(self):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
 
-    def test_qwen35_multimodal_images_use_matching_mtmd_microbatches(self):
+    def test_qwen35_multimodal_images_use_cpu_mmproj(self):
         self.assertGreaterEqual(qwen35.QWEN35_BATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
         self.assertEqual(qwen35.QWEN35_UBATCH_SIZE, 256)
-        self.assertEqual(qwen35.QWEN35_MTMD_BATCH_SIZE, qwen35.QWEN35_UBATCH_SIZE)
-        self.assertLess(qwen35.QWEN35_MTMD_BATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
+        self.assertFalse(qwen35.QWEN35_MTMD_USE_GPU)
         self.assertLess(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_BATCH_SIZE)
 
     def test_prompt_skill_unwraps_known_result_containers(self):
@@ -705,6 +704,20 @@ class Qwen35Tests(unittest.TestCase):
     def test_prompt_skill_missing_plan_reports_actual_top_level_keys(self):
         with self.assertRaisesRegex(ValueError, "returned top-level keys: analysis, summary"):
             qwen35._prompt_skill_result_object({"analysis": "done", "summary": "text"})
+
+    def test_prompt_skill_find_slot_failure_is_not_retried(self):
+        process = types.SimpleNamespace(
+            returncode=1,
+            stderr="find_slot: non-consecutive token position 1170 after 1169 for sequence 0 with 256 new tokens",
+        )
+        failure = {
+            "ok": False, "error_type": "Qwen35ObservationError",
+            "message": "Qwen Prompt Skill returned an empty JSON object", "raw_json": "{}",
+        }
+        with patch.object(qwen35, "_run_worker_once", return_value=(process, failure)) as worker:
+            with self.assertRaisesRegex(qwen35.DirectorWorkerError, "CPU mmproj path"):
+                qwen35._run_prompt_skill_worker({"director_mtp": False, "image_urls": ["image"]})
+        worker.assert_called_once()
 
     def test_prompt_skill_repair_reuses_images_when_visual_plan_is_missing(self):
         failure = {

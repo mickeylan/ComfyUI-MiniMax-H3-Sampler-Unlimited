@@ -1209,6 +1209,8 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 "action": action, "phase": phase,
             })
         normalized_dialogues = []
+        required_lines = [str(text) for text in request.get("required_spoken_lines", ())]
+        required_subjects = [str(subject) for subject in request.get("required_spoken_subjects", ())]
         for dialogue_index, dialogue in enumerate(dialogues, 1):
             if not isinstance(dialogue, dict):
                 raise ValueError(f"shots[{index}].dialogues items must be objects")
@@ -1236,6 +1238,13 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 repaired_fields.append("delivery")
             if not item["speaker"] and item["speaker_id"]:
                 item["speaker"] = request.get("required_speaker_subjects", {}).get(item["speaker_id"], "")
+                if not item["speaker"] and item["text"] and len(required_lines) == len(required_subjects):
+                    matching_subjects = {
+                        subject for line, subject in zip(required_lines, required_subjects)
+                        if item["text"] in line or line in item["text"]
+                    }
+                    if len(matching_subjects) == 1:
+                        item["speaker"] = matching_subjects.pop()
                 if item["speaker"]:
                     repaired_fields.append("speaker")
             if not item["speaker_id"] and item["speaker"]:
