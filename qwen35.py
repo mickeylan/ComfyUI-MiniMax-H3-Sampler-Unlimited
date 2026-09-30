@@ -964,13 +964,6 @@ def _qwen35_intrinsic_features(value: Any) -> str:
     return "; ".join(dict.fromkeys(part for part in intrinsic if part))
 
 
-_QWEN35_REFERENCE_DISPLAY_BAN = (
-    "Render only the single diegetic cinematic world positively defined by the active scene asset. Character assets "
-    "control identity and clothing only; they contribute no framing, canvas, source presentation, borders, labels, "
-    "or visible source imagery. The active scene asset controls environment, composition, lighting, and background."
-)
-
-
 def _validate_qwen35_compiled_scene_prompt(prompt: str) -> None:
     polluted = _QWEN35_PRESENTATION_FEATURE.search(str(prompt))
     if polluted:
@@ -1021,10 +1014,10 @@ def _qwen35_ground_prompt_skill_scenes(value: dict[str, Any], observations: Sequ
             "composition, lighting, color palette, and background remain the positive visual ground"
         )
         shot["start_state"] = f"{anchor}. {opening}".strip()
-        forbidden = [str(item).strip() for item in shot.get("forbidden_replays", ()) if str(item).strip()]
-        if _QWEN35_REFERENCE_DISPLAY_BAN not in forbidden:
-            forbidden.append(_QWEN35_REFERENCE_DISPLAY_BAN)
-        shot["forbidden_replays"] = forbidden
+        shot["forbidden_replays"] = [
+            str(item).strip() for item in shot.get("forbidden_replays", ())
+            if str(item).strip() and re.fullmatch(r"S\d+\.[VD]\d+", str(item).strip(), re.IGNORECASE) is None
+        ]
         shots.append(shot)
     result["shots"] = shots
     return result
@@ -1169,6 +1162,9 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         if prompt_skill:
             try:
                 plan_value = _qwen35_ground_prompt_skill_scenes(_prompt_skill_result_object(value), observations)
+                request["qwen35_scene_entity_ids"] = [
+                    item["asset_id"] for item in observations if item.get("kind") == "scene"
+                ]
                 compiled = compile_prompt_skill(plan_value, request)
                 _validate_qwen35_compiled_scene_prompt(compiled["prompt"])
             except ValueError as error:

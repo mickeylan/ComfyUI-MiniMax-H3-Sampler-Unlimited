@@ -123,6 +123,28 @@ detailed_description: second
         self.assertEqual(prompt.count("[Shot 1]"), 1)
         self.assertEqual(prompt.count("[Shot 2]"), 1)
 
+    def test_qwen35_scene_contract_uses_picture_for_scene_not_subject(self):
+        plan = story_format.validate_storyboard_plan(
+            {
+                "qwen35_scene_contract": True,
+                "image_subjects": [
+                    {"picture": 1, "subject": 1, "name": "Temple", "kind": "scene", "observable_features": "misty temple courtyard"},
+                    {"picture": 2, "subject": 2, "name": "Hero", "kind": "character", "observable_features": "long black hair"},
+                ],
+                "summary": "The hero stands in the temple courtyard.",
+                "retention_analysis": "<Picture 1> defines the environment.",
+                "shots": [{"shot": 1, "start_frame": 0, "end_frame": 56, "pictures": [1, 2], "description": "The hero stands in the courtyard."}],
+                "overall_soundscape": "Wind in trees.",
+                "non_diegetic_music": "N/A",
+            },
+            image_count=2,
+            total_frames=56,
+        )
+        prompt = story_format.compile_h3_prompt(plan, fps=24.0)
+        self.assertIn("<Picture 1> defines the scene environment: misty temple courtyard.", prompt)
+        self.assertNotIn("<Subject 1>", prompt)
+        self.assertIn("<Subject 2> is Hero from <Picture 2>", prompt)
+
     def test_validate_storyboard_accepts_picture_labels(self):
         value = {
             "image_subjects": [{"picture": "<Picture 1>", "subject": "<Subject 1>", "name": "hero", "observable_features": "coat"}],

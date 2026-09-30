@@ -732,7 +732,7 @@ class Qwen35Tests(unittest.TestCase):
             "shots": [{
                 "pictures": ["asset_1"],
                 "start_state": "the character stands still",
-                "forbidden_replays": [],
+                "forbidden_replays": ["S1.V1", "S1.D1"],
             }]
         }
         observations = [
@@ -745,10 +745,7 @@ class Qwen35Tests(unittest.TestCase):
         self.assertIn("architecture, spatial layout, composition, lighting", grounded["shots"][0]["start_state"])
         self.assertEqual(grounded["image_subjects"][0]["observable_features"], "long black hair; blue robe")
         self.assertEqual(grounded["image_subjects"][1]["observable_features"], "temple interior; warm candlelight")
-        ban = grounded["shots"][0]["forbidden_replays"][0]
-        self.assertIn("single diegetic cinematic world", ban)
-        self.assertIn("active scene asset controls environment", ban)
-        self.assertNotRegex(ban.lower(), r"four.view|white.*background|character sheet|collage")
+        self.assertEqual(grounded["shots"][0]["forbidden_replays"], [])
         self.assertEqual(plan["shots"][0]["pictures"], ["asset_1"])
 
     def test_qwen35_removes_reference_presentation_from_intrinsic_features(self):

@@ -225,6 +225,7 @@ def validate_storyboard_plan(value: Any, *, image_count: int, total_frames: int)
             "picture": picture,
             "subject": picture,
             "name": str(item.get("name", "")).strip(),
+            "kind": str(item.get("kind", "")).strip().lower(),
             "observable_features": str(item.get("observable_features", item.get("description", ""))).strip(),
         })
     normalized_shots = []
@@ -251,7 +252,15 @@ def validate_storyboard_plan(value: Any, *, image_count: int, total_frames: int)
 
 
 def compile_h3_prompt(plan: dict[str, Any], *, fps: float) -> str:
-    subjects = [f"<Subject {item['subject']}> is {item['name']} from <Picture {item['picture']}>: {item['observable_features']}." for item in plan["image_subjects"]]
+    qwen35_scene_contract = bool(plan.get("qwen35_scene_contract", False))
+    subjects = [
+        (
+            f"<Picture {item['picture']}> defines the scene environment: {item['observable_features']}."
+            if qwen35_scene_contract and str(item.get("kind", "")).lower() == "scene" else
+            f"<Subject {item['subject']}> is {item['name']} from <Picture {item['picture']}>: {item['observable_features']}."
+        )
+        for item in plan["image_subjects"]
+    ]
     shots = []
     for item in plan["shots"]:
         marker = f"[Shot {item['shot']}]"

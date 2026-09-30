@@ -1568,6 +1568,27 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("<d>[English] Keep Asset3 exactly as spoken.</d>", normalized)
         self.assertIn("asset_9", normalized)
 
+    def test_qwen35_scene_references_remain_picture_labels_in_chunks(self):
+        plan = {
+            "qwen35_scene_contract": True,
+            "shots": [{"start_frame": 0, "end_frame": 80, "pictures": [2, 3], "dialogues": []}],
+            "image_subjects": [
+                {"entity_id": "asset_2", "picture": 2, "subject": 2, "kind": "scene"},
+                {"entity_id": "asset_3", "picture": 3, "subject": 3, "kind": "character"},
+            ],
+        }
+        normalized = prompt_skill.normalize_h3_chunk_references("asset_2 surrounds asset_3", plan)
+        self.assertEqual(normalized, "<Picture 2> surrounds <Subject 3>")
+        prompt = (
+            "subject_definitions:\nNone.\n\nsummary:\nsummary.\n\nretention_analysis:\nstale.\n\n"
+            "detailed_description:\n[Shot 1] Continue.\n\noverall_soundscape:\nWind.\n\nnon_diegetic_music:\nN/A"
+        )
+        normalized = prompt_skill.normalize_h3_chunk_retention(prompt, plan, frame_start=0, frame_end=40)
+        retention = normalized.split("retention_analysis:\n", 1)[1].split("\n\ndetailed_description:", 1)[0]
+        self.assertIn("<Picture 2>: fully_preserved", retention)
+        self.assertNotIn("<Subject 2>", retention)
+        self.assertIn("<Subject 3>: fully_preserved", retention)
+
     def test_chunk_transition_normalization_removes_false_scene_transition(self):
         plan = {
             "shots": [

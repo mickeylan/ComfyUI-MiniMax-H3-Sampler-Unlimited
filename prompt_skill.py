@@ -812,6 +812,9 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
         int(source["picture"]): entity_id
         for entity_id, source in contract.items()
     }
+    scene_entity_ids = {
+        str(entity_id) for entity_id in request.get("qwen35_scene_entity_ids", ()) if str(entity_id).strip()
+    }
     names = {}
     for entity_id, source in contract.items():
         name = str(source.get("name", "")).strip()
@@ -855,14 +858,18 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
                     warnings.append(warning)
         for marker in re.findall(r"<Entity\s+([^>]+)>", result, re.IGNORECASE):
             source = entity(marker, label)
-            replacement = f"<Subject {int(source['picture'])}>"
-            if str(source.get("name", "")).strip():
+            replacement = (
+                f"<Picture {int(source['picture'])}>"
+                if str(source["entity_id"]) in scene_entity_ids
+                else f"<Subject {int(source['picture'])}>"
+            )
+            if str(source.get("name", "")).strip() and str(source["entity_id"]) not in scene_entity_ids:
                 replacement += f" {str(source['name']).strip()}"
             result = re.sub(rf"<Entity\s+{re.escape(marker)}>", replacement, result, flags=re.IGNORECASE)
         for entity_id, source in contract.items():
             result = re.sub(
                 rf"(?<![\w>]){re.escape(entity_id)}(?!\w)",
-                f"<Subject {int(source['picture'])}>",
+                f"<Picture {int(source['picture'])}>" if entity_id in scene_entity_ids else f"<Subject {int(source['picture'])}>",
                 result,
                 flags=re.IGNORECASE,
             )
@@ -1104,6 +1111,9 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
 def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[str, Any]:
     total_frames = int(request["total_frames"])
     image_count = int(request.get("image_count", 0))
+    scene_entity_ids = {
+        str(entity_id) for entity_id in request.get("qwen35_scene_entity_ids", ()) if str(entity_id).strip()
+    }
     value, source_image_warnings = _resolve_entity_contract(value, request)
     value, interval_warnings = _normalize_shot_intervals(value, total_frames)
     value, boundary_state_warnings = _normalize_boundary_states(value)
@@ -1394,31 +1404,39 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         )
     if split_spoken and not exact_spoken:
         warnings.append("Accepted chronologically adjacent dialogue fragments whose concatenation exactly preserves the source spoken text.")
-    plan["summary"] = "[reference generation] " + " ".join(
-        f"Shot {index} moves from {shot['start_state']} to {shot['end_state']}."
-        for index, shot in enumerate(plan["shots"], 1)
-    )
+    if not scene_entity_ids:
+        plan["summary"] = "[reference generation] " + " ".join(
+            f"Shot {index} moves from {shot['start_state']} to {shot['end_state']}."
+            for index, shot in enumerate(plan["shots"], 1)
+        )
     used_subjects = {picture for shot in plan["shots"] for picture in shot.get("pictures", ())}
     unused_subjects = [item for item in plan["image_subjects"] if int(item["subject"]) not in used_subjects]
     if unused_subjects:
         warnings.append("Excluded unused image subjects from retention and chunk reference selection: " + ", ".join(str(item["entity_id"]) for item in unused_subjects) + ".")
     subject_retention = [
-        f"<Subject {int(item['subject'])}> (used in shots "
-        + ", ".join(str(index) for index, shot in enumerate(plan["shots"], 1) if int(item["subject"]) in shot.get("pictures", ()))
-        + f"): preserve the identity and visible attributes defined from <Picture {int(item['picture'])}>."
+        (
+            f"<Picture {int(item['picture'])}>: preserve its environment, spatial layout, composition, lighting, color palette, and background."
+            if str(item.get("entity_id", "")) in scene_entity_ids else
+            f"<Subject {int(item['subject'])}>: preserve identity and visible attributes from <Picture {int(item['picture'])}>."
+        )
         for item in plan["image_subjects"] if int(item["subject"]) in used_subjects
     ]
-    shot_retention = [
-        f"Shot {index}: opening={shot['start_state']}; ending={shot['end_state']}; forbidden="
-        + ("; ".join(shot["forbidden_replays"]) or "none")
-        for index, shot in enumerate(plan["shots"], 1)
-    ]
-    plan["retention_analysis"] = "\n".join((*subject_retention, *shot_retention))
+    if scene_entity_ids:
+        plan["retention_analysis"] = "\n".join(subject_retention)
+    else:
+        shot_retention = [
+            f"Shot {index}: opening={shot['start_state']}; ending={shot['end_state']}; forbidden="
+            + ("; ".join(shot["forbidden_replays"]) or "none")
+            for index, shot in enumerate(plan["shots"], 1)
+        ]
+        plan["retention_analysis"] = "\n".join((*subject_retention, *shot_retention))
     plan["overall_soundscape"] = _nonverbal_soundscape(*(shot["audio"] for shot in plan["shots"])) or "The established ambient room tone continues throughout the video."
     if _MUSIC_INTENT.search(str(request.get("story", ""))) is None:
         if str(plan.get("non_diegetic_music", "")).strip().upper() not in {"", "N/A"}:
             warnings.append("Removed model-invented non-diegetic music because the source story did not request music.")
         plan["non_diegetic_music"] = "N/A"
+    if scene_entity_ids:
+        plan["qwen35_scene_contract"] = True
     plan["initial_event_ledger"] = {
         "completed": [], "active": [], "pending": ledger_pending, "forbidden": [],
     }
@@ -1463,7 +1481,11 @@ def normalize_h3_chunk_references(prompt: str, plan: dict[str, Any]) -> str:
         picture = int(item.get("picture", 0) or 0)
         if subject <= 0:
             continue
-        label = f"<Subject {subject}>"
+        label = (
+            f"<Picture {picture}>"
+            if plan.get("qwen35_scene_contract") and str(item.get("kind", "")).lower() == "scene" else
+            f"<Subject {subject}>"
+        )
         entity_id = str(item.get("entity_id", "")).strip()
         if entity_id:
             aliases[entity_id.casefold()] = label
@@ -1521,9 +1543,14 @@ def normalize_h3_chunk_retention(prompt: str, plan: dict[str, Any], *, frame_sta
         picture = int(item.get("picture", 0) or 0)
         subject = int(item.get("subject", picture) or 0)
         if picture in active_pictures and subject > 0:
-            retention.append(
-                f"<Subject {subject}>: fully_preserved - the identity and visible attributes defined by <Picture {picture}> remain consistent."
-            )
+            if plan.get("qwen35_scene_contract") and str(item.get("kind", "")).lower() == "scene":
+                retention.append(
+                    f"<Picture {picture}>: fully_preserved - its environment, layout, composition, lighting, and background remain consistent."
+                )
+            else:
+                retention.append(
+                    f"<Subject {subject}>: fully_preserved - the identity and visible attributes defined by <Picture {picture}> remain consistent."
+                )
     for kind in ("Video", "Audio"):
         for number in sorted({int(value) for value in re.findall(rf"<{kind}\s+(\d+)>", text, re.IGNORECASE)}):
             relationship = "fully_preserved" if kind == "Video" else "reference"
@@ -1701,6 +1728,7 @@ def build_typed_prompt_plan(compiled: dict[str, Any], *, fps: float, chunk_frame
         "retention_analysis": str(plan.get("retention_analysis", "")),
         "overall_soundscape": str(plan.get("overall_soundscape", "")),
         "non_diegetic_music": str(plan.get("non_diegetic_music", "")),
+        "qwen35_scene_contract": bool(plan.get("qwen35_scene_contract", False)),
         "warnings": list(compiled.get("warnings", ())),
     }
 
@@ -2207,8 +2235,11 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
             continue
         features = _subject_text(item.get("observable_features", ""), subjects_by_entity).rstrip(".。 ")
         kind = str(item.get("kind", "")).strip().lower()
-        role = "character" if kind == "character" else "visible environment or object"
-        definition = f"<Subject {int(item.get('subject', picture))}> is the {role} defined by <Picture {picture}>"
+        if plan.get("qwen35_scene_contract") and kind == "scene":
+            definition = f"<Picture {picture}> defines the active scene environment"
+        else:
+            role = "character" if kind == "character" else "visible environment or object"
+            definition = f"<Subject {int(item.get('subject', picture))}> is the {role} defined by <Picture {picture}>"
         subjects.append(definition + (f", with {features}." if features else "."))
     subjects.extend(
         line.strip()
@@ -2271,7 +2302,11 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
             summary_events.append(localized)
     summary_body = " ".join(dict.fromkeys(summary_events))
     active_labels = [
-        f"<Subject {int(item.get('subject', item.get('picture', 0)))}>"
+        (
+            f"<Picture {int(item.get('picture', 0))}>"
+            if plan.get("qwen35_scene_contract") and str(item.get("kind", "")).lower() == "scene" else
+            f"<Subject {int(item.get('subject', item.get('picture', 0)))}>"
+        )
         for item in plan["image_subjects"]
         if int(item.get("picture", 0) or 0) in active_pictures
     ]
@@ -2291,7 +2326,11 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         + f" while {current_content}."
     )
     retention = [
-        f"<Subject {int(item.get('subject', item.get('picture', 0)))}>: fully_preserved - the identity and visible attributes defined by <Picture {int(item.get('picture', 0))}> remain consistent."
+        (
+            f"<Picture {int(item.get('picture', 0))}>: fully_preserved - its environment, layout, composition, lighting, and background remain consistent."
+            if plan.get("qwen35_scene_contract") and str(item.get("kind", "")).lower() == "scene" else
+            f"<Subject {int(item.get('subject', item.get('picture', 0)))}>: fully_preserved - the identity and visible attributes defined by <Picture {int(item.get('picture', 0))}> remain consistent."
+        )
         for item in plan["image_subjects"]
         if int(item.get("picture", 0) or 0) in active_pictures
     ]
