@@ -947,6 +947,43 @@ def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str], t0: floa
     return observations
 
 
+_QWEN35_REFERENCE_DISPLAY_BAN = (
+    "Identity reference images are identity-and-clothing evidence only. Never show a reference sheet, turnaround, "
+    "four-view layout, split screen, panel, collage, character card, white studio background, or any reference image "
+    "itself in the generated video. Render one continuous cinematic scene using the referenced scene image for the "
+    "environment, composition, lighting, and background."
+)
+
+
+def _qwen35_ground_prompt_skill_scenes(value: dict[str, Any], observations: Sequence[dict[str, str]]) -> dict[str, Any]:
+    scene_ids = tuple(item["asset_id"] for item in observations if item.get("kind") == "scene")
+    if not scene_ids:
+        return value
+    result = dict(value)
+    shots = []
+    for index, source_shot in enumerate(value.get("shots", ()), 1):
+        if not isinstance(source_shot, dict):
+            shots.append(source_shot)
+            continue
+        shot = dict(source_shot)
+        pictures = [str(item).strip() for item in shot.get("pictures", ())]
+        active_scenes = [entity_id for entity_id in pictures if entity_id in scene_ids]
+        if not active_scenes:
+            if len(scene_ids) != 1:
+                raise Qwen35ObservationError(
+                    f"Qwen3.5 prompt plan shot {index} does not select a scene asset from {list(scene_ids)}"
+                )
+            pictures.insert(0, scene_ids[0])
+        shot["pictures"] = list(dict.fromkeys(pictures))
+        forbidden = [str(item).strip() for item in shot.get("forbidden_replays", ()) if str(item).strip()]
+        if _QWEN35_REFERENCE_DISPLAY_BAN not in forbidden:
+            forbidden.append(_QWEN35_REFERENCE_DISPLAY_BAN)
+        shot["forbidden_replays"] = forbidden
+        shots.append(shot)
+    result["shots"] = shots
+    return result
+
+
 def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     try:
@@ -1004,6 +1041,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         else:
             system, prompt = _chunk_messages(request)
         image_urls = request.get("image_urls", ())
+        observations: list[dict[str, str]] = []
         content: Any = prompt
         if prompt_skill and image_urls:
             visual_started = time.monotonic()
@@ -1020,6 +1058,15 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             )
             prompt += "\n\nAuthoritative per-asset visual observations from sequential single-image analysis:\n" + json.dumps(
                 observations, ensure_ascii=False, indent=2
+            )
+            prompt += (
+                "\n\nQwen3.5 reference rendering contract:\n"
+                "- A character image is identity-and-clothing evidence only, never a target frame or background.\n"
+                "- Every shot must select a scene asset in pictures when scene observations are available.\n"
+                "- Ground environment, composition, lighting, and background in that scene asset.\n"
+                "- Never render a turnaround, four-view layout, reference sheet, split screen, panel, collage, "
+                "character card, white studio background, or any reference image itself.\n"
+                "- Render one continuous cinematic scene only."
             )
             content = prompt
         elif not timing:
@@ -1075,7 +1122,8 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             return {"external_continuation": _payload(_external_result(value, raw, system, prompt))}
         if prompt_skill:
             try:
-                compiled = compile_prompt_skill(_prompt_skill_result_object(value), request)
+                plan_value = _qwen35_ground_prompt_skill_scenes(_prompt_skill_result_object(value), observations)
+                compiled = compile_prompt_skill(plan_value, request)
             except ValueError as error:
                 raise Qwen35ObservationError(str(error), raw_json=json.dumps(value, ensure_ascii=False)) from error
             return {"prompt_skill_compile": compiled}
