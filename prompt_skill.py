@@ -2103,6 +2103,11 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
                 ", ".join(dict.fromkeys(silent)) + " keep their lips and jaws completely still."
                 if silent else "no other character vocalizes."
             ))
+        parts.append(
+            f"Keep {speaker} clearly visible on screen throughout this exact dialogue fragment, with that subject's "
+            "lips and jaw visibly synchronized to every audible word. This mapped character dialogue is on-screen, "
+            "never off-screen voiceover. Do not transfer, echo, or visually mouth any word through another character."
+        )
         if first_fragment:
             parts.append(
                 f"{speaker} is already clearly visible on screen with closed lips before the first audible word; establish this speaker visually, then begin the line."
@@ -2237,7 +2242,11 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         if int(item.get("picture", 0) or 0) in active_pictures
     ]
     if chunk_speakers:
-        current_content = " and ".join(sorted(chunk_speakers)) + " carry the current spoken passage"
+        visible_speakers = " and ".join(sorted(chunk_speakers))
+        current_content = (
+            f"only {visible_speakers} vocalizes the scripted on-screen dialogue with clearly visible synchronized "
+            "lip and jaw movement; every other character remains silent and must not mouth or carry any word"
+        )
     elif summary_body:
         current_content = summary_body
     else:

@@ -1829,6 +1829,12 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("At 2.000 seconds, begin a strict speaker handoff: only <Subject 2> vocalizes", localized)
         self.assertNotIn("Only <Subject 1> vocalizes the current dialogue", localized)
         self.assertNotIn("Only <Subject 2> vocalizes the current dialogue", localized)
+        self.assertEqual(localized.count("never off-screen voiceover"), 2)
+        self.assertIn("Keep <Subject 1> clearly visible on screen throughout this exact dialogue fragment", localized)
+        self.assertIn("Keep <Subject 2> clearly visible on screen throughout this exact dialogue fragment", localized)
+        summary = localized.split("summary:\n", 1)[1].split("\n\nretention_analysis:", 1)[0]
+        self.assertIn("scripted on-screen dialogue", summary)
+        self.assertNotIn("carry the current spoken passage", summary)
 
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
