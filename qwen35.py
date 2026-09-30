@@ -924,7 +924,9 @@ def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str], t0: floa
             temperature=0.1, top_p=0.9, top_k=40,
             max_tokens=1024, reasoning_budget=0,
         )
-        message = response.get("choices", [{}])[0].get("message", {})
+        choice = response.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        usage = response.get("usage", {})
         text = str(message.get("content") or message.get("reasoning_content") or "")
         value, _raw = _extract_json(text)
         if not isinstance(value, dict):
@@ -935,8 +937,11 @@ def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str], t0: floa
             raise Qwen35ObservationError(f"Qwen3.5 returned an incomplete observation for asset_{index}", raw_json=text)
         observations.append({"asset_id": f"asset_{index}", "kind": kind, "observable_features": features})
         print(
-            f"[MINIMAX_H3_WORKER] asset_{index} analyzed kind={kind} "
-            f"chars={len(features)} elapsed={time.monotonic()-started:.1f}s",
+            f"[MINIMAX_H3_WORKER] asset_{index} analyzed kind={kind} chars={len(features)} "
+            f"finish={choice.get('finish_reason', 'unknown')} "
+            f"prompt_tokens={usage.get('prompt_tokens', 'unknown')} "
+            f"completion_tokens={usage.get('completion_tokens', 'unknown')} "
+            f"elapsed={time.monotonic()-started:.1f}s total={time.monotonic()-t0:.1f}s",
             flush=True,
         )
     return observations
@@ -979,7 +984,12 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         request["director_model_path"], chat_handler=handler, n_gpu_layers=-1,
         n_ctx=context_tokens, verbose=False,
     )
-    print(f"[MINIMAX_H3_WORKER] GGUF loaded t={time.monotonic()-t0:.1f}s", flush=True)
+    print(
+        f"[MINIMAX_H3_WORKER] GGUF loaded model={Path(request['director_model_path']).name} "
+        f"runtime=llama-cpp-python-{runtime_version} n_ctx={context_tokens} "
+        f"elapsed={time.monotonic()-t0:.1f}s",
+        flush=True,
+    )
     try:
         if timing:
             system, prompt = _timing_messages(request)
@@ -996,7 +1006,18 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         image_urls = request.get("image_urls", ())
         content: Any = prompt
         if prompt_skill and image_urls:
+            visual_started = time.monotonic()
+            print(
+                f"[MINIMAX_H3_WORKER] sequential visual analysis starting assets={len(image_urls)} "
+                f"t={visual_started-t0:.1f}s",
+                flush=True,
+            )
             observations = _qwen35_analyze_prompt_skill_images(llm, image_urls, t0)
+            print(
+                f"[MINIMAX_H3_WORKER] sequential visual analysis done assets={len(observations)} "
+                f"elapsed={time.monotonic()-visual_started:.1f}s total={time.monotonic()-t0:.1f}s",
+                flush=True,
+            )
             prompt += "\n\nAuthoritative per-asset visual observations from sequential single-image analysis:\n" + json.dumps(
                 observations, ensure_ascii=False, indent=2
             )
@@ -1005,7 +1026,8 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             content = [{"type": "image_url", "image_url": {"url": url}} for url in image_urls]
             content.append({"type": "text", "text": prompt})
         print(
-            f"[MINIMAX_H3_WORKER] starting LLM op={operation} images={len(image_urls)} "
+            f"[MINIMAX_H3_WORKER] starting final LLM op={operation} "
+            f"media_images={0 if prompt_skill else len(image_urls)} analyzed_assets={len(image_urls) if prompt_skill else 0} "
             f"image_info={_image_url_diagnostics(image_urls)} system_chars={len(system)} prompt_chars={len(prompt)} "
             f"n_ctx={context_tokens} batching=runtime-defaults "
             f"runtime=llama-cpp-python-{runtime_version} "
@@ -1687,10 +1709,20 @@ class Qwen35ContinuityDirector:
 def _worker_main() -> int:
     import time as _time
     _t0 = _time.monotonic()
-    print(f"[MINIMAX_H3_WORKER] START pid={os.getpid()} t={_time.monotonic()-_t0:.1f}s", flush=True)
+    print(
+        f"[MINIMAX_H3_WORKER] START pid={os.getpid()} python={sys.version.split()[0]} "
+        f"module={Path(__file__).name} t={_time.monotonic()-_t0:.1f}s",
+        flush=True,
+    )
     try:
         print(f"[MINIMAX_H3_WORKER] loading request t={_time.monotonic()-_t0:.1f}s", flush=True)
         req = json.load(sys.stdin)
+        print(
+            f"[MINIMAX_H3_WORKER] request loaded op={req.get('operation')} "
+            f"images={len(req.get('image_urls', ())) if isinstance(req.get('image_urls', ()), list) else 'invalid'} "
+            f"payload_chars={len(json.dumps(req, ensure_ascii=False))} t={_time.monotonic()-_t0:.1f}s",
+            flush=True,
+        )
         print(f"[MINIMAX_H3_WORKER] calling _complete op={req.get('operation')} t={_time.monotonic()-_t0:.1f}s", flush=True)
         result = {"ok": True, **_complete(req)}
     except Exception as error:
