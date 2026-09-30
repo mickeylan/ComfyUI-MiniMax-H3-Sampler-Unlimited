@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import logging
+import math
 import os
 import re
 import struct
@@ -607,6 +608,39 @@ def _chunk_prompt(value: dict[str, Any], raw: str, system: str, prompt: str, req
     )
 
 
+def _prompt_skill_contact_sheet(frames: Sequence[torch.Tensor]) -> tuple[torch.Tensor, str]:
+    images = [frame[0, ..., :3] for frame in frames]
+    columns = min(3, max(1, math.ceil(math.sqrt(len(images)))))
+    rows = math.ceil(len(images) / columns)
+    cell_height = min(768, max(int(image.shape[0]) for image in images))
+    cell_width = min(768, max(int(image.shape[1]) for image in images))
+    cells = []
+    for image in images:
+        source_height, source_width = image.shape[:2]
+        scale = min(cell_width / source_width, cell_height / source_height)
+        target_height = max(1, round(source_height * scale))
+        target_width = max(1, round(source_width * scale))
+        resized = torch.nn.functional.interpolate(
+            image.movedim(-1, 0).unsqueeze(0), size=(target_height, target_width),
+            mode="bilinear", align_corners=False,
+        )[0].movedim(0, -1)
+        cell = image.new_zeros((cell_height, cell_width, 3))
+        top = (cell_height - target_height) // 2
+        left = (cell_width - target_width) // 2
+        cell[top:top + target_height, left:left + target_width] = resized
+        cells.append(cell)
+    cells.extend(images[0].new_zeros((cell_height, cell_width, 3)) for _ in range(rows * columns - len(cells)))
+    sheet = torch.cat([
+        torch.cat(cells[row * columns:(row + 1) * columns], dim=1)
+        for row in range(rows)
+    ], dim=0)
+    layout = f"one contact sheet with {rows} row(s) and {columns} column(s), row-major: " + ", ".join(
+        f"asset_{index}=row {(index - 1) // columns + 1} column {(index - 1) % columns + 1}"
+        for index in range(1, len(images) + 1)
+    )
+    return sheet, layout
+
+
 def _image_url(frame: torch.Tensor) -> str:
     image = frame.detach().to(device="cpu", dtype=torch.float32)
     if image.ndim != 3 or image.shape[-1] < 3:
@@ -897,11 +931,13 @@ def _prompt_skill_result_object(value: Any) -> dict[str, Any]:
 def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     try:
+        import llama_cpp
         from llama_cpp import Llama
         from llama_cpp.llama_chat_format import MTMDChatHandler
     except ImportError as error:
         raise Qwen35DependencyError("Qwen3.5 requires llama-cpp-python with MTMD support") from error
 
+    runtime_version = str(getattr(llama_cpp, "__version__", "unknown"))
     operation = request["operation"]
     if operation not in {"timing_plan", "chunk", "storyboard", "jzl_storyboard", "external_video_continuation", "prompt_skill_compile"}:
         raise Qwen35ObservationError(f"Unknown Qwen operation: {operation}")
@@ -955,6 +991,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             f"[MINIMAX_H3_WORKER] starting LLM op={operation} images={len(image_urls)} "
             f"image_info={_image_url_diagnostics(image_urls)} system_chars={len(system)} prompt_chars={len(prompt)} "
             f"n_ctx={context_tokens} n_batch={QWEN35_BATCH_SIZE} n_ubatch={QWEN35_UBATCH_SIZE} "
+            f"runtime=llama-cpp-python-{runtime_version} "
             f"model={Path(request['director_model_path']).name} mmproj={Path(request['director_mmproj_path']).name} "
             f"t={time.monotonic()-t0:.1f}s",
             flush=True,
@@ -1577,7 +1614,12 @@ class Qwen35ContinuityDirector:
             raise Qwen35ObservationError("Prompt Skill Compiler requires 1 to 9 single-image NHWC batches")
         payload = dict(request)
         payload["image_count"] = len(frames)
-        payload["image_urls"] = [_image_url(frame[0]) for frame in frames]
+        if self.backend == "qwen3.5" and len(frames) > 1:
+            sheet, layout = _prompt_skill_contact_sheet(frames)
+            payload["image_urls"] = [_image_url(sheet)]
+            payload["reference_sheet_layout"] = layout
+        else:
+            payload["image_urls"] = [_image_url(frame[0]) for frame in frames]
         self._configure_request(payload)
         return _run_prompt_skill_worker(payload)
 

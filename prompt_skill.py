@@ -238,6 +238,9 @@ Shot density: {request.get('shot_density', 'medium')}.
 Connected pictures:
 {inventory}
 
+Visual input layout:
+{request.get('reference_sheet_layout', 'one separate image per connected asset, in asset order')}
+
 Mandatory spoken lines detected verbatim in the story, in authoritative chronological order. Preserve every numbered occurrence in dialogues.text and this exact global order. A long line may be divided into consecutive fragments across adjacent shots, but concatenating all fragments must reproduce the original lines exactly. Do not omit, reorder, or rewrite any character or punctuation:
 {spoken_inventory}
 

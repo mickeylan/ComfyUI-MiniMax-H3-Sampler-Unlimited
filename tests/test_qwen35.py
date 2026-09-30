@@ -681,6 +681,22 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(result.detailed_description, "[Shot 1] Continue.")
         self.assertEqual(worker.call_args_list[1].args[0]["missing_prompt_repair"], 1)
 
+    def test_qwen35_prompt_skill_contact_sheet_keeps_asset_order(self):
+        frames = (
+            torch.full((1, 40, 80, 3), 0.25),
+            torch.full((1, 80, 40, 3), 0.50),
+            torch.full((1, 60, 60, 3), 0.75),
+            torch.full((1, 32, 96, 3), 1.00),
+        )
+        sheet, layout = qwen35._prompt_skill_contact_sheet(frames)
+        self.assertEqual(tuple(sheet.shape), (160, 192, 3))
+        self.assertIn("asset_1=row 1 column 1", layout)
+        self.assertIn("asset_4=row 2 column 2", layout)
+        self.assertAlmostEqual(float(sheet[40, 48].mean()), 0.25, places=2)
+        self.assertAlmostEqual(float(sheet[40, 144].mean()), 0.50, places=2)
+        self.assertAlmostEqual(float(sheet[120, 48].mean()), 0.75, places=2)
+        self.assertAlmostEqual(float(sheet[120, 144].mean()), 1.00, places=2)
+
     def test_prompt_skill_has_large_deterministic_response_budget(self):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
 
