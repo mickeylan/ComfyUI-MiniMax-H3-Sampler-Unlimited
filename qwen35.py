@@ -35,6 +35,7 @@ QWEN35_CONTEXT_TOKENS = 65536
 QWEN35_IMAGE_MIN_TOKENS = 256
 QWEN35_IMAGE_MAX_TOKENS = 1344
 QWEN35_BATCH_SIZE = 2048
+QWEN35_MTMD_BATCH_SIZE = 256
 # Qwen3.5 MTMD image embeddings must remain microbatched. Setting n_ubatch to
 # the full 2048-token logical batch can make llama.cpp skip physical positions
 # between image blocks ("find_slot: non-consecutive token position").
@@ -904,11 +905,15 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         clip_model_path=request["director_mmproj_path"],
         image_min_tokens=QWEN35_IMAGE_MIN_TOKENS,
         image_max_tokens=QWEN35_IMAGE_MAX_TOKENS,
-        batch_max_tokens=QWEN35_BATCH_SIZE,
+        batch_max_tokens=QWEN35_MTMD_BATCH_SIZE,
         verbose=False,
         use_gpu=True,
     )
-    print(f"[MINIMAX_H3_WORKER] MTMDChatHandler(mmgrpo) done t={time.monotonic()-t0:.1f}s", flush=True)
+    print(
+        f"[MINIMAX_H3_WORKER] MTMDChatHandler(mmgrpo) done mtmd_batch={QWEN35_MTMD_BATCH_SIZE} "
+        f"n_batch={QWEN35_BATCH_SIZE} n_ubatch={QWEN35_UBATCH_SIZE} t={time.monotonic()-t0:.1f}s",
+        flush=True,
+    )
     print(f"[MINIMAX_H3_WORKER] loading GGUF t={time.monotonic()-t0:.1f}s", flush=True)
     context_tokens = int(request.get("director_n_ctx", QWEN35_CONTEXT_TOKENS))
     if context_tokens < QWEN35_CONTEXT_TOKENS or context_tokens > 262144:
