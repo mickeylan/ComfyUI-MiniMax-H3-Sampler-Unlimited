@@ -1584,6 +1584,44 @@ def normalize_h3_chunk_dialogue(prompt: str, expected_prompt: str) -> str:
     return text[:start] + replacement + text[end:]
 
 
+def h3_dialogue_claims(prompt: str) -> tuple[tuple[str, str, str], ...]:
+    description = _description_text(str(prompt))
+    pattern = re.compile(
+        r"(<Subject\s+\d+>)\s*\((S\d+)\).*?<d>(.*?)</d>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    return tuple(
+        (subject, speaker_id.upper(), re.sub(r"\s+", " ", text).strip())
+        for subject, speaker_id, text in pattern.findall(description)
+    )
+
+
+def validate_h3_director_speaker_subset(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> None:
+    allowed = []
+    for shot in plan.get("shots", ()):
+        for dialogue in shot.get("dialogues", ()):
+            start = int(dialogue.get("start_frame", shot["start_frame"]))
+            end = int(dialogue.get("end_frame", shot["end_frame"]))
+            if start >= frame_end or end <= frame_start:
+                continue
+            allowed.append((
+                str(dialogue.get("speaker", "")).casefold(),
+                str(dialogue.get("speaker_id", "")).upper(),
+                re.sub(r"^<scenetrans>\s*|\s*<scenetrans>$", "", str(dialogue.get("text", "")).strip()),
+            ))
+    for subject, speaker_id, tagged in h3_dialogue_claims(prompt):
+        text = re.sub(r"^\s*\[[^]]+\]\s*", "", tagged)
+        text = re.sub(r"^<scenetrans>\s*|\s*<scenetrans>$", "", text).strip()
+        if not any(
+            subject.casefold() == expected_subject and speaker_id == expected_id and text in full_text
+            for expected_subject, expected_id, full_text in allowed
+        ):
+            raise ValueError(
+                "H3 chunk director assigned dialogue to an unauthorized speaker: "
+                f"{subject} ({speaker_id}) <d>{tagged}</d>"
+            )
+
+
 def validate_h3_chunk_dialogue_contract(prompt: str, expected_prompt: str) -> None:
     """Reject director-authored speech that differs from deterministic typed projection."""
     actual = tuple(re.sub(r"\s+", " ", item).strip() for item in _DIALOGUE_TAG.findall(str(prompt)))

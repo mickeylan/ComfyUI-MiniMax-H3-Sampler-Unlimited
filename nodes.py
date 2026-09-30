@@ -44,7 +44,8 @@ from .prompt_skill import (
     normalize_h3_chunk_transitions,
     normalize_prompt_plan, project_prompt_plan_interval,
     prompt_plan_dialogue_complete, prompt_plan_shots, prompt_plan_speakers,
-    validate_h3_chunk_dialogue_contract, validate_h3_chunk_prompt, validate_h3_identity_contract,
+    validate_h3_chunk_dialogue_contract, validate_h3_chunk_prompt,
+    validate_h3_director_speaker_subset, validate_h3_identity_contract,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images, reference_presentation_items
@@ -4524,8 +4525,17 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         chunk_prompt, typed_prompt_plan,
                         frame_start=content_start, frame_end=chunk["frame_end"],
                     )
-                    chunk_prompt = normalize_h3_chunk_dialogue(chunk_prompt, planned_prompts[index][0])
-                    validate_h3_chunk_dialogue_contract(chunk_prompt, planned_prompts[index][0])
+                    chunk_speakers = prompt_plan_speakers(
+                        typed_prompt_plan, content_start, chunk["frame_end"]
+                    )
+                    if gemma_director is not None and len(chunk_speakers) > 1:
+                        validate_h3_director_speaker_subset(
+                            chunk_prompt, typed_prompt_plan,
+                            frame_start=content_start, frame_end=chunk["frame_end"],
+                        )
+                    else:
+                        chunk_prompt = normalize_h3_chunk_dialogue(chunk_prompt, planned_prompts[index][0])
+                        validate_h3_chunk_dialogue_contract(chunk_prompt, planned_prompts[index][0])
                     validate_h3_chunk_prompt(
                         chunk_prompt, typed_prompt_plan,
                         frame_start=content_start, frame_end=chunk["frame_end"],

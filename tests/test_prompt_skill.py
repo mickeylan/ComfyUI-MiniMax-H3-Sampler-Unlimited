@@ -1766,6 +1766,20 @@ class PromptSkillTests(unittest.TestCase):
         silent = "detailed_description:\nNo character vocalizes in this interval."
         prompt_skill.validate_h3_chunk_dialogue_contract(silent, silent)
 
+    def test_mixed_speaker_director_contract_checks_subject_and_voice_id(self):
+        plan = {"shots": [{
+            "start_frame": 0, "end_frame": 80,
+            "dialogues": [
+                {"speaker": "<Subject 3>", "speaker_id": "S1", "text": "这样真的来得及吗？", "start_frame": 0, "end_frame": 40},
+                {"speaker": "<Subject 4>", "speaker_id": "S2", "text": "我现在功力已经达到顶峰。", "start_frame": 40, "end_frame": 80},
+            ],
+        }]}
+        correct = "detailed_description:\n<Subject 3> (S1) says: <d>[Chinese] 这样真的来得及吗？</d>"
+        prompt_skill.validate_h3_director_speaker_subset(correct, plan, frame_start=0, frame_end=80)
+        stolen = "detailed_description:\n<Subject 3> (S1) says: <d>[Chinese] 我现在功力已经达到顶峰。</d>"
+        with self.assertRaisesRegex(ValueError, "unauthorized speaker"):
+            prompt_skill.validate_h3_director_speaker_subset(stolen, plan, frame_start=0, frame_end=80)
+
     def test_localized_sections_do_not_reintroduce_future_action_or_internal_ids(self):
         plan = {
             "fps": 24.0, "total_frames": 80, "non_diegetic_music": "N/A",
