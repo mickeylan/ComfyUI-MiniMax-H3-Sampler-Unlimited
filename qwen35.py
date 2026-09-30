@@ -1321,9 +1321,9 @@ def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
         payload["prompt_skill_missing_plan_retry"] = missing_plan
         payload["prompt_skill_validation_error"] = message
         payload["prompt_skill_previous_response"] = str(value["raw_json"])
-        logging.warning(
-            "HR H3 Prompt Skill Compiler rejected Qwen structure; requesting corrected JSON object %d/%d with the original reference images and MTMD analysis.",
-            repair_attempt, max_repairs,
+        logging.info(
+            "HR H3 Prompt Skill Compiler is correcting incomplete Qwen JSON %d/%d with the original reference images and MTMD analysis: %s",
+            repair_attempt, max_repairs, message,
         )
         process, value = _run_worker_once(payload, timeout=600)
         if value is None:
