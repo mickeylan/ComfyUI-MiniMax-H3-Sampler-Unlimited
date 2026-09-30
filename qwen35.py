@@ -35,7 +35,10 @@ QWEN35_CONTEXT_TOKENS = 65536
 QWEN35_IMAGE_MIN_TOKENS = 256
 QWEN35_IMAGE_MAX_TOKENS = 1344
 QWEN35_BATCH_SIZE = 2048
-QWEN35_UBATCH_SIZE = 2048
+# Qwen3.5 MTMD image embeddings must remain microbatched. Setting n_ubatch to
+# the full 2048-token logical batch can make llama.cpp skip physical positions
+# between image blocks ("find_slot: non-consecutive token position").
+QWEN35_UBATCH_SIZE = 256
 QWEN35_CHUNK_RESPONSE_TOKENS = 8192
 QWEN35_TIMING_RESPONSE_TOKENS = 32768
 QWEN35_PROMPT_SKILL_RESPONSE_TOKENS = 32768

@@ -271,6 +271,15 @@ review date, versions/commits checked, and outcome below.
   request. PyPI still reports 0.3.35 as the latest official release; its JSON
   metadata does not identify a newer vendored llama.cpp commit containing a fix.
   Preserve disposable workers and the operation-local non-MTP retry unchanged.
+- 2026-09-30 (Qwen3.5 MTMD microbatch regression): issue #27439 remains open and
+  still exposes no confirmed merged fix; PyPI JSON still reports 0.3.35
+  (uploaded 2026-08-17) as the latest official release. A local Qwen3.5
+  four-image Prompt Skill run regressed immediately after `n_ubatch` was raised
+  from the previously working 256 to 2048, with llama.cpp reporting
+  `find_slot: non-consecutive token position`. Restore only Qwen3.5's physical
+  microbatch to 256 while keeping its logical batch at 2048. Qwen3.6/3.8 retain
+  their isolated worker configuration. Preserve disposable workers and the
+  operation-local non-MTP retry unchanged.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at

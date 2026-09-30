@@ -684,10 +684,11 @@ class Qwen35Tests(unittest.TestCase):
     def test_prompt_skill_has_large_deterministic_response_budget(self):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
 
-    def test_qwen35_multimodal_batch_contains_one_complete_image_embedding(self):
+    def test_qwen35_multimodal_images_use_small_physical_microbatches(self):
         self.assertGreaterEqual(qwen35.QWEN35_BATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
-        self.assertGreaterEqual(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
-        self.assertLessEqual(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_BATCH_SIZE)
+        self.assertEqual(qwen35.QWEN35_UBATCH_SIZE, 256)
+        self.assertLess(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
+        self.assertLess(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_BATCH_SIZE)
 
     def test_prompt_skill_unwraps_known_result_containers(self):
         plan = {"image_subjects": [], "shots": []}
