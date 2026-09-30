@@ -1607,6 +1607,25 @@ def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: 
         raise ValueError("H3 final dialogue fragment incorrectly claims continuation into the next chunk")
 
 
+def normalize_h3_chunk_dialogue_continuation(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> str:
+    dialogue_continues = any(
+        int(dialogue.get("end_frame", shot["end_frame"])) > frame_end
+        for shot in plan.get("shots", ())
+        for dialogue in shot.get("dialogues", ())
+        if int(dialogue.get("start_frame", shot["start_frame"])) < frame_end
+        and int(dialogue.get("end_frame", shot["end_frame"])) > frame_start
+    )
+    if dialogue_continues:
+        return str(prompt)
+    return re.sub(
+        r"\s*(?:while |The same voice and utterance )?(?:the same utterance )?continues? "
+        r"(?:uninterrupted )?into the next chunk(?: without a pause or restart)?\.?",
+        "",
+        str(prompt),
+        flags=re.IGNORECASE,
+    )
+
+
 def normalize_h3_chunk_dialogue(prompt: str, expected_prompt: str) -> str:
     text = str(prompt)
     bounds = _h3_section_bounds(text, "detailed_description:", "overall_soundscape:")

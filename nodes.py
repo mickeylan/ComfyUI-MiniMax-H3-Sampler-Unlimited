@@ -40,7 +40,8 @@ from .gemma4 import (
 from .preview import begin_preview_execution
 from .prompt_skill import (
     active_prompt_plan_pictures, filter_prompt_plan_events, filter_prompt_plan_picture_items,
-    localize_prompt_from_plan, normalize_h3_chunk_dialogue, normalize_h3_chunk_references, normalize_h3_chunk_retention,
+    localize_prompt_from_plan, normalize_h3_chunk_dialogue, normalize_h3_chunk_dialogue_continuation,
+    normalize_h3_chunk_references, normalize_h3_chunk_retention,
     normalize_h3_chunk_transitions,
     normalize_prompt_plan, project_prompt_plan_interval,
     prompt_plan_dialogue_complete, prompt_plan_shots, prompt_plan_speakers,
@@ -4536,6 +4537,10 @@ class HREndlessSampler(SamplerCustomAdvanced):
                     else:
                         chunk_prompt = normalize_h3_chunk_dialogue(chunk_prompt, planned_prompts[index][0])
                         validate_h3_chunk_dialogue_contract(chunk_prompt, planned_prompts[index][0])
+                    chunk_prompt = normalize_h3_chunk_dialogue_continuation(
+                        chunk_prompt, typed_prompt_plan,
+                        frame_start=content_start, frame_end=chunk["frame_end"],
+                    )
                     validate_h3_chunk_prompt(
                         chunk_prompt, typed_prompt_plan,
                         frame_start=content_start, frame_end=chunk["frame_end"],

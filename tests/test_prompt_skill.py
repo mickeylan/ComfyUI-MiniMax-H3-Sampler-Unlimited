@@ -1589,6 +1589,36 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("<Subject 2>", retention)
         self.assertIn("<Subject 3>: fully_preserved", retention)
 
+    def test_final_physical_chunk_removes_false_dialogue_continuation_claim(self):
+        plan = {
+            "shots": [{
+                "start_frame": 0, "end_frame": 107,
+                "dialogues": [{"start_frame": 51, "end_frame": 107, "text": "最后一句。"}],
+            }],
+        }
+        prompt = (
+            "<Subject 3> (S1) says: <d>[Chinese] 最后一句。</d> with synchronized visible lip movement "
+            "while the same utterance continues into the next chunk without a pause or restart."
+        )
+        normalized = prompt_skill.normalize_h3_chunk_dialogue_continuation(
+            prompt, plan, frame_start=51, frame_end=107,
+        )
+        self.assertIn("<d>[Chinese] 最后一句。</d>", normalized)
+        self.assertNotIn("continues into the next chunk", normalized)
+
+    def test_nonfinal_physical_chunk_keeps_dialogue_continuation_claim(self):
+        plan = {
+            "shots": [{
+                "start_frame": 0, "end_frame": 160,
+                "dialogues": [{"start_frame": 0, "end_frame": 160, "text": "仍在继续。"}],
+            }],
+        }
+        prompt = "<d>[Chinese] 仍在继续。</d> while the same utterance continues into the next chunk without a pause or restart."
+        normalized = prompt_skill.normalize_h3_chunk_dialogue_continuation(
+            prompt, plan, frame_start=51, frame_end=107,
+        )
+        self.assertEqual(normalized, prompt)
+
     def test_chunk_transition_normalization_removes_false_scene_transition(self):
         plan = {
             "shots": [
