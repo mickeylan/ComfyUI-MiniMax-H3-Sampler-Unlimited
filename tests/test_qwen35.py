@@ -684,11 +684,9 @@ class Qwen35Tests(unittest.TestCase):
     def test_prompt_skill_has_large_deterministic_response_budget(self):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
 
-    def test_qwen35_multimodal_images_use_cpu_mmproj(self):
-        self.assertGreaterEqual(qwen35.QWEN35_BATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
+    def test_qwen35_restores_last_known_good_multimodal_batching(self):
+        self.assertEqual(qwen35.QWEN35_BATCH_SIZE, 256)
         self.assertEqual(qwen35.QWEN35_UBATCH_SIZE, 256)
-        self.assertFalse(qwen35.QWEN35_MTMD_USE_GPU)
-        self.assertLess(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_BATCH_SIZE)
 
     def test_prompt_skill_unwraps_known_result_containers(self):
         plan = {"image_subjects": [], "shots": []}
@@ -715,7 +713,7 @@ class Qwen35Tests(unittest.TestCase):
             "message": "Qwen Prompt Skill returned an empty JSON object", "raw_json": "{}",
         }
         with patch.object(qwen35, "_run_worker_once", return_value=(process, failure)) as worker:
-            with self.assertRaisesRegex(qwen35.DirectorWorkerError, "CPU mmproj path"):
+            with self.assertRaisesRegex(qwen35.DirectorWorkerError, "runtime failed"):
                 qwen35._run_prompt_skill_worker({"director_mtp": False, "image_urls": ["image"]})
         worker.assert_called_once()
 
