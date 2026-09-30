@@ -624,6 +624,27 @@ class PromptSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dialogue speaker asset_1 is not a character"):
             prompt_skill.compile_prompt_skill(value, request)
 
+    def test_source_bound_speaker_overrides_qwen_scene_classification(self):
+        value = self.result()
+        value["image_subjects"][0]["kind"] = "scene"
+        value["shots"][1]["dialogues"] = [{
+            "id": "S2.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
+            "language": "Chinese", "text": "继续说话。", "delivery": "calmly",
+        }]
+        request = {
+            **self.request(),
+            "required_spoken_lines": ["继续说话。"],
+            "required_spoken_subjects": ["<Subject 1>"],
+            "required_speaker_subjects": {"S1": "<Subject 1>"},
+        }
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        subject = compiled["shot_plan"]["image_subjects"][0]
+        self.assertEqual(subject["kind"], "character")
+        self.assertTrue(any(
+            "source-bound speaker asset_1" in warning and "kind=character" in warning
+            for warning in compiled["warnings"]
+        ))
+
     def test_empty_audio_is_normalized_without_inventing_sound(self):
         value = self.result()
         value["shots"][1]["audio"] = ""

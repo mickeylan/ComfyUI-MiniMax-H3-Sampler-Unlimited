@@ -865,7 +865,16 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             )
         return result
 
-    speaking_entities = {
+    source_speaking_entities = set()
+    source_speakers = [
+        *request.get("required_speaker_subjects", {}).values(),
+        *request.get("required_spoken_subjects", ()),
+    ]
+    for subject in source_speakers:
+        match = re.fullmatch(r"<Subject\s+(\d+)>", str(subject).strip(), re.IGNORECASE)
+        if match and int(match.group(1)) in by_picture:
+            source_speaking_entities.add(by_picture[int(match.group(1))])
+    speaking_entities = source_speaking_entities | {
         str(item.get("speaker", "")).strip()
         for shot in value.get("shots", ()) if isinstance(shot, dict)
         for item in (shot.get("dialogues", ()) if isinstance(shot.get("dialogues", ()), list) else ())
@@ -937,7 +946,17 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             if str(raw.get("kind", "")).strip().lower() in valid_kinds
         }
         source_kind = str(source.get("kind") or "").strip().lower()
-        if source_kind:
+        if entity_id in source_speaking_entities:
+            kind = "character"
+            conflicting_kinds = model_kinds | ({source_kind} if source_kind and source_kind != "character" else set())
+            if conflicting_kinds:
+                warnings.append(
+                    f"Ignored kind={','.join(sorted(conflicting_kinds))} for source-bound speaker {entity_id}; "
+                    "resolved kind=character from the authoritative source dialogue binding."
+                )
+            elif not model_kinds:
+                warnings.append(f"Resolved {entity_id} kind=character from its authoritative source dialogue binding.")
+        elif source_kind:
             kind = source_kind
         elif entity_id in speaking_entities:
             if model_kinds and model_kinds != {"character"}:
