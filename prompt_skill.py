@@ -1343,6 +1343,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 event["action"], re.IGNORECASE,
             ):
                 event["start_frame"] = min(item["start_frame"] for item in actor_dialogues)
+                event["end_frame"] = max(item["end_frame"] for item in actor_dialogues)
         dialogue_frames = sum(item["end_frame"] - item["start_frame"] for item in normalized_dialogues)
         if float(request.get("minimum_spoken_duration_seconds", 0.0)) > 0.0 and dialogue_frames > shot_frames:
             raise ValueError(

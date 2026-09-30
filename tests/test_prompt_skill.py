@@ -603,6 +603,50 @@ class PromptSkillTests(unittest.TestCase):
                 compiled = prompt_skill.compile_prompt_skill(value, request)
                 self.assertEqual(compiled["shot_plan"]["shots"][0]["dialogues"][0]["kind"], expected)
 
+    def test_speaking_event_interval_follows_later_speaker_dialogue(self):
+        value = self.result()
+        value["image_subjects"].append({
+            "entity_id": "asset_2", "kind": "character", "name": "Partner", "observable_features": "red coat",
+        })
+        value["shots"][1].update(
+            end_frame=240,
+            pictures=["asset_1", "asset_2"],
+            events=[
+                {"id": "S2.V1", "actor": "asset_2", "action": "replies calmly", "phase": "start"},
+                {"id": "S2.V2", "actor": "asset_1", "action": "holds position", "phase": "start"},
+                {"id": "S2.V3", "actor": "asset_1", "action": "maintains eye contact", "phase": "start"},
+            ],
+            dialogues=[
+                {"id": "S2.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
+                 "language": "English", "text": "This deliberately long opening line occupies the first part.", "delivery": "calmly"},
+                {"id": "S2.D2", "kind": "dialogue", "speaker": "asset_2", "speaker_id": "S2",
+                 "language": "English", "text": "Reply now.", "delivery": "calmly"},
+            ],
+        )
+        request = {
+            **self.request(), "total_frames": 240, "duration_seconds": 10.0,
+            "image_count": 2,
+            "source_image_contract": [
+                {"entity_id": "asset_1", "picture": 1, "name": "Hero", "kind": "character"},
+                {"entity_id": "asset_2", "picture": 2, "name": "Partner", "kind": "character"},
+            ],
+            "required_spoken_lines": [
+                "This deliberately long opening line occupies the first part.", "Reply now.",
+            ],
+            "required_spoken_subjects": ["<Subject 1>", "<Subject 2>"],
+            "required_speaker_subjects": {"S1": "<Subject 1>", "S2": "<Subject 2>"},
+        }
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        shot = compiled["shot_plan"]["shots"][1]
+        reply = next(event for event in shot["events"] if event["id"] == "S2.V1")
+        partner_dialogue = next(item for item in shot["dialogues"] if item["speaker_id"] == "S2")
+        self.assertEqual(
+            (reply["start_frame"], reply["end_frame"]),
+            (partner_dialogue["start_frame"], partner_dialogue["end_frame"]),
+        )
+        typed = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        prompt_skill.normalize_prompt_plan(typed, fps=24.0, total_frames=240)
+
     def test_rejects_unknown_dialogue_kind_with_actual_value(self):
         value = self.result()
         value["shots"][0]["dialogues"] = [{
