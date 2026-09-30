@@ -512,7 +512,7 @@ class Qwen35Tests(unittest.TestCase):
                 "starting LLM streaming op=prompt_skill_compile images=4.*stderr: llama progress",
             ):
                 qwen35._run_worker_once(
-                    {"operation": "prompt_skill_compile", "director_backend": "qwen3.5"}, timeout=600
+                    {"operation": "chunk", "director_backend": "qwen3.5"}, timeout=600
                 )
 
     def test_worker_timeout_without_output_reports_missing_progress(self):
@@ -520,7 +520,7 @@ class Qwen35Tests(unittest.TestCase):
         with patch.object(qwen35.subprocess, "run", side_effect=timeout):
             with self.assertRaisesRegex(qwen35.DirectorWorkerError, "worker produced no progress output"):
                 qwen35._run_worker_once(
-                    {"operation": "prompt_skill_compile", "director_backend": "qwen3.5"}, timeout=600
+                    {"operation": "chunk", "director_backend": "qwen3.5"}, timeout=600
                 )
 
     def test_chunk_worker_allows_slow_multimodal_generation(self):

@@ -617,6 +617,19 @@ def _image_url(frame: torch.Tensor) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
 
+def _image_url_diagnostics(image_urls: Sequence[str]) -> str:
+    diagnostics = []
+    for index, image_url in enumerate(image_urls, 1):
+        _prefix, separator, encoded = str(image_url).partition(",")
+        try:
+            payload = base64.b64decode(encoded, validate=True) if separator else b""
+            with Image.open(io.BytesIO(payload)) as image:
+                diagnostics.append(f"{index}:{image.width}x{image.height}/{len(payload)}B")
+        except (ValueError, OSError):
+            diagnostics.append(f"{index}:invalid")
+    return ",".join(diagnostics) or "none"
+
+
 def _capture_observation_images(destination: Path, chunk_number: int,
                                 frame_numbers: Sequence[int], image_urls: Sequence[str]) -> None:
     destination.mkdir(parents=True, exist_ok=True)
@@ -937,7 +950,16 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         if not timing:
             content = [{"type": "image_url", "image_url": {"url": url}} for url in request.get("image_urls", ())]
             content.append({"type": "text", "text": prompt})
-        print(f"[MINIMAX_H3_WORKER] starting LLM streaming op={operation} images={len(request.get('image_urls',[]))} t={time.monotonic()-t0:.1f}s", flush=True)
+        image_urls = request.get("image_urls", ())
+        print(
+            f"[MINIMAX_H3_WORKER] starting LLM op={operation} images={len(image_urls)} "
+            f"image_info={_image_url_diagnostics(image_urls)} system_chars={len(system)} prompt_chars={len(prompt)} "
+            f"n_ctx={context_tokens} n_batch={QWEN35_BATCH_SIZE} n_ubatch={QWEN35_UBATCH_SIZE} "
+            f"model={Path(request['director_model_path']).name} mmproj={Path(request['director_mmproj_path']).name} "
+            f"t={time.monotonic()-t0:.1f}s",
+            flush=True,
+        )
+        inference_started = time.monotonic()
         response = llm.create_chat_completion(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
             response_format=None if jzl_storyboard else {"type": "json_object"},
@@ -949,7 +971,15 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         )
         message = response["choices"][0]["message"]
         text = str(message.get("content") or message.get("reasoning_content") or "")
-        print(f"[MINIMAX_H3_WORKER] streaming done chars={len(text)} t={time.monotonic()-t0:.1f}s", flush=True)
+        choice = response.get("choices", [{}])[0]
+        usage = response.get("usage", {})
+        print(
+            f"[MINIMAX_H3_WORKER] LLM done inference={time.monotonic()-inference_started:.1f}s "
+            f"chars={len(text)} finish={choice.get('finish_reason', 'unknown')} "
+            f"prompt_tokens={usage.get('prompt_tokens', 'unknown')} completion_tokens={usage.get('completion_tokens', 'unknown')} "
+            f"total={time.monotonic()-t0:.1f}s",
+            flush=True,
+        )
         if jzl_storyboard:
             return {"jzl_storyboard": text}
         value, raw = _extract_json(text)
@@ -1152,6 +1182,60 @@ def _from_payload(value: dict[str, Any], timing: bool, external: bool = False):
     return QwenShotTimingPlan(value["confidence"], value["analysis"], shots, table, value["raw_json"], value.get("system_prompt", ""), value.get("planning_prompt", ""))
 
 
+def _stream_prompt_skill_worker(command, payload_text, *, cwd, env, timeout):
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env,
+    )
+    started = time.monotonic()
+    next_heartbeat = started + 30.0
+    input_text = payload_text
+    stdout = ""
+    stderr = ""
+    while True:
+        remaining = timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            process.kill()
+            final_stdout, final_stderr = process.communicate()
+            stdout = final_stdout or stdout
+            stderr = final_stderr or stderr
+            progress = [line.strip() for line in stdout.splitlines() if line.strip()]
+            stage = progress[-1] if progress else "worker produced no progress output"
+            detail = [line.strip() for line in stderr.splitlines() if line.strip()]
+            if detail:
+                stage += f"; stderr: {detail[-1]}"
+            raise DirectorWorkerError(
+                f"Qwen worker timed out after {timeout}s (op=prompt_skill_compile); last progress: {stage}"
+            )
+        try:
+            stdout, stderr = process.communicate(input=input_text, timeout=min(2.0, remaining))
+            break
+        except subprocess.TimeoutExpired as error:
+            input_text = None
+            if error.output is not None:
+                stdout = error.output.decode("utf-8", errors="replace") if isinstance(error.output, bytes) else error.output
+            if error.stderr is not None:
+                stderr = error.stderr.decode("utf-8", errors="replace") if isinstance(error.stderr, bytes) else error.stderr
+            if "find_slot: non-consecutive token position" in stderr:
+                process.kill()
+                process.communicate()
+                raise DirectorWorkerError(
+                    "Qwen3.5 MTMD produced non-consecutive token positions during prompt evaluation; worker stopped immediately"
+                )
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                progress = [line.strip() for line in stdout.splitlines() if line.strip()]
+                stage = progress[-1] if progress else "worker startup"
+                print(
+                    f"[MINIMAX_H3_WORKER] heartbeat pid={process.pid} elapsed={now-started:.0f}s "
+                    f"op=prompt_skill_compile stage={stage}",
+                    flush=True,
+                )
+                next_heartbeat = now + 30.0
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def _run_worker_once(payload: dict[str, Any], *, timeout: int | None = None) -> tuple[subprocess.CompletedProcess, dict[str, Any] | None]:
     if timeout is None:
         timeout = 600 if payload.get("operation") == "chunk" else 300
@@ -1165,16 +1249,23 @@ def _run_worker_once(payload: dict[str, Any], *, timeout: int | None = None) -> 
         "PYTHONIOENCODING": "utf-8",
         "PYTHONPATH": worker_directory + (os.pathsep + python_path if python_path else ""),
     }
+    command = [sys.executable, "-u", str(worker_path), "--worker"]
     try:
-        process = subprocess.run(
-            [sys.executable, "-u", str(worker_path), "--worker"],
-            input=json.dumps(payload, ensure_ascii=False),
-            text=True, encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=worker_directory,
-            env=worker_env,
-            timeout=timeout,
-        )
+        if payload.get("operation") == "prompt_skill_compile":
+            process = _stream_prompt_skill_worker(
+                command, json.dumps(payload, ensure_ascii=False),
+                cwd=worker_directory, env=worker_env, timeout=timeout,
+            )
+        else:
+            process = subprocess.run(
+                command,
+                input=json.dumps(payload, ensure_ascii=False),
+                text=True, encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=worker_directory,
+                env=worker_env,
+                timeout=timeout,
+            )
     except subprocess.TimeoutExpired as error:
         stdout = error.stdout or ""
         stderr = error.stderr or ""
