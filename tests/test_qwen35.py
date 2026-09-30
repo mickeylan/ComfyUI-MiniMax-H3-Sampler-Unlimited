@@ -497,6 +497,20 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["cwd"], plugin_directory)
         self.assertEqual(run.call_args.kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0], plugin_directory)
 
+    def test_qwen35_prompt_skill_uses_preimport_bootstrap(self):
+        module_path = Path(qwen35.__file__).resolve()
+        worker_path = qwen35._worker_path_for_payload(module_path, {
+            "operation": "prompt_skill_compile", "director_backend": "qwen3.5",
+        })
+        self.assertEqual(worker_path.name, "qwen35_worker_entry.py")
+        self.assertTrue(worker_path.is_file())
+        self.assertEqual(
+            qwen35._worker_path_for_payload(module_path, {
+                "operation": "prompt_skill_compile", "director_backend": "qwen3.8",
+            }).name,
+            "qwen38_worker.py",
+        )
+
     def test_worker_timeout_reports_last_completed_stage(self):
         timeout = qwen35.subprocess.TimeoutExpired(
             ["python", "qwen35.py", "--worker"],
