@@ -682,6 +682,33 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(result.detailed_description, "[Shot 1] Continue.")
         self.assertEqual(worker.call_args_list[1].args[0]["missing_prompt_repair"], 1)
 
+    def test_qwen35_prompt_skill_analyzes_images_one_at_a_time(self):
+        class FakeLlama:
+            def __init__(self):
+                self.messages = []
+
+            def create_chat_completion(self, **kwargs):
+                self.messages.append(kwargs["messages"])
+                index = len(self.messages)
+                return {
+                    "choices": [{"message": {"content": json.dumps({
+                        "asset_id": f"asset_{index}",
+                        "kind": "character" if index == 1 else "scene",
+                        "observable_features": f"features {index}",
+                    })}}]
+                }
+
+        llama = FakeLlama()
+        observations = qwen35._qwen35_analyze_prompt_skill_images(
+            llama, ("data:image/jpeg;base64,", "data:image/jpeg;base64,"), 0.0
+        )
+        self.assertEqual([item["asset_id"] for item in observations], ["asset_1", "asset_2"])
+        self.assertEqual(len(llama.messages), 2)
+        self.assertTrue(all(
+            sum(item.get("type") == "image_url" for item in messages[0]["content"]) == 1
+            for messages in llama.messages
+        ))
+
     def test_prompt_skill_has_large_deterministic_response_budget(self):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
 

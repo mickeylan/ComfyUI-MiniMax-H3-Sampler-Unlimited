@@ -894,6 +894,54 @@ def _prompt_skill_result_object(value: Any) -> dict[str, Any]:
     raise ValueError(f"storyboard response needs image_subjects and shots; returned top-level keys: {keys or 'none'}")
 
 
+def _qwen35_asset_observation_prompt(asset_index: int) -> str:
+    return (
+        f"Analyze only the attached reference image for asset_{asset_index}. "
+        "Return one compact JSON object with keys asset_id, kind, and observable_features. "
+        f"asset_id must be exactly asset_{asset_index}. kind must be character, scene, or prop. "
+        "observable_features must describe only visible identity, appearance, clothing, environment, or object details in English."
+    )
+
+
+def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str], t0: float) -> list[dict[str, str]]:
+    observations = []
+    for index, image_url in enumerate(image_urls, 1):
+        started = time.monotonic()
+        print(
+            f"[MINIMAX_H3_WORKER] analyzing asset_{index}/{len(image_urls)} "
+            f"image_info={_image_url_diagnostics((image_url,))} t={started-t0:.1f}s",
+            flush=True,
+        )
+        response = llm.create_chat_completion(
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": _qwen35_asset_observation_prompt(index)},
+                ],
+            }],
+            response_format={"type": "json_object"},
+            temperature=0.1, top_p=0.9, top_k=40,
+            max_tokens=1024, reasoning_budget=0,
+        )
+        message = response.get("choices", [{}])[0].get("message", {})
+        text = str(message.get("content") or message.get("reasoning_content") or "")
+        value, _raw = _extract_json(text)
+        if not isinstance(value, dict):
+            raise Qwen35ObservationError(f"Qwen3.5 returned no usable observation for asset_{index}", raw_json=text)
+        kind = str(value.get("kind", "")).strip().lower()
+        features = str(value.get("observable_features", value.get("description", ""))).strip()
+        if kind not in {"character", "scene", "prop"} or not features:
+            raise Qwen35ObservationError(f"Qwen3.5 returned an incomplete observation for asset_{index}", raw_json=text)
+        observations.append({"asset_id": f"asset_{index}", "kind": kind, "observable_features": features})
+        print(
+            f"[MINIMAX_H3_WORKER] asset_{index} analyzed kind={kind} "
+            f"chars={len(features)} elapsed={time.monotonic()-started:.1f}s",
+            flush=True,
+        )
+    return observations
+
+
 def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     try:
@@ -945,11 +993,17 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             system, prompt = prompt_skill_messages(request)
         else:
             system, prompt = _chunk_messages(request)
-        content: Any = prompt
-        if not timing:
-            content = [{"type": "image_url", "image_url": {"url": url}} for url in request.get("image_urls", ())]
-            content.append({"type": "text", "text": prompt})
         image_urls = request.get("image_urls", ())
+        content: Any = prompt
+        if prompt_skill and image_urls:
+            observations = _qwen35_analyze_prompt_skill_images(llm, image_urls, t0)
+            prompt += "\n\nAuthoritative per-asset visual observations from sequential single-image analysis:\n" + json.dumps(
+                observations, ensure_ascii=False, indent=2
+            )
+            content = prompt
+        elif not timing:
+            content = [{"type": "image_url", "image_url": {"url": url}} for url in image_urls]
+            content.append({"type": "text", "text": prompt})
         print(
             f"[MINIMAX_H3_WORKER] starting LLM op={operation} images={len(image_urls)} "
             f"image_info={_image_url_diagnostics(image_urls)} system_chars={len(system)} prompt_chars={len(prompt)} "
