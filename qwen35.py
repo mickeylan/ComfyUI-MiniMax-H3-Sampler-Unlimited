@@ -897,11 +897,13 @@ def _prompt_skill_result_object(value: Any) -> dict[str, Any]:
 def _qwen35_asset_observation_prompt(asset_index: int) -> str:
     return (
         f"Analyze only the attached reference image for asset_{asset_index}. "
-        "Return one compact JSON object with keys asset_id, kind, and observable_features. "
+        "Return one compact JSON object with keys asset_id, kind, observable_features, and primary_view_crop. "
         f"asset_id must be exactly asset_{asset_index}. kind must be character, scene, or prop. "
         "observable_features must describe only intrinsic identity, face, hair, body, clothing, environment, architecture, lighting, "
         "or object details in English. Ignore and never mention image layout, multiple views, turnaround presentation, panels, collage, "
-        "character-sheet formatting, studio backdrop, white background, borders, labels, or the fact that this is a reference image."
+        "character-sheet formatting, studio backdrop, white background, borders, labels, or the fact that this is a reference image. "
+        "primary_view_crop must be [x0,y0,x1,y1] normalized to 0..1. For a character sheet, tightly select exactly one best frontal or "
+        "three-quarter identity view without neighboring panels; for a normal character image, scene, or prop use [0,0,1,1]."
     )
 
 
@@ -937,7 +939,19 @@ def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str], t0: floa
         features = _qwen35_intrinsic_features(value.get("observable_features", value.get("description", "")))
         if kind not in {"character", "scene", "prop"} or not features:
             raise Qwen35ObservationError(f"Qwen3.5 returned an incomplete observation for asset_{index}", raw_json=text)
-        observations.append({"asset_id": f"asset_{index}", "kind": kind, "observable_features": features})
+        crop = value.get("primary_view_crop", [0.0, 0.0, 1.0, 1.0])
+        if not isinstance(crop, (list, tuple)) or len(crop) != 4:
+            raise Qwen35ObservationError(f"Qwen3.5 returned an invalid primary-view crop for asset_{index}", raw_json=text)
+        try:
+            x0, y0, x1, y1 = (float(item) for item in crop)
+        except (TypeError, ValueError) as error:
+            raise Qwen35ObservationError(f"Qwen3.5 returned an invalid primary-view crop for asset_{index}", raw_json=text) from error
+        if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+            raise Qwen35ObservationError(f"Qwen3.5 returned an invalid primary-view crop for asset_{index}", raw_json=text)
+        observations.append({
+            "asset_id": f"asset_{index}", "kind": kind, "observable_features": features,
+            "primary_view_crop": [x0, y0, x1, y1] if kind == "character" else [0.0, 0.0, 1.0, 1.0],
+        })
         print(
             f"[MINIMAX_H3_WORKER] asset_{index} analyzed kind={kind} chars={len(features)} "
             f"finish={choice.get('finish_reason', 'unknown')} "
@@ -989,6 +1003,7 @@ def _qwen35_ground_prompt_skill_scenes(value: dict[str, Any], observations: Sequ
         if observation is not None:
             subject["kind"] = observation["kind"]
             subject["observable_features"] = observation["observable_features"]
+            subject["primary_view_crop"] = observation.get("primary_view_crop", [0.0, 0.0, 1.0, 1.0])
         subjects.append(subject)
     result["image_subjects"] = subjects
     shots = []

@@ -709,6 +709,7 @@ class Qwen35Tests(unittest.TestCase):
                         "asset_id": f"asset_{index}",
                         "kind": "character" if index == 1 else "scene",
                         "observable_features": f"features {index}",
+                        "primary_view_crop": [0.0, 0.0, 0.5, 1.0] if index == 1 else [0.0, 0.0, 1.0, 1.0],
                     })}}]
                 }
 
@@ -717,6 +718,8 @@ class Qwen35Tests(unittest.TestCase):
             llama, ("data:image/jpeg;base64,", "data:image/jpeg;base64,"), 0.0
         )
         self.assertEqual([item["asset_id"] for item in observations], ["asset_1", "asset_2"])
+        self.assertEqual(observations[0]["primary_view_crop"], [0.0, 0.0, 0.5, 1.0])
+        self.assertEqual(observations[1]["primary_view_crop"], [0.0, 0.0, 1.0, 1.0])
         self.assertEqual(len(llama.messages), 2)
         self.assertTrue(all(
             sum(item.get("type") == "image_url" for item in messages[0]["content"]) == 1

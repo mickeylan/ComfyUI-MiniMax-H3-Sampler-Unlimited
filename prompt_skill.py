@@ -1008,6 +1008,10 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             "kind": kind,
             "name": source_name or _ascii_asset_name(model_names[0] if model_names else "", int(source["picture"])),
             "observable_features": "; ".join(features),
+            "primary_view_crop": next((
+                list(raw.get("primary_view_crop")) for _index, raw in entries
+                if isinstance(raw.get("primary_view_crop"), (list, tuple)) and len(raw.get("primary_view_crop")) == 4
+            ), [0.0, 0.0, 1.0, 1.0]),
         })
     resolved_contract = {item["entity_id"]: item for item in normalized_subjects}
 
