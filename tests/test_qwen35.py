@@ -717,6 +717,38 @@ class Qwen35Tests(unittest.TestCase):
             qwen35._run_prompt_skill_worker({"director_mtp": False, "total_frames": 634, "image_urls": ["image"]})
         self.assertEqual(worker.call_args_list[1].args[0]["image_urls"], ["image"])
 
+    def test_prompt_skill_missing_plan_gets_one_final_focused_retry(self):
+        first = {
+            "ok": False, "error_type": "Qwen35ObservationError",
+            "message": "storyboard response needs image_subjects and shots; returned top-level keys: image_subjects, summary",
+            "raw_json": '{"image_subjects":[],"summary":"partial"}',
+        }
+        second = {**first, "raw_json": '{"image_subjects":[{"entity_id":"asset_1"}],"summary":"partial again"}'}
+        success = {"ok": True, "prompt_skill_compile": {"prompt": "fixed", "shot_plan": {}}}
+        with patch.object(qwen35, "_run_worker_once", side_effect=[
+                (types.SimpleNamespace(returncode=1), first),
+                (types.SimpleNamespace(returncode=1), second),
+                (types.SimpleNamespace(returncode=0), success)]) as worker:
+            result = qwen35._run_prompt_skill_worker({
+                "director_mtp": False, "total_frames": 634, "image_urls": ["image"]
+            })
+        self.assertEqual(result["prompt"], "fixed")
+        final = worker.call_args_list[2].args[0]
+        self.assertEqual(final["prompt_skill_structure_repair"], 2)
+        self.assertTrue(final["prompt_skill_missing_plan_retry"])
+        self.assertEqual(final["image_urls"], ["image"])
+
+    def test_final_missing_plan_prompt_does_not_repeat_partial_json(self):
+        _system, prompt = qwen35.prompt_skill_messages({
+            "story": "A speaks.", "total_frames": 40, "fps": 24.0,
+            "prompt_skill_structure_repair": 2, "prompt_skill_missing_plan_retry": True,
+            "prompt_skill_validation_error": "missing shots",
+            "prompt_skill_previous_response": '{"image_subjects":[],"summary":"partial"}',
+        })
+        self.assertIn("Begin the JSON object with a non-empty shots array", prompt)
+        self.assertIn("Do not imitate the previous partial response", prompt)
+        self.assertNotIn('{"image_subjects":[],"summary":"partial"}', prompt)
+
     def test_prompt_skill_invalid_intervals_get_one_complete_structure_repair(self):
         failure = {
             "ok": False,

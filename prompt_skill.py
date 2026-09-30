@@ -203,12 +203,15 @@ Hard rules:
 """
     repair = ""
     if request.get("prompt_skill_structure_repair"):
+        repair_attempt = int(request.get("prompt_skill_structure_repair", 1))
+        missing_plan_retry = bool(request.get("prompt_skill_missing_plan_retry"))
         repair = f"""
 
 STRUCTURE CORRECTION REQUIRED
 The previous response was invalid. Never return an empty object {{}}. Return the complete object with non-empty image_subjects and shots arrays.
 The previous JSON failed deterministic validation: {request.get('prompt_skill_validation_error', 'invalid shot structure')}
 Return one complete replacement JSON object, not a patch. Preserve the same story, dialogue order, speaker bindings, picture bindings, and creative intent.
+{('This is the final missing-plan correction. Begin the JSON object with a non-empty shots array, then include image_subjects and every remaining required top-level field. Do not return analysis or a partial summary.' if missing_plan_retry and repair_attempt >= 2 else '')}
 Shot intervals must be contiguous 0-based half-open ranges that cover exactly [0,{total_frames}):
 - shots[0].start_frame must equal 0
 - every shot end_frame must equal the next shot start_frame
@@ -217,8 +220,7 @@ Shot intervals must be contiguous 0-based half-open ranges that cover exactly [0
 - no start_frame or end_frame may exceed {total_frames}
 Do not double the requested duration. Do not append a shot beginning at {total_frames}.
 Reallocate long dialogue across consecutive shots so every shot has enough frames for natural delivery. Every visible speaker must be present before speaking; do not place their entrance after their first line.
-Previous invalid JSON:
-{str(request.get('prompt_skill_previous_response', ''))}
+{('Previous invalid JSON:' + chr(10) + str(request.get('prompt_skill_previous_response', '')) if not (missing_plan_retry and repair_attempt >= 2) else 'Do not imitate the previous partial response; rebuild the complete plan from the original story and images above.')}
 """
     user = f"""Story:
 --- BEGIN STORY ---

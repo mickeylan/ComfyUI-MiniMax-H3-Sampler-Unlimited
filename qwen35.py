@@ -1304,14 +1304,23 @@ def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
             f"Qwen prompt skill worker exited with status {process.returncode} without a result",
             returncode=process.returncode,
         )
-    if (not value.get("ok")
+    repair_attempt = 0
+    while (not value.get("ok")
             and value.get("error_type") in {"Qwen35ObservationError", "ValueError"}
             and str(value.get("raw_json", "")).strip()):
-        payload["prompt_skill_structure_repair"] = True
-        payload["prompt_skill_validation_error"] = str(value.get("message", "invalid prompt skill structure"))
+        message = str(value.get("message", "invalid prompt skill structure"))
+        missing_plan = message.startswith("storyboard response needs image_subjects and shots")
+        max_repairs = 2 if missing_plan else 1
+        if repair_attempt >= max_repairs:
+            break
+        repair_attempt += 1
+        payload["prompt_skill_structure_repair"] = repair_attempt
+        payload["prompt_skill_missing_plan_retry"] = missing_plan
+        payload["prompt_skill_validation_error"] = message
         payload["prompt_skill_previous_response"] = str(value["raw_json"])
         logging.warning(
-            "HR H3 Prompt Skill Compiler rejected Qwen structure; requesting one corrected JSON object with the original reference images and MTMD analysis."
+            "HR H3 Prompt Skill Compiler rejected Qwen structure; requesting corrected JSON object %d/%d with the original reference images and MTMD analysis.",
+            repair_attempt, max_repairs,
         )
         process, value = _run_worker_once(payload, timeout=600)
         if value is None:
