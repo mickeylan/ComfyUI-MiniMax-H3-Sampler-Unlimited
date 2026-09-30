@@ -725,22 +725,49 @@ class Qwen35Tests(unittest.TestCase):
 
     def test_qwen35_prompt_skill_grounds_shots_in_single_scene_asset(self):
         plan = {
+            "image_subjects": [
+                {"entity_id": "asset_1", "kind": "character", "observable_features": "four-view character sheet on white background"},
+                {"entity_id": "asset_2", "kind": "scene", "observable_features": "wrong generic room"},
+            ],
             "shots": [{
                 "pictures": ["asset_1"],
+                "start_state": "the character stands still",
                 "forbidden_replays": [],
             }]
         }
         observations = [
-            {"asset_id": "asset_1", "kind": "character", "observable_features": "four-view character sheet"},
-            {"asset_id": "asset_2", "kind": "scene", "observable_features": "temple interior"},
+            {"asset_id": "asset_1", "kind": "character", "observable_features": "long black hair; blue robe"},
+            {"asset_id": "asset_2", "kind": "scene", "observable_features": "temple interior; warm candlelight"},
         ]
         grounded = qwen35._qwen35_ground_prompt_skill_scenes(plan, observations)
         self.assertEqual(grounded["shots"][0]["pictures"], ["asset_2", "asset_1"])
+        self.assertIn("<Entity asset_2>", grounded["shots"][0]["start_state"])
+        self.assertIn("architecture, spatial layout, composition, lighting", grounded["shots"][0]["start_state"])
+        self.assertEqual(grounded["image_subjects"][0]["observable_features"], "long black hair; blue robe")
+        self.assertEqual(grounded["image_subjects"][1]["observable_features"], "temple interior; warm candlelight")
         ban = grounded["shots"][0]["forbidden_replays"][0]
-        self.assertIn("four-view layout", ban)
-        self.assertIn("white studio background", ban)
-        self.assertIn("referenced scene image", ban)
+        self.assertIn("single diegetic cinematic world", ban)
+        self.assertIn("active scene asset controls environment", ban)
+        self.assertNotRegex(ban.lower(), r"four.view|white.*background|character sheet|collage")
         self.assertEqual(plan["shots"][0]["pictures"], ["asset_1"])
+
+    def test_qwen35_removes_reference_presentation_from_intrinsic_features(self):
+        features = qwen35._qwen35_intrinsic_features(
+            "Four-view character sheet on a white background. Long black hair and a blue silk robe. "
+            "Front view and side view are shown in panels."
+        )
+        self.assertEqual(features, "Long black hair and a blue silk robe")
+        self.assertNotRegex(features.lower(), r"four|white background|front view|panel")
+
+    def test_qwen35_rejects_presentation_artifacts_in_compiled_prompt(self):
+        with self.assertRaisesRegex(qwen35.Qwen35ObservationError, "reference-presentation artifact"):
+            qwen35._validate_qwen35_compiled_scene_prompt(
+                "subject_definitions:\n<Subject 1> appears as a four-view character sheet."
+            )
+        qwen35._validate_qwen35_compiled_scene_prompt(
+            "subject_definitions:\n<Subject 1> has long black hair.\n\n"
+            "detailed_description:\nThe shot takes place in a candlelit temple interior."
+        )
 
     def test_qwen35_prompt_skill_requires_scene_choice_when_multiple_exist(self):
         plan = {"shots": [{"pictures": ["asset_1"], "forbidden_replays": []}]}

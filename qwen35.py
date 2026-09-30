@@ -899,7 +899,9 @@ def _qwen35_asset_observation_prompt(asset_index: int) -> str:
         f"Analyze only the attached reference image for asset_{asset_index}. "
         "Return one compact JSON object with keys asset_id, kind, and observable_features. "
         f"asset_id must be exactly asset_{asset_index}. kind must be character, scene, or prop. "
-        "observable_features must describe only visible identity, appearance, clothing, environment, or object details in English."
+        "observable_features must describe only intrinsic identity, face, hair, body, clothing, environment, architecture, lighting, "
+        "or object details in English. Ignore and never mention image layout, multiple views, turnaround presentation, panels, collage, "
+        "character-sheet formatting, studio backdrop, white background, borders, labels, or the fact that this is a reference image."
     )
 
 
@@ -932,7 +934,7 @@ def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str], t0: floa
         if not isinstance(value, dict):
             raise Qwen35ObservationError(f"Qwen3.5 returned no usable observation for asset_{index}", raw_json=text)
         kind = str(value.get("kind", "")).strip().lower()
-        features = str(value.get("observable_features", value.get("description", ""))).strip()
+        features = _qwen35_intrinsic_features(value.get("observable_features", value.get("description", "")))
         if kind not in {"character", "scene", "prop"} or not features:
             raise Qwen35ObservationError(f"Qwen3.5 returned an incomplete observation for asset_{index}", raw_json=text)
         observations.append({"asset_id": f"asset_{index}", "kind": kind, "observable_features": features})
@@ -947,19 +949,55 @@ def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str], t0: floa
     return observations
 
 
-_QWEN35_REFERENCE_DISPLAY_BAN = (
-    "Identity reference images are identity-and-clothing evidence only. Never show a reference sheet, turnaround, "
-    "four-view layout, split screen, panel, collage, character card, white studio background, or any reference image "
-    "itself in the generated video. Render one continuous cinematic scene using the referenced scene image for the "
-    "environment, composition, lighting, and background."
+_QWEN35_PRESENTATION_FEATURE = re.compile(
+    r"\b(?:four[- ]?view|multi[- ]?view|multiple views?|turnaround|reference sheet|character sheet|character card|"
+    r"split screen|panels?|collage|white (?:studio )?background|white backdrop|studio backdrop|plain white background|"
+    r"front view|rear view|back view|side view|profile view|reference image)\b",
+    re.IGNORECASE,
 )
+
+
+def _qwen35_intrinsic_features(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    parts = re.split(r"(?<=[.!?;])\s+|\s*[|]\s*", text)
+    intrinsic = [part.strip(" ,;.") for part in parts if part.strip() and not _QWEN35_PRESENTATION_FEATURE.search(part)]
+    return "; ".join(dict.fromkeys(part for part in intrinsic if part))
+
+
+_QWEN35_REFERENCE_DISPLAY_BAN = (
+    "Render only the single diegetic cinematic world positively defined by the active scene asset. Character assets "
+    "control identity and clothing only; they contribute no framing, canvas, source presentation, borders, labels, "
+    "or visible source imagery. The active scene asset controls environment, composition, lighting, and background."
+)
+
+
+def _validate_qwen35_compiled_scene_prompt(prompt: str) -> None:
+    polluted = _QWEN35_PRESENTATION_FEATURE.search(str(prompt))
+    if polluted:
+        raise Qwen35ObservationError(
+            f"Qwen3.5 compiled prompt still contains reference-presentation artifact {polluted.group(0)!r}"
+        )
 
 
 def _qwen35_ground_prompt_skill_scenes(value: dict[str, Any], observations: Sequence[dict[str, str]]) -> dict[str, Any]:
     scene_ids = tuple(item["asset_id"] for item in observations if item.get("kind") == "scene")
     if not scene_ids:
         return value
+    observation_by_id = {str(item["asset_id"]): item for item in observations}
     result = dict(value)
+    subjects = []
+    for source_subject in value.get("image_subjects", ()):
+        if not isinstance(source_subject, dict):
+            subjects.append(source_subject)
+            continue
+        subject = dict(source_subject)
+        entity_id = str(subject.get("entity_id", "")).strip()
+        observation = observation_by_id.get(entity_id)
+        if observation is not None:
+            subject["kind"] = observation["kind"]
+            subject["observable_features"] = observation["observable_features"]
+        subjects.append(subject)
+    result["image_subjects"] = subjects
     shots = []
     for index, source_shot in enumerate(value.get("shots", ()), 1):
         if not isinstance(source_shot, dict):
@@ -974,7 +1012,15 @@ def _qwen35_ground_prompt_skill_scenes(value: dict[str, Any], observations: Sequ
                     f"Qwen3.5 prompt plan shot {index} does not select a scene asset from {list(scene_ids)}"
                 )
             pictures.insert(0, scene_ids[0])
+        active_scenes = [entity_id for entity_id in pictures if entity_id in scene_ids]
         shot["pictures"] = list(dict.fromkeys(pictures))
+        scene_anchor = ", ".join(f"<Entity {entity_id}>" for entity_id in active_scenes)
+        opening = str(shot.get("start_state", "")).strip()
+        anchor = (
+            f"The shot takes place inside the environment shown by {scene_anchor}; its architecture, spatial layout, "
+            "composition, lighting, color palette, and background remain the positive visual ground"
+        )
+        shot["start_state"] = f"{anchor}. {opening}".strip()
         forbidden = [str(item).strip() for item in shot.get("forbidden_replays", ()) if str(item).strip()]
         if _QWEN35_REFERENCE_DISPLAY_BAN not in forbidden:
             forbidden.append(_QWEN35_REFERENCE_DISPLAY_BAN)
@@ -1124,6 +1170,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             try:
                 plan_value = _qwen35_ground_prompt_skill_scenes(_prompt_skill_result_object(value), observations)
                 compiled = compile_prompt_skill(plan_value, request)
+                _validate_qwen35_compiled_scene_prompt(compiled["prompt"])
             except ValueError as error:
                 raise Qwen35ObservationError(str(error), raw_json=json.dumps(value, ensure_ascii=False)) from error
             return {"prompt_skill_compile": compiled}
