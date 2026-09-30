@@ -1309,7 +1309,10 @@ def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
             and value.get("error_type") in {"Qwen35ObservationError", "ValueError"}
             and str(value.get("raw_json", "")).strip()):
         message = str(value.get("message", "invalid prompt skill structure"))
-        missing_plan = message.startswith("storyboard response needs image_subjects and shots")
+        missing_plan = (
+            message.startswith("storyboard response needs image_subjects and shots")
+            or message.startswith("Qwen Prompt Skill returned an empty JSON object")
+        )
         max_repairs = 2 if missing_plan else 1
         if repair_attempt >= max_repairs:
             break

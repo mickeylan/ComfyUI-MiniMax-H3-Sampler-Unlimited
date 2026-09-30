@@ -717,6 +717,26 @@ class Qwen35Tests(unittest.TestCase):
             qwen35._run_prompt_skill_worker({"director_mtp": False, "total_frames": 634, "image_urls": ["image"]})
         self.assertEqual(worker.call_args_list[1].args[0]["image_urls"], ["image"])
 
+    def test_prompt_skill_empty_object_gets_final_focused_retry(self):
+        empty = {
+            "ok": False, "error_type": "Qwen35ObservationError",
+            "message": "Qwen Prompt Skill returned an empty JSON object (finish_reason=stop, prompt_tokens=2607, completion_tokens=2)",
+            "raw_json": "{}",
+        }
+        success = {"ok": True, "prompt_skill_compile": {"prompt": "fixed", "shot_plan": {}}}
+        with patch.object(qwen35, "_run_worker_once", side_effect=[
+                (types.SimpleNamespace(returncode=1), empty),
+                (types.SimpleNamespace(returncode=1), empty),
+                (types.SimpleNamespace(returncode=0), success)]) as worker:
+            result = qwen35._run_prompt_skill_worker({
+                "director_mtp": False, "total_frames": 634, "image_urls": ["image"]
+            })
+        self.assertEqual(result["prompt"], "fixed")
+        final = worker.call_args_list[2].args[0]
+        self.assertEqual(final["prompt_skill_structure_repair"], 2)
+        self.assertTrue(final["prompt_skill_missing_plan_retry"])
+        self.assertEqual(final["image_urls"], ["image"])
+
     def test_prompt_skill_missing_plan_gets_one_final_focused_retry(self):
         first = {
             "ok": False, "error_type": "Qwen35ObservationError",
