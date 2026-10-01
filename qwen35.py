@@ -890,30 +890,53 @@ def _qwen35_asset_observation_prompt(asset_index: int) -> str:
     )
 
 
+def _qwen35_observation_fields(value: dict[str, Any]) -> tuple[str, str]:
+    kind = str(value.get("kind", value.get("type", value.get("category", "")))).strip().lower()
+    kind = {
+        "person": "character", "human": "character", "subject": "character",
+        "environment": "scene", "background": "scene", "location": "scene", "setting": "scene",
+        "object": "prop", "item": "prop",
+    }.get(kind, kind)
+    features = str(next((
+        value.get(name) for name in ("observable_features", "visual_description", "features", "description")
+        if str(value.get(name, "")).strip()
+    ), "")).strip()
+    return kind, features
+
+
 def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str]) -> list[dict[str, str]]:
     observations = []
     for index, image_url in enumerate(image_urls, 1):
         print(f"[MINIMAX_H3_WORKER] analyzing asset_{index}/{len(image_urls)}", flush=True)
-        response = llm.create_chat_completion(
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                    {"type": "text", "text": _qwen35_asset_observation_prompt(index)},
-                ],
-            }],
-            response_format={"type": "json_object"},
-            temperature=0.1, top_p=0.9, top_k=40,
-            max_tokens=1024, reasoning_budget=0,
-        )
-        message = response.get("choices", [{}])[0].get("message", {})
-        text = str(message.get("content") or message.get("reasoning_content") or "")
-        value, _raw = _extract_json(text)
-        kind = str(value.get("kind", "")).strip().lower()
-        features = str(value.get("observable_features", value.get("description", ""))).strip()
-        if kind not in {"character", "scene", "prop"} or not features:
+        text = ""
+        for attempt in range(2):
+            prompt = _qwen35_asset_observation_prompt(index)
+            if attempt:
+                prompt += (
+                    "\nYour previous JSON was incomplete. Return exactly asset_id, kind, and observable_features; "
+                    "kind must be exactly character, scene, or prop. Previous JSON:\n" + text
+                )
+            response = llm.create_chat_completion(
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+                response_format={"type": "json_object"},
+                temperature=0.1, top_p=0.9, top_k=40,
+                max_tokens=1024, reasoning_budget=0,
+            )
+            message = response.get("choices", [{}])[0].get("message", {})
+            text = str(message.get("content") or message.get("reasoning_content") or "")
+            value, _raw = _extract_json(text)
+            kind, features = _qwen35_observation_fields(value)
+            if kind in {"character", "scene", "prop"} and features:
+                observations.append({"asset_id": f"asset_{index}", "kind": kind, "observable_features": features})
+                break
+        else:
             raise Qwen35ObservationError(f"Qwen3.5 returned an incomplete observation for asset_{index}", raw_json=text)
-        observations.append({"asset_id": f"asset_{index}", "kind": kind, "observable_features": features})
     return observations
 
 

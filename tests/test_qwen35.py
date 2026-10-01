@@ -708,6 +708,33 @@ class Qwen35Tests(unittest.TestCase):
             for messages in llama.messages
         ))
 
+    def test_qwen35_prompt_skill_normalizes_observation_aliases(self):
+        kind, features = qwen35._qwen35_observation_fields({
+            "type": "environment", "visual_description": "pink blossom forest",
+        })
+        self.assertEqual((kind, features), ("scene", "pink blossom forest"))
+
+    def test_qwen35_prompt_skill_repairs_one_incomplete_asset_observation(self):
+        class FakeLlama:
+            def __init__(self):
+                self.calls = []
+
+            def create_chat_completion(self, **kwargs):
+                self.calls.append(kwargs)
+                value = (
+                    {"asset_id": "asset_1", "kind": "scene"}
+                    if len(self.calls) == 1 else
+                    {"asset_id": "asset_1", "kind": "scene", "observable_features": "pink blossom forest"}
+                )
+                return {"choices": [{"message": {"content": json.dumps(value)}}]}
+
+        llama = FakeLlama()
+        observations = qwen35._qwen35_analyze_prompt_skill_images(llama, ("image",))
+        self.assertEqual(observations[0]["observable_features"], "pink blossom forest")
+        self.assertEqual(len(llama.calls), 2)
+        correction = llama.calls[1]["messages"][0]["content"][1]["text"]
+        self.assertIn("previous JSON was incomplete", correction)
+
     def test_prompt_skill_has_large_deterministic_response_budget(self):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
 
