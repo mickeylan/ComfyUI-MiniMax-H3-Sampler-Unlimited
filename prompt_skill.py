@@ -121,6 +121,17 @@ def _named_spoken_subjects(story: str) -> tuple[tuple[str, str, str], ...]:
     return tuple(result)
 
 
+def _tagged_spoken_subjects(story: str) -> tuple[str, ...]:
+    declarations = list(_SPEAKER_SUBJECT.finditer(story))
+    subjects = []
+    for dialogue in _DIALOGUE_TAG.finditer(story):
+        speaker = next((match for match in reversed(declarations) if match.end() <= dialogue.start()), None)
+        if speaker is None:
+            return ()
+        subjects.append(re.sub(r"\s+", " ", speaker.group(1)).title().replace("Subject ", "Subject "))
+    return tuple(subjects)
+
+
 def _source_dialogue_contract(story: str) -> tuple[dict[str, str], list[str], dict[int, str]]:
     explicit = _speaker_subjects(story)
     line_subjects = _named_spoken_subjects(story)
@@ -139,6 +150,9 @@ def _source_dialogue_contract(story: str) -> tuple[dict[str, str], list[str], di
             explicit[speaker_id] = subject
         subjects.append(subject)
         speaker_names[int(re.search(r"\d+", subject).group())] = name
+    tagged_subjects = _tagged_spoken_subjects(story)
+    if tagged_subjects and len(tagged_subjects) == len(_spoken_lines(story)):
+        subjects = list(tagged_subjects)
     return explicit, subjects, speaker_names
 
 

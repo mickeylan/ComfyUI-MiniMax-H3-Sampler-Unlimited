@@ -754,6 +754,24 @@ class PromptSkillTests(unittest.TestCase):
             shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
         )
         self.assertEqual(request["required_speaker_subjects"], {"S1": "<Subject 4>", "S2": "<Subject 3>"})
+        self.assertEqual(request["required_spoken_subjects"], ["<Subject 4>", "<Subject 3>"])
+
+    def test_tagged_dialogue_fragments_preserve_speaker_handoff(self):
+        story = (
+            "<Subject 3> (S1) says: <d>[Chinese] 第一段。</d> "
+            "<Subject 3> (S1) carries over: <d>[Chinese] 第二段。</d> "
+            "<Subject 4> (S2) says: <d>[Chinese] 第三段。</d> "
+            "<Subject 4> (S2) carries over: <d>[Chinese] 第四段。</d>"
+        )
+        request = prompt_skill.build_prompt_skill_request(
+            story, duration_seconds=8.0, fps=24.0, image_count=4, style="cinematic",
+            shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
+        )
+        self.assertEqual(
+            request["required_spoken_subjects"],
+            ["<Subject 3>", "<Subject 3>", "<Subject 4>", "<Subject 4>"],
+        )
+        self.assertEqual(request["required_speaker_subjects"], {"S1": "<Subject 3>", "S2": "<Subject 4>"})
 
     def test_named_story_dialogue_overrides_qwen_wrong_speaker_binding(self):
         story = (
