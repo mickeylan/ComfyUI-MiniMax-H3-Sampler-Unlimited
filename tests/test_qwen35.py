@@ -748,6 +748,12 @@ class Qwen35Tests(unittest.TestCase):
     def test_prompt_skill_has_large_deterministic_response_budget(self):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
 
+    def test_qwen35_prompt_skill_uses_dedicated_handler(self):
+        import inspect
+        source = inspect.getsource(qwen35._complete_qwen35)
+        self.assertIn("Qwen35ChatHandler if prompt_skill else MTMDChatHandler", source)
+        self.assertIn('"enable_thinking": False', source)
+
     def test_qwen35_multimodal_batch_contains_one_complete_image_embedding(self):
         self.assertGreaterEqual(qwen35.QWEN35_IMAGE_MIN_TOKENS, 1024)
         self.assertGreaterEqual(qwen35.QWEN35_BATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)

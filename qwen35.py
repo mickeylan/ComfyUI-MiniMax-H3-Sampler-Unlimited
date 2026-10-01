@@ -945,7 +945,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     try:
         from llama_cpp import Llama
-        from llama_cpp.llama_chat_format import MTMDChatHandler
+        from llama_cpp.llama_chat_format import MTMDChatHandler, Qwen35ChatHandler
     except ImportError as error:
         raise Qwen35DependencyError("Qwen3.5 requires llama-cpp-python with MTMD support") from error
 
@@ -957,15 +957,17 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     jzl_storyboard = operation == "jzl_storyboard"
     external = operation == "external_video_continuation"
     prompt_skill = operation == "prompt_skill_compile"
-    handler = None if timing else MTMDChatHandler(
+    handler_class = Qwen35ChatHandler if prompt_skill else MTMDChatHandler
+    handler = None if timing else handler_class(
         clip_model_path=request["director_mmproj_path"],
         image_min_tokens=QWEN35_IMAGE_MIN_TOKENS,
         image_max_tokens=QWEN35_IMAGE_MAX_TOKENS,
         batch_max_tokens=QWEN35_BATCH_SIZE,
         verbose=False,
         use_gpu=True,
+        **({"enable_thinking": False} if prompt_skill else {}),
     )
-    print(f"[MINIMAX_H3_WORKER] MTMDChatHandler(mmgrpo) done t={time.monotonic()-t0:.1f}s", flush=True)
+    print(f"[MINIMAX_H3_WORKER] {handler_class.__name__} done t={time.monotonic()-t0:.1f}s", flush=True)
     print(f"[MINIMAX_H3_WORKER] loading GGUF t={time.monotonic()-t0:.1f}s", flush=True)
     context_tokens = int(request.get("director_n_ctx", QWEN35_CONTEXT_TOKENS))
     if context_tokens < QWEN35_CONTEXT_TOKENS or context_tokens > 262144:
@@ -1001,7 +1003,8 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         elif not timing:
             content = [{"type": "image_url", "image_url": {"url": url}} for url in image_urls]
             content.append({"type": "text", "text": prompt})
-        print(f"[MINIMAX_H3_WORKER] starting LLM streaming op={operation} images={len(image_urls)} t={time.monotonic()-t0:.1f}s", flush=True)
+        final_image_count = 0 if prompt_skill and image_urls else len(image_urls)
+        print(f"[MINIMAX_H3_WORKER] starting LLM streaming op={operation} images={final_image_count} t={time.monotonic()-t0:.1f}s", flush=True)
         response = llm.create_chat_completion(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
             response_format=None if jzl_storyboard else {"type": "json_object"},
