@@ -1753,6 +1753,26 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("No character vocalizes in this interval", normalized)
         prompt_skill.validate_h3_chunk_dialogue_contract(normalized, expected)
 
+    def test_silent_final_chunk_removes_complete_director_speech_clause(self):
+        expected = (
+            "detailed_description:\nThe characters keep holding hands. No character vocalizes in this interval.\n\n"
+            "overall_soundscape:\nWind."
+        )
+        directed = (
+            "detailed_description:\nThe characters keep holding hands. "
+            "<Subject 4> (S2) says using a stable voice identity and consistent timbre, pitch, cadence, and speaking rate, "
+            "calmly: <d>[Chinese] 练磨练来得有意思。</d> with synchronized visible lip movement. "
+            "Pink petals drift.\n\noverall_soundscape:\nWind."
+        )
+        normalized = prompt_skill.normalize_h3_chunk_dialogue(directed, expected)
+        self.assertNotIn("<d>", normalized)
+        self.assertNotIn("says using", normalized)
+        self.assertNotIn("synchronized visible lip movement", normalized)
+        self.assertIn("The characters keep holding hands", normalized)
+        self.assertIn("Pink petals drift", normalized)
+        self.assertIn("No character vocalizes in this interval", normalized)
+        prompt_skill.validate_h3_chunk_dialogue_contract(normalized, expected)
+
     def test_chunk_with_dialogue_restores_complete_typed_description(self):
         expected = "detailed_description:\n<Subject 1> (S1) says: <d>[English] Stay.</d>\n\noverall_soundscape:\nWind."
         directed = expected.replace("<Subject 1> (S1) says:", "The camera pushes in. <Subject 1> (S1) says:").replace("Stay.", "Go.")

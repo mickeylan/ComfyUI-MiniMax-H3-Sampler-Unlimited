@@ -1607,7 +1607,10 @@ def normalize_h3_chunk_dialogue(prompt: str, expected_prompt: str) -> str:
     start, end = bounds
     description = text[start + len("detailed_description:"):end]
     description = re.sub(
-        r"(?:<Subject\s+\d+>\s*\(S\d+\)\s*)?(?:says?|asks?|replies?|answers?|whispers?|shouts?|continues?|说|说道|问|询问|回答|答道|低语|喊|喊道)\s*[:：]?\s*<d>.*?</d>",
+        r"(?:<Subject\s+\d+>\s*\(S\d+\)\s*)?"
+        r"(?:says?|asks?|replies?|answers?|whispers?|shouts?|continues?|说|说道|问|询问|回答|答道|低语|喊|喊道)"
+        r"[^<]*<d>.*?</d>"
+        r"(?:\s*(?:<scenetrans>\s*)?with synchronized visible lip movement)?[.;]?",
         "",
         description,
         flags=re.IGNORECASE | re.DOTALL,
