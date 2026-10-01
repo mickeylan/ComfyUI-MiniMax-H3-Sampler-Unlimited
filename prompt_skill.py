@@ -814,6 +814,13 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
         if name:
             names.setdefault(name.casefold(), []).append(entity_id)
 
+    def reference_label(source: dict[str, Any]) -> str:
+        picture = int(source["picture"])
+        if str(source.get("kind", "")).lower() == "character":
+            name = str(source.get("name", "")).strip()
+            return f"<Subject {picture}>" + (f" {name}" if name else "")
+        return f"<Picture {picture}>"
+
     def compile_text(text: Any, label: str) -> str:
         result = str(text).strip()
 
@@ -843,7 +850,7 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
                             f"{label} binds {name!r} to <Entity {marked_id}> instead of <Entity {entity_id}>"
                         )
                     continue
-                if len(names[name.casefold()]) != 1:
+                if len(names.get(name.casefold(), (entity_id,))) != 1:
                     raise ValueError(f"{label} contains ambiguous bare source name {name!r}")
                 result = result[:match.start()] + f"<Entity {entity_id}> " + result[match.start():]
                 warning = f"Restored canonical <Entity {entity_id}> marker before {name!r} in {label}."
@@ -851,17 +858,25 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
                     warnings.append(warning)
         for marker in re.findall(r"<Entity\s+([^>]+)>", result, re.IGNORECASE):
             source = entity(marker, label)
-            replacement = f"<Subject {int(source['picture'])}>"
-            if str(source.get("name", "")).strip():
-                replacement += f" {str(source['name']).strip()}"
-            result = re.sub(rf"<Entity\s+{re.escape(marker)}>", replacement, result, flags=re.IGNORECASE)
-        for entity_id, source in contract.items():
+            name = str(source.get("name", "")).strip()
+            suffix = rf"\s*{re.escape(name)}" if name else ""
             result = re.sub(
-                rf"(?<![\w>]){re.escape(entity_id)}(?!\w)",
-                f"<Subject {int(source['picture'])}>",
+                rf"<Entity\s+{re.escape(marker)}>{suffix}",
+                reference_label(source),
                 result,
                 flags=re.IGNORECASE,
             )
+        for entity_id, source in contract.items():
+            result = re.sub(
+                rf"(?<![\w>]){re.escape(entity_id)}(?!\w)",
+                reference_label(source),
+                result,
+                flags=re.IGNORECASE,
+            )
+        for source in contract.values():
+            name = str(source.get("name", "")).strip()
+            if name:
+                result = re.sub(rf"\b({re.escape(name)})(?:\s+\1)+\b", r"\1", result, flags=re.IGNORECASE)
         return result
 
     speaking_entities = {
@@ -966,10 +981,26 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             warnings.append(f"Ignored conflicting Qwen kind values for {entity_id}; resolved kind={kind} from the source/usage contract.")
         features = []
         for _index, raw in entries:
-            feature = compile_text(
-                raw.get("observable_features", raw.get("description", "")),
-                f"image_subjects[{_index}].observable_features",
+            feature = str(raw.get("observable_features", raw.get("description", ""))).strip()
+            feature = re.sub(r"<(?:Subject|Picture)\s+\d+>|<Entity\s+[^>]+>", "", feature, flags=re.IGNORECASE)
+            feature = re.sub(rf"(?<!\w){re.escape(entity_id)}(?!\w)", "", feature, flags=re.IGNORECASE)
+            for other_id, other_source in contract.items():
+                if other_id != entity_id:
+                    feature = re.sub(rf"(?<!\w){re.escape(other_id)}(?!\w)", "", feature, flags=re.IGNORECASE)
+                    other_name = str(other_source.get("name", "")).strip()
+                    if other_name:
+                        feature = re.sub(rf"\b{re.escape(other_name)}\b", "", feature, flags=re.IGNORECASE)
+            parts = re.split(r"(?<=[.!?;])\s+", feature)
+            feature = " ".join(
+                part.strip()
+                for part in parts
+                if part.strip() and re.search(
+                    r"\b(?:four views?|multiple views?|front(?:-left)? close-up|side profile|back view|plain white background|clean white background)\b",
+                    part,
+                    re.IGNORECASE,
+                ) is None
             )
+            feature = re.sub(r"\s+", " ", feature).strip(" ,;.")
             if feature and feature not in features:
                 features.append(feature)
         normalized_subjects.append({
@@ -980,6 +1011,8 @@ def _resolve_entity_contract(value: Any, request: dict[str, Any]) -> tuple[Any, 
             "observable_features": "; ".join(features),
         })
     resolved_contract = {item["entity_id"]: item for item in normalized_subjects}
+    for entity_id, item in resolved_contract.items():
+        contract[entity_id]["kind"] = item["kind"]
 
     shots = []
     for shot_index, raw in enumerate(value.get("shots", ()), 1):
@@ -1370,9 +1403,15 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
     if unused_subjects:
         warnings.append("Excluded unused image subjects from retention and chunk reference selection: " + ", ".join(str(item["entity_id"]) for item in unused_subjects) + ".")
     subject_retention = [
-        f"<Subject {int(item['subject'])}> (used in shots "
-        + ", ".join(str(index) for index, shot in enumerate(plan["shots"], 1) if int(item["subject"]) in shot.get("pictures", ()))
-        + f"): preserve the identity and visible attributes defined from <Picture {int(item['picture'])}>."
+        (
+            f"<Subject {int(item['subject'])}> (used in shots "
+            + ", ".join(str(index) for index, shot in enumerate(plan["shots"], 1) if int(item["subject"]) in shot.get("pictures", ()))
+            + f"): preserve the identity and visible attributes defined from <Picture {int(item['picture'])}>."
+            if str(item.get("kind", "")).lower() != "scene" else
+            f"<Picture {int(item['picture'])}> (used in shots "
+            + ", ".join(str(index) for index, shot in enumerate(plan["shots"], 1) if int(item["subject"]) in shot.get("pictures", ()))
+            + "): preserve its environment, spatial layout, lighting, and background."
+        )
         for item in plan["image_subjects"] if int(item["subject"]) in used_subjects
     ]
     shot_retention = [
@@ -1490,6 +1529,8 @@ def normalize_h3_chunk_retention(prompt: str, plan: dict[str, Any], *, frame_sta
         if picture in active_pictures and subject > 0:
             retention.append(
                 f"<Subject {subject}>: fully_preserved - the identity and visible attributes defined by <Picture {picture}> remain consistent."
+                if str(item.get("kind", "")).lower() != "scene" else
+                f"<Picture {picture}>: fully_preserved - its environment, spatial layout, lighting, and background remain consistent."
             )
     for kind in ("Video", "Audio"):
         for number in sorted({int(value) for value in re.findall(rf"<{kind}\s+(\d+)>", text, re.IGNORECASE)}):

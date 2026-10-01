@@ -270,7 +270,7 @@ class PromptSkillTests(unittest.TestCase):
         value["image_subjects"][0]["observable_features"] = "similar facial features to asset_1 with black hair"
         compiled = prompt_skill.compile_prompt_skill(value, self.request())
         self.assertNotRegex(compiled["prompt"], r"\basset_\d+\b")
-        self.assertIn("similar facial features to <Subject 1>", compiled["prompt"])
+        self.assertIn("similar facial features to with black hair", compiled["prompt"])
 
     def test_cross_shot_dialogue_uses_h3_scene_transition_contract(self):
         description = prompt_skill._dialogue_description({
@@ -356,6 +356,36 @@ class PromptSkillTests(unittest.TestCase):
             ("asset_1", "character"), ("asset_2", "scene"),
         ])
         self.assertTrue(any("Resolved asset_2 kind=scene as a non-speaking visual reference" in item for item in compiled["warnings"]))
+
+    def test_text_cleanup_preserves_prompt_plan_timing(self):
+        request = {
+            **self.request(), "image_count": 2,
+            "source_image_contract": [
+                {"entity_id": "asset_1", "picture": 1, "name": "PeachGrove", "kind": "scene"},
+                {"entity_id": "asset_2", "picture": 2, "name": "Hero", "kind": "character"},
+            ],
+        }
+        value = self.result()
+        value["image_subjects"] = [
+            {"entity_id": "asset_1", "kind": "scene", "observable_features": "pink trees with <Entity asset_2> Hero"},
+            {"entity_id": "asset_2", "kind": "character", "observable_features": "black hair. Four views: front, side profile, and back view against a plain white background."},
+        ]
+        value["shots"][0].update(
+            pictures=["asset_1", "asset_2"],
+            start_state="<Entity asset_1> PeachGrove surrounds <Entity asset_2> Hero Hero",
+            events=[{"id": "S1.V1", "actor": "asset_2", "action": "<Entity asset_2> Hero Hero turns", "phase": "start"}],
+        )
+        value["shots"][1].update(pictures=["asset_1", "asset_2"])
+        expected_intervals = [(shot["start_frame"], shot["end_frame"]) for shot in value["shots"]]
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        plan = compiled["shot_plan"]
+        self.assertEqual([(shot["start_frame"], shot["end_frame"]) for shot in plan["shots"]], expected_intervals)
+        self.assertIn("<Picture 1> surrounds <Subject 2> Hero", plan["shots"][0]["start_state"])
+        self.assertNotIn("Hero Hero", plan["shots"][0]["description"])
+        self.assertNotIn("Four views", plan["image_subjects"][1]["observable_features"])
+        self.assertNotIn("<Subject 2>", plan["image_subjects"][0]["observable_features"])
+        self.assertIn("<Picture 1> (used in shots", plan["retention_analysis"])
+        self.assertIn("<Subject 2> (used in shots", plan["retention_analysis"])
 
     def test_rebuilds_duplicate_omitted_and_out_of_order_subjects_from_source_contract(self):
         request = {
@@ -781,7 +811,8 @@ class PromptSkillTests(unittest.TestCase):
         value["shots"][1]["start_state"] = "Hero pauses in 梵心桃花林."
         value["shots"][1]["description"] = "Hero pauses in 梵心桃花林."
         normalized, warnings = prompt_skill._resolve_entity_contract(value, request)
-        self.assertIn("<Subject 2> 梵心桃花林", normalized["shots"][1]["description"])
+        self.assertIn("<Picture 2>", normalized["shots"][1]["description"])
+        self.assertNotIn("<Subject 2>", normalized["shots"][1]["description"])
         self.assertTrue(any(
             "Restored canonical <Entity asset_2> marker before '梵心桃花林' in shots[2].description" in warning
             for warning in warnings
