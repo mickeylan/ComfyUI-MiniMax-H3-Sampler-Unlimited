@@ -745,14 +745,23 @@ class Qwen35Tests(unittest.TestCase):
         correction = llama.calls[1]["messages"][0]["content"][1]["text"]
         self.assertIn("previous JSON was incomplete", correction)
 
-    def test_prompt_skill_has_large_deterministic_response_budget(self):
-        self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
+    def test_prompt_skill_matches_qwen38_generation_budget(self):
+        self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 8192)
 
     def test_qwen35_prompt_skill_uses_dedicated_handler(self):
         import inspect
         source = inspect.getsource(qwen35._complete_qwen35)
         self.assertIn("Qwen35ChatHandler if prompt_skill else MTMDChatHandler", source)
         self.assertIn('"enable_thinking": False', source)
+
+    def test_qwen35_prompt_skill_matches_qwen38_text_generation_contract(self):
+        import inspect
+        source = inspect.getsource(qwen35._complete_qwen35)
+        self.assertIn('"temperature": 0.7', source)
+        self.assertIn('"top_p": 0.8 if prompt_skill else 0.9', source)
+        self.assertIn('completion_kwargs["min_p"] = 0.0', source)
+        self.assertIn('compiled = compile_prompt_skill(value, request)', source)
+        self.assertIn('"finish_reason": choice.get("finish_reason")', source)
 
     def test_qwen35_multimodal_batch_contains_one_complete_image_embedding(self):
         self.assertGreaterEqual(qwen35.QWEN35_IMAGE_MIN_TOKENS, 1024)

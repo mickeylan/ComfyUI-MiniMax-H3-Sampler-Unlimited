@@ -38,7 +38,7 @@ QWEN35_BATCH_SIZE = 2048
 QWEN35_UBATCH_SIZE = 2048
 QWEN35_CHUNK_RESPONSE_TOKENS = 8192
 QWEN35_TIMING_RESPONSE_TOKENS = 32768
-QWEN35_PROMPT_SKILL_RESPONSE_TOKENS = 32768
+QWEN35_PROMPT_SKILL_RESPONSE_TOKENS = 8192
 QWEN36_CONTEXT_TOKENS = 32768
 QWEN36_CHUNK_RESPONSE_TOKENS = 4096
 QWEN36_TIMING_RESPONSE_TOKENS = 8192
@@ -1005,16 +1005,22 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             content.append({"type": "text", "text": prompt})
         final_image_count = 0 if prompt_skill and image_urls else len(image_urls)
         print(f"[MINIMAX_H3_WORKER] starting LLM streaming op={operation} images={final_image_count} t={time.monotonic()-t0:.1f}s", flush=True)
-        response = llm.create_chat_completion(
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
-            response_format=None if jzl_storyboard else {"type": "json_object"},
-            temperature=0.2 if prompt_skill else 0.7, top_p=0.9, top_k=40,
-            max_tokens=(QWEN_JZL_RESPONSE_TOKENS if jzl_storyboard else
-                        QWEN35_PROMPT_SKILL_RESPONSE_TOKENS if prompt_skill else
-                        QWEN35_TIMING_RESPONSE_TOKENS if timing else QWEN35_CHUNK_RESPONSE_TOKENS),
-            reasoning_budget=0,
-        )
-        message = response["choices"][0]["message"]
+        completion_kwargs = {
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
+            "response_format": None if jzl_storyboard else {"type": "json_object"},
+            "temperature": 0.7,
+            "top_p": 0.8 if prompt_skill else 0.9,
+            "top_k": 40,
+            "max_tokens": (QWEN_JZL_RESPONSE_TOKENS if jzl_storyboard else
+                           QWEN35_PROMPT_SKILL_RESPONSE_TOKENS if prompt_skill else
+                           QWEN35_TIMING_RESPONSE_TOKENS if timing else QWEN35_CHUNK_RESPONSE_TOKENS),
+            "reasoning_budget": 0,
+        }
+        if prompt_skill:
+            completion_kwargs["min_p"] = 0.0
+        response = llm.create_chat_completion(**completion_kwargs)
+        choice = response["choices"][0]
+        message = choice["message"]
         text = str(message.get("content") or message.get("reasoning_content") or "")
         print(f"[MINIMAX_H3_WORKER] streaming done chars={len(text)} t={time.monotonic()-t0:.1f}s", flush=True)
         if jzl_storyboard:
@@ -1036,10 +1042,20 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             return {"external_continuation": _payload(_external_result(value, raw, system, prompt))}
         if prompt_skill:
             try:
-                compiled = compile_prompt_skill(_prompt_skill_result_object(value), request)
+                compiled = compile_prompt_skill(value, request)
             except ValueError as error:
                 raise Qwen35ObservationError(str(error), raw_json=json.dumps(value, ensure_ascii=False)) from error
-            return {"prompt_skill_compile": compiled}
+            usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+            return {
+                "prompt_skill_compile": compiled,
+                "generation": {
+                    "finish_reason": choice.get("finish_reason"),
+                    "prompt_tokens": usage.get("prompt_tokens"),
+                    "completion_tokens": usage.get("completion_tokens"),
+                    "mtp_enabled": False,
+                    "mtp_stats": None,
+                },
+            }
         result = _timing_plan(value, request, raw, system, prompt) if timing else _chunk_prompt(value, raw, system, prompt, request)
         return {"timing_plan" if timing else "chunk_prompt": _payload(result)}
     finally:
