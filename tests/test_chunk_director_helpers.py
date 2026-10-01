@@ -980,6 +980,16 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(keyframe["resolved_frame_index"], 0)
         self.assertIs(keyframe["latent"], boundary_latent)
 
+    def test_continuation_prompt_does_not_duplicate_existing_reference_definitions(self):
+        original = (
+            "subject_definitions:\n<Subject 1> is ready.\n"
+            "<Video 1> is the continuation source for this chunk.\n\n"
+            "summary:\nContinue.\n\nretention_analysis:\nKeep continuity.\n\n"
+            "detailed_description:\nAction."
+        )
+        prompt = nodes._video_continuation_prompt(original, "<Video 1>")
+        self.assertEqual(prompt.count("<Video 1> is the continuation source for this chunk."), 1)
+
     def test_continuation_prompt_describes_synchronized_reference_and_timeline_audio(self):
         prompt = nodes._video_continuation_prompt(
             "subject_definitions:\n<Subject 1> is ready.\n\nsummary:\nContinue.\n\n"

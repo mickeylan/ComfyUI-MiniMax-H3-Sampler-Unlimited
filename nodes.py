@@ -797,9 +797,12 @@ def _drop_picture_anchors(prompt):
 
 
 def _video_continuation_prompt(prompt, video_label, audio_label=None, storyboard=False):
-    source_line = f"{video_label} is the continuation source for this chunk."
-    if audio_label is not None:
-        source_line += f"\n{audio_label} is the synchronized soundtrack of {video_label} and the audio continuation source."
+    source_lines = []
+    if not re.search(rf"(?m)^\s*{re.escape(video_label)}\s+is\b", prompt):
+        source_lines.append(f"{video_label} is the continuation source for this chunk.")
+    if audio_label is not None and not re.search(rf"(?m)^\s*{re.escape(audio_label)}\s+is\b", prompt):
+        source_lines.append(f"{audio_label} is the synchronized soundtrack of {video_label} and the audio continuation source.")
+    source_line = "\n".join(source_lines)
     subject = SUBJECT_DEFINITIONS_FIELD.search(prompt)
     if subject is not None:
         next_section = SUMMARY_FIELD.search(prompt, subject.end()) or RETENTION_FIELD.search(prompt, subject.end()) or _description_field(prompt, subject.end())

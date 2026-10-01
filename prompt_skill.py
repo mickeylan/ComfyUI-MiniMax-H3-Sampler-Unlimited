@@ -1981,10 +1981,19 @@ def _subject_text(text: Any, subjects_by_entity: dict[str, dict[str, Any]]) -> s
     value = str(text or "").strip()
     for entity_id, subject in subjects_by_entity.items():
         label = f"<Subject {int(subject['subject'])}>"
-        for alias in (entity_id, str(subject.get("name", "")).strip()):
-            if alias:
-                value = re.sub(rf"(?<!\w){re.escape(alias)}(?!\w)", label, value, flags=re.IGNORECASE)
-    return value
+        name = str(subject.get("name", "")).strip()
+        aliases = tuple(alias for alias in (entity_id, name) if alias)
+        suffix = "|".join(re.escape(alias) for alias in aliases)
+        value = re.sub(
+            rf"<Entity\s+{re.escape(label)}(?:\s+(?:{suffix}))?\s*>",
+            label,
+            value,
+            flags=re.IGNORECASE,
+        )
+        for alias in aliases:
+            value = re.sub(rf"(?<!\w){re.escape(alias)}(?!\w)", label, value, flags=re.IGNORECASE)
+        value = re.sub(rf"(?:{re.escape(label)}\s*){{2,}}", label + " ", value, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _visual_state(text: Any, subjects_by_entity: dict[str, dict[str, Any]] | None = None) -> str:
@@ -2176,11 +2185,12 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         role = "character" if kind == "character" else "visible environment or object"
         definition = f"<Subject {int(item.get('subject', picture))}> is the {role} defined by <Picture {picture}>"
         subjects.append(definition + (f", with {features}." if features else "."))
-    subjects.extend(
-        line.strip()
-        for line in str(prompt).splitlines()
-        if re.match(r"^\s*<(?:Video|Audio)\s+\d+>\s+is\b", line, re.IGNORECASE)
-    )
+    reference_definitions = {}
+    for line in str(prompt).splitlines():
+        match = re.match(r"^\s*<((?:Video|Audio)\s+\d+)>\s+is\b", line, re.IGNORECASE)
+        if match is not None:
+            reference_definitions.setdefault(match.group(1).casefold(), line.strip())
+    subjects.extend(reference_definitions.values())
     local_shots = []
     localized_descriptions = []
     for index, shot in enumerate(active, 1):

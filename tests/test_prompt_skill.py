@@ -1365,6 +1365,29 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("[Shot 1] " + expected, localized)
         self.assertNotIn("summary:\n从桃林深处", localized)
 
+    def test_subject_text_collapses_nested_and_duplicate_runtime_labels(self):
+        subjects = {
+            "asset_4": {"subject": 4, "name": "Asset4"},
+        }
+        normalized = prompt_skill._subject_text(
+            "<Entity <Subject 4> Asset4> faces <Subject 4> Asset4 and <Subject 4> <Subject 4>.",
+            subjects,
+        )
+        self.assertEqual(normalized, "<Subject 4> faces <Subject 4> and <Subject 4> .")
+        self.assertNotIn("<Entity", normalized)
+        self.assertNotIn("<Subject 4> <Subject 4>", normalized)
+
+    def test_prompt_plan_localization_deduplicates_reference_definitions(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        prompt = (
+            "subject_definitions:\n<Video 1> is the continuation source for this chunk.\n"
+            "<Video 1> is the continuation source for this chunk.\n\n"
+            "detailed_description:\nunused"
+        )
+        localized = prompt_skill.localize_prompt_from_plan(prompt, plan, frame_start=0, frame_end=22)
+        self.assertEqual(localized.count("<Video 1> is the continuation source for this chunk."), 1)
+
     def test_prompt_plan_localization_preserves_global_picture_subject_contract(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         typed_plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
