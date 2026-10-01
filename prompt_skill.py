@@ -1590,8 +1590,13 @@ def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: 
 
 def normalize_h3_chunk_dialogue(prompt: str, expected_prompt: str) -> str:
     text = str(prompt)
-    if _DIALOGUE_TAG.search(str(expected_prompt)):
-        return text
+    expected_tags = _DIALOGUE_TAG.findall(str(expected_prompt))
+    if expected_tags:
+        actual_tags = _DIALOGUE_TAG.findall(text)
+        if len(actual_tags) != len(expected_tags):
+            return text
+        expected = iter(expected_tags)
+        return _DIALOGUE_TAG.sub(lambda _match: f"<d>{next(expected)}</d>", text)
     bounds = _h3_section_bounds(text, "detailed_description:", "overall_soundscape:")
     if bounds is None or not _DIALOGUE_TAG.search(text):
         return text
