@@ -32,7 +32,7 @@ except ImportError:  # Direct worker execution.
 
 
 QWEN35_CONTEXT_TOKENS = 65536
-QWEN35_IMAGE_MIN_TOKENS = 256
+QWEN35_IMAGE_MIN_TOKENS = 1024
 QWEN35_IMAGE_MAX_TOKENS = 1344
 QWEN35_BATCH_SIZE = 2048
 QWEN35_UBATCH_SIZE = 2048
@@ -910,6 +910,7 @@ def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str]) -> list[
         print(f"[MINIMAX_H3_WORKER] analyzing asset_{index}/{len(image_urls)}", flush=True)
         text = ""
         for attempt in range(2):
+            llm.reset()
             prompt = _qwen35_asset_observation_prompt(index)
             if attempt:
                 prompt += (
@@ -992,6 +993,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         content: Any = prompt
         if prompt_skill and image_urls:
             observations = _qwen35_analyze_prompt_skill_images(llm, image_urls)
+            llm.reset()
             prompt += "\n\nAuthoritative per-asset visual observations from sequential single-image analysis:\n" + json.dumps(
                 observations, ensure_ascii=False, indent=2
             )

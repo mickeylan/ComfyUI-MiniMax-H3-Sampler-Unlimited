@@ -685,6 +685,10 @@ class Qwen35Tests(unittest.TestCase):
         class FakeLlama:
             def __init__(self):
                 self.messages = []
+                self.reset_count = 0
+
+            def reset(self):
+                self.reset_count += 1
 
             def create_chat_completion(self, **kwargs):
                 self.messages.append(kwargs["messages"])
@@ -703,6 +707,7 @@ class Qwen35Tests(unittest.TestCase):
         )
         self.assertEqual([item["asset_id"] for item in observations], ["asset_1", "asset_2"])
         self.assertEqual(len(llama.messages), 2)
+        self.assertEqual(llama.reset_count, 2)
         self.assertTrue(all(
             sum(item.get("type") == "image_url" for item in messages[0]["content"]) == 1
             for messages in llama.messages
@@ -718,6 +723,10 @@ class Qwen35Tests(unittest.TestCase):
         class FakeLlama:
             def __init__(self):
                 self.calls = []
+                self.reset_count = 0
+
+            def reset(self):
+                self.reset_count += 1
 
             def create_chat_completion(self, **kwargs):
                 self.calls.append(kwargs)
@@ -732,6 +741,7 @@ class Qwen35Tests(unittest.TestCase):
         observations = qwen35._qwen35_analyze_prompt_skill_images(llama, ("image",))
         self.assertEqual(observations[0]["observable_features"], "pink blossom forest")
         self.assertEqual(len(llama.calls), 2)
+        self.assertEqual(llama.reset_count, 2)
         correction = llama.calls[1]["messages"][0]["content"][1]["text"]
         self.assertIn("previous JSON was incomplete", correction)
 
@@ -739,6 +749,7 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
 
     def test_qwen35_multimodal_batch_contains_one_complete_image_embedding(self):
+        self.assertGreaterEqual(qwen35.QWEN35_IMAGE_MIN_TOKENS, 1024)
         self.assertGreaterEqual(qwen35.QWEN35_BATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
         self.assertGreaterEqual(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
         self.assertLessEqual(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_BATCH_SIZE)
