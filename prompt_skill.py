@@ -335,6 +335,8 @@ def _normalize_shot_intervals(value: Any, total_frames: int) -> tuple[Any, list[
     if starts[0] != 0:
         warnings.append(f"Normalized Qwen first shot start_frame {starts[0]} to timeline origin 0.")
         starts[0] = 0
+    if ends[-1] != total_frames and total_frames - ends[-1] > 17:
+        return value, warnings
     expected_ends = [*starts[1:], total_frames]
     if ends == expected_ends and all(int(item["start_frame"]) == start for item, start in zip(shots, starts)):
         return value, warnings

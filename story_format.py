@@ -220,6 +220,15 @@ def validate_storyboard_plan(value: Any, *, image_count: int, total_frames: int)
         picture = _positive_int(picture_value, f"image_subjects[{index}].picture")
         if picture < 1 or picture > image_count:
             raise ValueError(f"Picture {picture} is outside the {image_count} connected images")
+        crop = item.get("primary_view_crop", [0.0, 0.0, 1.0, 1.0])
+        if not isinstance(crop, (list, tuple)) or len(crop) != 4:
+            raise ValueError(f"image_subjects[{index}].primary_view_crop must contain four normalized coordinates")
+        try:
+            crop = [float(value) for value in crop]
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"image_subjects[{index}].primary_view_crop must contain numeric coordinates") from error
+        if not (0.0 <= crop[0] < crop[2] <= 1.0 and 0.0 <= crop[1] < crop[3] <= 1.0):
+            raise ValueError(f"image_subjects[{index}].primary_view_crop is outside normalized image bounds")
         normalized_subjects.append({
             "entity_id": str(item.get("entity_id", f"asset_{picture}")).strip(),
             "picture": picture,
@@ -227,6 +236,7 @@ def validate_storyboard_plan(value: Any, *, image_count: int, total_frames: int)
             "name": str(item.get("name", "")).strip(),
             "kind": str(item.get("kind", "")).strip().lower(),
             "observable_features": str(item.get("observable_features", item.get("description", ""))).strip(),
+            "primary_view_crop": crop,
         })
     normalized_shots = []
     previous_end = 0

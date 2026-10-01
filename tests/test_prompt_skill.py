@@ -55,6 +55,13 @@ class PromptSkillTests(unittest.TestCase):
             "warnings": [],
         }
 
+    def test_incomplete_qwen_timeline_is_not_stretched_to_target(self):
+        request = self.request()
+        value = self.result()
+        value["shots"] = [value["shots"][0]]
+        with self.assertRaisesRegex(ValueError, "complete target"):
+            prompt_skill.compile_prompt_skill(value, request)
+
     def test_source_asset_names_use_ascii_alphanumeric_only(self):
         request = prompt_skill.build_prompt_skill_request(
             "<Picture 1> is Luxury Bedroom!; <Picture 2> is 豪华寝宫。",

@@ -99,6 +99,17 @@ detailed_description: second
         with self.assertRaisesRegex(ValueError, "contiguous"):
             story_format.validate_storyboard_plan(broken, image_count=1, total_frames=124)
 
+    def test_validate_storyboard_preserves_primary_view_crop(self):
+        value = {
+            "image_subjects": [{
+                "picture": 1, "subject": 1, "name": "Hero", "kind": "character",
+                "observable_features": "black hair", "primary_view_crop": [0.25, 0.0, 0.75, 1.0],
+            }],
+            "shots": [{"shot": 1, "start_frame": 0, "end_frame": 124, "pictures": [1], "description": "Hero stands."}],
+        }
+        plan = story_format.validate_storyboard_plan(value, image_count=1, total_frames=124)
+        self.assertEqual(plan["image_subjects"][0]["primary_view_crop"], [0.25, 0.0, 0.75, 1.0])
+
     def test_compile_h3_prompt_owns_markers_and_preserves_dialogue(self):
         plan = story_format.validate_storyboard_plan(
             {
