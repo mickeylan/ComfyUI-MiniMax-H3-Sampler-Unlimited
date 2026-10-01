@@ -2007,6 +2007,23 @@ def _visual_state(text: Any, subjects_by_entity: dict[str, dict[str, Any]] | Non
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _remove_chunk_silence_constraints(text: str) -> str:
+    value = re.sub(
+        r"\s*No character vocalizes in this interval\. Every mouth and jaw remains completely still; "
+        r"no dialogue, voiceover, monologue, singing, or other human vocalization occurs\.",
+        "",
+        str(text),
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"\s*Every mouth and jaw remains still; no character vocalizes\.",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"[ \t]+", " ", value).strip()
+
+
 def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
                                 active_events: tuple[dict[str, Any], ...],
                                 subjects_by_entity: dict[str, dict[str, Any]],
@@ -2225,6 +2242,8 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         localized_descriptions.append(description)
         local_shots.append(f"{marker} {description}")
     local_description = "\n".join(local_shots)
+    if _DIALOGUE_TAG.search(local_description):
+        local_description = _remove_chunk_silence_constraints(local_description)
     chunk_speakers = {
         match.group(1)
         for description in localized_descriptions

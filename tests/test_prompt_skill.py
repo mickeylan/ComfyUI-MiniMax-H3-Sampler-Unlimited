@@ -1377,6 +1377,17 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("<Entity", normalized)
         self.assertNotIn("<Subject 4> <Subject 4>", normalized)
 
+    def test_chunk_with_dialogue_removes_conflicting_silence_constraints(self):
+        text = (
+            "[Shot 1] No character vocalizes in this interval. Every mouth and jaw remains completely still; "
+            "no dialogue, voiceover, monologue, singing, or other human vocalization occurs.\n"
+            "[Shot 2] Only <Subject 3> vocalizes. <Subject 3> (S1) says: <d>[Chinese] 继续说话</d>"
+        )
+        normalized = prompt_skill._remove_chunk_silence_constraints(text)
+        self.assertIn("<d>[Chinese] 继续说话</d>", normalized)
+        self.assertNotIn("No character vocalizes", normalized)
+        self.assertNotIn("no dialogue, voiceover", normalized)
+
     def test_prompt_plan_localization_deduplicates_reference_definitions(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)

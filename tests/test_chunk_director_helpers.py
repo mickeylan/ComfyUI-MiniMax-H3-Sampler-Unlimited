@@ -980,6 +980,14 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(keyframe["resolved_frame_index"], 0)
         self.assertIs(keyframe["latent"], boundary_latent)
 
+    def test_prompt_dialogue_text_joins_physical_fragments_exactly(self):
+        first = "<d>[Chinese] 姐姐，自从你 <scenetrans></d>"
+        second = "<d>[Chinese] <scenetrans> 跟太运宗使者比试之后，</d>"
+        self.assertEqual(
+            nodes._prompt_dialogue_text(first) + nodes._prompt_dialogue_text(second),
+            "姐姐，自从你跟太运宗使者比试之后，",
+        )
+
     def test_continuation_prompt_does_not_duplicate_existing_reference_definitions(self):
         original = (
             "subject_definitions:\n<Subject 1> is ready.\n"

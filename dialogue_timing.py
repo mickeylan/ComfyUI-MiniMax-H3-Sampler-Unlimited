@@ -21,8 +21,12 @@ def _dialogue_split_index(text: str, position: int) -> int:
         elif text[index].isspace():
             candidates.append(index)
     if candidates:
-        position = min(candidates, key=lambda index: (abs(index - position), index < position))
-    elif 0 < position < len(text):
+        candidate = min(candidates, key=lambda index: (abs(index - position), index < position))
+        if abs(candidate - position) <= 2 or position <= 2 and candidate <= 4:
+            position = candidate
+        else:
+            candidates = []
+    if not candidates and 0 < position < len(text):
         run_start = position
         while run_start > 0 and re.match(r"[\u3400-\u9fff]", text[run_start - 1]):
             run_start -= 1
@@ -74,15 +78,13 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     carries_out = text.endswith("<scenetrans>")
     text = re.sub(r"^<scenetrans>\s*|\s*<scenetrans>$", "", text)
     length = len(text)
-    first = max(0, min(length, math.floor(length * (overlap_start - source_start) / duration)))
-    last = max(first, min(length, math.floor(length * (overlap_end - source_start) / duration)))
-    if overlap_start > source_start:
-        first = _dialogue_split_index(text, first)
-    if overlap_end < source_end:
-        last = _dialogue_split_index(text, last)
-    else:
-        last = length
+    raw_first = max(0, min(length, math.floor(length * (overlap_start - source_start) / duration)))
+    raw_last = max(raw_first, min(length, math.floor(length * (overlap_end - source_start) / duration)))
+    first = _dialogue_split_index(text, raw_first) if overlap_start > source_start else raw_first
+    last = _dialogue_split_index(text, raw_last) if overlap_end < source_end else length
     last = max(first, last)
+    if overlap_start <= source_start and last <= 2 and overlap_end < source_end:
+        return ""
     fragment = text[first:last]
     if not fragment:
         return ""

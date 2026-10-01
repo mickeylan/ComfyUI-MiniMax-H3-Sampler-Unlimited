@@ -1677,6 +1677,15 @@ def _chunk_timeline_audio_context(previous_audio, previous_frame_count, boundary
     return _timeline_audio_context(previous_audio, previous_frame_count, boundary_frames)
 
 
+def _prompt_dialogue_text(prompt):
+    parts = []
+    for value in re.findall(r"<d>(.*?)</d>", str(prompt), re.IGNORECASE | re.DOTALL):
+        value = re.sub(r"^\s*\[[^]]+\]\s*", "", value)
+        value = re.sub(r"^<scenetrans>\s*|\s*<scenetrans>$", "", value).strip()
+        parts.append(value)
+    return "".join(parts)
+
+
 def _prompt_has_dialogue(prompt):
     return bool(re.search(r"<d>.*?</d>", str(prompt), re.IGNORECASE | re.DOTALL))
 
@@ -3367,6 +3376,13 @@ class HREndlessSampler(SamplerCustomAdvanced):
                 localized_prompts.append((localized, _debug_chunk_prompt(index, chunk, content_start, localized)))
                 previous_chunk_speakers = prompt_plan_speakers(
                     typed_prompt_plan, content_start, chunk["frame_end"]
+                )
+            expected_dialogue = _prompt_dialogue_text(semantic_prompt)
+            projected_dialogue = "".join(_prompt_dialogue_text(item[0]) for item in localized_prompts)
+            if projected_dialogue != expected_dialogue:
+                raise ValueError(
+                    "H3 physical chunk projection did not preserve the complete source dialogue: "
+                    f"expected {expected_dialogue!r}, got {projected_dialogue!r}"
                 )
             planned_prompts = localized_prompts
         if debug:

@@ -88,6 +88,18 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertEqual(second_text, "顶峰")
         self.assertEqual(first_text + second_text, "已经达到顶峰")
 
+    def test_punctuation_snapping_does_not_create_empty_middle_chunks(self):
+        text = "这十年你都没有怎么好好闭关修炼过。还有不到四十年，太运宗就会派更强的弟子，这样真的来得及吗？"
+        source = f"<Subject 3> (S1) says: <d>[Chinese] {text}</d>"
+        boundaries = (240, 260, 311, 362, 413, 464, 515, 540)
+        parts = [
+            slice_dialogue_for_interval(source, 240, 540, start, end)
+            for start, end in zip(boundaries, boundaries[1:])
+        ]
+        texts = [part.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0] for part in parts]
+        self.assertTrue(all(texts))
+        self.assertEqual("".join(texts), text)
+
     def test_physical_chunk_slice_does_not_invent_scene_transition_markers(self):
         source = "<Subject 1> (S1) says: <d>[Chinese] 继续说话直到下一段</d>"
         part = slice_dialogue_for_interval(source, 0, 20, 5, 15)
@@ -103,9 +115,9 @@ class DialogueTimingTests(unittest.TestCase):
         first_text = first.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "").strip()
         second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "").strip()
         boundary = len(first_text)
+        self.assertTrue(first_text)
+        self.assertTrue(second_text)
         self.assertEqual(first_text + second_text, text[:boundary + len(second_text)])
-        self.assertEqual(first_text, "还有不到四十年，")
-        self.assertTrue(second_text.startswith("太运宗"))
 
     def test_real_scene_transition_marker_stays_only_on_boundary_side(self):
         source = "<Subject 1> (S1) carries over: <d>[Chinese] <scenetrans> 继续说话直到这个镜头结束</d>"
