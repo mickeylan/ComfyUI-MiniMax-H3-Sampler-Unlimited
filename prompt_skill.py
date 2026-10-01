@@ -147,6 +147,7 @@ def prompt_skill_messages(request: dict[str, Any]) -> tuple[str, str]:
     total_frames = int(request["total_frames"])
     fps = float(request["fps"])
     continuity = str(request.get("continuity_mode", "balanced"))
+    language = "Chinese" if request.get("prompt_lang", "zh") == "zh" else "English"
     source_contract = {
         str(item["entity_id"]): item
         for item in request.get("source_image_contract", ())
@@ -170,7 +171,7 @@ def prompt_skill_messages(request: dict[str, Any]) -> tuple[str, str]:
     ) or "- no explicit source binding"
     system = f"""You are an HR Endless Sampler prompt skill compiler for MiniMax H3.
 Convert the user's ordinary story into a strict structured shot plan. Return exactly one JSON object, no markdown.
-Write every prose field in English. Preserve the original language only for dialogue, lyrics, and text visibly present in the scene; keep H3 labels and required field names exact.
+Write descriptions in {language}, while preserving dialogue, lyrics, visible text, H3 labels, and required field names exactly.
 
 Hard rules:
 - Classify every connected asset as kind=character, scene, or prop in image_subjects, keyed only by its supplied entity_id.
@@ -186,7 +187,7 @@ Hard rules:
 - When one utterance crosses a shot cut, both adjoining fragments belong to the same uninterrupted vocal event. Do not restart it with says/asks/replies, do not insert a pause or new breath, and never begin a later fragment with isolated punctuation. The compiler adds the required H3 <scenetrans> markers.
 - The numbered mandatory spoken-line list is chronological and authoritative. dialogues across shots and within each shot must follow that exact global order; never swap speakers or reorder fragments for dramatic effect.
 - Each dialogue contains id, kind, speaker, speaker_id, language, text, and delivery. kind is dialogue, monologue, or voiceover. Use stable speaker IDs S1, S2, ... across all shots.
-- dialogue.text contains only the exact spoken words without quotation marks or <d> tags. dialogue.language names the spoken language, regardless of prompt_lang. All surrounding speaker, delivery, action, camera, environment, soundscape, music, summary, retention, state, and event prose stays in English.
+- dialogue.text contains only the exact spoken words without quotation marks or <d> tags. dialogue.language names the spoken language, regardless of prompt_lang.
 - Visible referenced speakers use speaker="asset_N". That entity must be classified as kind=character and included in the same shot's pictures list. A scene or prop can own a visual event but can never speak.
 - For kind=voiceover, the compiled prompt will state that the corresponding on-screen speaker's lips remain completely closed.
 - kind=dialogue is spoken to another character; kind=monologue is audible self-directed speech with visible lip movement; kind=voiceover is off-screen narration or internal narration with no lip movement.
@@ -1548,23 +1549,12 @@ def validate_h3_chunk_prompt(prompt: str, plan: dict[str, Any], *, frame_start: 
 
 def normalize_h3_chunk_dialogue(prompt: str, expected_prompt: str) -> str:
     text = str(prompt)
+    if _DIALOGUE_TAG.search(str(expected_prompt)):
+        return text
     bounds = _h3_section_bounds(text, "detailed_description:", "overall_soundscape:")
-    if bounds is None:
+    if bounds is None or not _DIALOGUE_TAG.search(text):
         return text
     start, end = bounds
-    expected = str(expected_prompt)
-    if _DIALOGUE_TAG.search(expected):
-        expected_bounds = _h3_section_bounds(expected, "detailed_description:", "overall_soundscape:")
-        if expected_bounds is None:
-            return text
-        expected_start, expected_end = expected_bounds
-        expected_description = expected[
-            expected_start + len("detailed_description:"):expected_end
-        ].strip()
-        replacement = "detailed_description:\n" + expected_description + "\n\n"
-        return text[:start] + replacement + text[end:]
-    if not _DIALOGUE_TAG.search(text):
-        return text
     description = text[start + len("detailed_description:"):end]
     description = re.sub(
         r"(?:<Subject\s+\d+>\s*\(S\d+\)\s*)?(?:says?|asks?|replies?|answers?|whispers?|shouts?|continues?|说|说道|问|询问|回答|答道|低语|喊|喊道)\s*[:：]?\s*<d>.*?</d>",
@@ -1582,44 +1572,6 @@ def normalize_h3_chunk_dialogue(prompt: str, expected_prompt: str) -> str:
         description = (description + "\n" + silence).strip()
     replacement = "detailed_description:\n" + description + "\n\n"
     return text[:start] + replacement + text[end:]
-
-
-def h3_dialogue_claims(prompt: str) -> tuple[tuple[str, str, str], ...]:
-    description = _description_text(str(prompt))
-    pattern = re.compile(
-        r"(<Subject\s+\d+>)\s*\((S\d+)\).*?<d>(.*?)</d>",
-        re.IGNORECASE | re.DOTALL,
-    )
-    return tuple(
-        (subject, speaker_id.upper(), re.sub(r"\s+", " ", text).strip())
-        for subject, speaker_id, text in pattern.findall(description)
-    )
-
-
-def validate_h3_director_speaker_subset(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int) -> None:
-    allowed = []
-    for shot in plan.get("shots", ()):
-        for dialogue in shot.get("dialogues", ()):
-            start = int(dialogue.get("start_frame", shot["start_frame"]))
-            end = int(dialogue.get("end_frame", shot["end_frame"]))
-            if start >= frame_end or end <= frame_start:
-                continue
-            allowed.append((
-                str(dialogue.get("speaker", "")).casefold(),
-                str(dialogue.get("speaker_id", "")).upper(),
-                re.sub(r"^<scenetrans>\s*|\s*<scenetrans>$", "", str(dialogue.get("text", "")).strip()),
-            ))
-    for subject, speaker_id, tagged in h3_dialogue_claims(prompt):
-        text = re.sub(r"^\s*\[[^]]+\]\s*", "", tagged)
-        text = re.sub(r"^<scenetrans>\s*|\s*<scenetrans>$", "", text).strip()
-        if not any(
-            subject.casefold() == expected_subject and speaker_id == expected_id and text in full_text
-            for expected_subject, expected_id, full_text in allowed
-        ):
-            raise ValueError(
-                "H3 chunk director assigned dialogue to an unauthorized speaker: "
-                f"{subject} ({speaker_id}) <d>{tagged}</d>"
-            )
 
 
 def validate_h3_chunk_dialogue_contract(prompt: str, expected_prompt: str) -> None:
@@ -2103,11 +2055,6 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
                 ", ".join(dict.fromkeys(silent)) + " keep their lips and jaws completely still."
                 if silent else "no other character vocalizes."
             ))
-        parts.append(
-            f"Keep {speaker} clearly visible on screen throughout this exact dialogue fragment, with that subject's "
-            "lips and jaw visibly synchronized to every audible word. This mapped character dialogue is on-screen, "
-            "never off-screen voiceover. Do not transfer, echo, or visually mouth any word through another character."
-        )
         if first_fragment:
             parts.append(
                 f"{speaker} is already clearly visible on screen with closed lips before the first audible word; establish this speaker visually, then begin the line."
@@ -2242,11 +2189,7 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
         if int(item.get("picture", 0) or 0) in active_pictures
     ]
     if chunk_speakers:
-        visible_speakers = " and ".join(sorted(chunk_speakers))
-        current_content = (
-            f"only {visible_speakers} vocalizes the scripted on-screen dialogue with clearly visible synchronized "
-            "lip and jaw movement; every other character remains silent and must not mouth or carry any word"
-        )
+        current_content = " and ".join(sorted(chunk_speakers)) + " carry the current spoken passage"
     elif summary_body:
         current_content = summary_body
     else:

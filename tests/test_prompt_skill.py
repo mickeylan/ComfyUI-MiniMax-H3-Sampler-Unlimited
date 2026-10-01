@@ -21,18 +21,6 @@ class PromptSkillTests(unittest.TestCase):
             continuity_mode=continuity_mode, prompt_lang="en",
         )
 
-    def test_prompt_skill_uses_english_prose_with_source_language_dialogue(self):
-        request = prompt_skill.build_prompt_skill_request(
-            '<Subject 1> (S1) says: <d>[Chinese] 保持原句。</d>',
-            duration_seconds=2.0, fps=24.0, image_count=1, style="cinematic",
-            shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
-        )
-        system, user = prompt_skill.prompt_skill_messages(request)
-        self.assertIn("Write every prose field in English", system)
-        self.assertIn("original language only for dialogue, lyrics, and text visibly present", system)
-        self.assertNotIn("Write descriptions in Chinese", system)
-        self.assertIn("保持原句。", user)
-
     def result(self):
         return {
             "image_subjects": [{"entity_id": "asset_1", "kind": "character", "name": "Hero", "observable_features": "black hair"}],
@@ -1734,27 +1722,10 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("No character vocalizes in this interval", normalized)
         prompt_skill.validate_h3_chunk_dialogue_contract(normalized, expected)
 
-    def test_chunk_with_dialogue_restores_complete_typed_description(self):
-        expected = (
-            "detailed_description:\nThe planned framing continues. "
-            "<Subject 1> (S1) says: <d>[Chinese] <scenetrans> 这十年</d>\n\n"
-            "overall_soundscape:\nWind."
-        )
-        directed = (
-            "detailed_description:\nThe director changes the framing. "
-            "<Subject 1> (S1) continues: <d>[Chinese] 从你跟太运宗使者比试之后，</d> "
-            "<Subject 1> (S1) says: <d>[Chinese] <scenetrans> 这十年</d>\n\n"
-            "overall_soundscape:\nWind."
-        )
-        normalized = prompt_skill.normalize_h3_chunk_dialogue(directed, expected)
-        self.assertNotIn("从你跟太运宗使者比试之后", normalized)
-        self.assertNotIn("The director changes the framing", normalized)
-        self.assertIn("The planned framing continues", normalized)
-        self.assertEqual(
-            prompt_skill._DIALOGUE_TAG.findall(normalized),
-            ["[Chinese] <scenetrans> 这十年"],
-        )
-        prompt_skill.validate_h3_chunk_dialogue_contract(normalized, expected)
+    def test_chunk_with_dialogue_does_not_silently_rewrite_director_words(self):
+        expected = "detailed_description:\n<Subject 1> (S1) says: <d>[English] Stay.</d>\n\noverall_soundscape:\nWind."
+        directed = expected.replace("Stay.", "Go.")
+        self.assertEqual(prompt_skill.normalize_h3_chunk_dialogue(directed, expected), directed)
 
     def test_director_dialogue_contract_rejects_invented_or_missing_words(self):
         expected = "detailed_description:\n<Subject 1> (S1) says: <d>[English] Stay.</d>"
@@ -1765,20 +1736,6 @@ class PromptSkillTests(unittest.TestCase):
             )
         silent = "detailed_description:\nNo character vocalizes in this interval."
         prompt_skill.validate_h3_chunk_dialogue_contract(silent, silent)
-
-    def test_mixed_speaker_director_contract_checks_subject_and_voice_id(self):
-        plan = {"shots": [{
-            "start_frame": 0, "end_frame": 80,
-            "dialogues": [
-                {"speaker": "<Subject 3>", "speaker_id": "S1", "text": "这样真的来得及吗？", "start_frame": 0, "end_frame": 40},
-                {"speaker": "<Subject 4>", "speaker_id": "S2", "text": "我现在功力已经达到顶峰。", "start_frame": 40, "end_frame": 80},
-            ],
-        }]}
-        correct = "detailed_description:\n<Subject 3> (S1) says: <d>[Chinese] 这样真的来得及吗？</d>"
-        prompt_skill.validate_h3_director_speaker_subset(correct, plan, frame_start=0, frame_end=80)
-        stolen = "detailed_description:\n<Subject 3> (S1) says: <d>[Chinese] 我现在功力已经达到顶峰。</d>"
-        with self.assertRaisesRegex(ValueError, "unauthorized speaker"):
-            prompt_skill.validate_h3_director_speaker_subset(stolen, plan, frame_start=0, frame_end=80)
 
     def test_localized_sections_do_not_reintroduce_future_action_or_internal_ids(self):
         plan = {
@@ -1829,12 +1786,6 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("At 2.000 seconds, begin a strict speaker handoff: only <Subject 2> vocalizes", localized)
         self.assertNotIn("Only <Subject 1> vocalizes the current dialogue", localized)
         self.assertNotIn("Only <Subject 2> vocalizes the current dialogue", localized)
-        self.assertEqual(localized.count("never off-screen voiceover"), 2)
-        self.assertIn("Keep <Subject 1> clearly visible on screen throughout this exact dialogue fragment", localized)
-        self.assertIn("Keep <Subject 2> clearly visible on screen throughout this exact dialogue fragment", localized)
-        summary = localized.split("summary:\n", 1)[1].split("\n\nretention_analysis:", 1)[0]
-        self.assertIn("scripted on-screen dialogue", summary)
-        self.assertNotIn("carry the current spoken passage", summary)
 
     def test_long_dialogue_is_sliced_once_across_physical_chunks(self):
         text = "姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗"
