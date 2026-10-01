@@ -34,8 +34,8 @@ except ImportError:  # Direct worker execution.
 QWEN35_CONTEXT_TOKENS = 65536
 QWEN35_IMAGE_MIN_TOKENS = 256
 QWEN35_IMAGE_MAX_TOKENS = 1344
-QWEN35_BATCH_SIZE = 256
-QWEN35_UBATCH_SIZE = 256
+QWEN35_BATCH_SIZE = 2048
+QWEN35_UBATCH_SIZE = 2048
 QWEN35_CHUNK_RESPONSE_TOKENS = 8192
 QWEN35_TIMING_RESPONSE_TOKENS = 32768
 QWEN35_PROMPT_SKILL_RESPONSE_TOKENS = 32768
@@ -617,19 +617,6 @@ def _image_url(frame: torch.Tensor) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
 
-def _image_url_diagnostics(image_urls: Sequence[str]) -> str:
-    diagnostics = []
-    for index, image_url in enumerate(image_urls, 1):
-        _prefix, separator, encoded = str(image_url).partition(",")
-        try:
-            payload = base64.b64decode(encoded, validate=True) if separator else b""
-            with Image.open(io.BytesIO(payload)) as image:
-                diagnostics.append(f"{index}:{image.width}x{image.height}/{len(payload)}B")
-        except (ValueError, OSError):
-            diagnostics.append(f"{index}:invalid")
-    return ",".join(diagnostics) or "none"
-
-
 def _capture_observation_images(destination: Path, chunk_number: int,
                                 frame_numbers: Sequence[int], image_urls: Sequence[str]) -> None:
     destination.mkdir(parents=True, exist_ok=True)
@@ -894,160 +881,14 @@ def _prompt_skill_result_object(value: Any) -> dict[str, Any]:
     raise ValueError(f"storyboard response needs image_subjects and shots; returned top-level keys: {keys or 'none'}")
 
 
-def _qwen35_asset_observation_prompt(asset_index: int) -> str:
-    return (
-        f"Analyze only the attached reference image for asset_{asset_index}. "
-        "Return one compact JSON object with keys asset_id, kind, observable_features, and primary_view_crop. "
-        f"asset_id must be exactly asset_{asset_index}. kind must be character, scene, or prop. "
-        "observable_features must describe only intrinsic identity, face, hair, body, clothing, environment, architecture, lighting, "
-        "or object details in English. Ignore and never mention image layout, multiple views, turnaround presentation, panels, collage, "
-        "character-sheet formatting, studio backdrop, white background, borders, labels, or the fact that this is a reference image. "
-        "primary_view_crop must be [x0,y0,x1,y1] normalized to 0..1. For a character sheet, tightly select exactly one best frontal or "
-        "three-quarter identity view without neighboring panels; for a normal character image, scene, or prop use [0,0,1,1]."
-    )
-
-
-def _qwen35_analyze_prompt_skill_images(llm, image_urls: Sequence[str], t0: float) -> list[dict[str, str]]:
-    observations = []
-    for index, image_url in enumerate(image_urls, 1):
-        started = time.monotonic()
-        print(
-            f"[MINIMAX_H3_WORKER] analyzing asset_{index}/{len(image_urls)} "
-            f"image_info={_image_url_diagnostics((image_url,))} t={started-t0:.1f}s",
-            flush=True,
-        )
-        response = llm.create_chat_completion(
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                    {"type": "text", "text": _qwen35_asset_observation_prompt(index)},
-                ],
-            }],
-            response_format={"type": "json_object"},
-            temperature=0.1, top_p=0.9, top_k=40,
-            max_tokens=1024, reasoning_budget=0,
-        )
-        choice = response.get("choices", [{}])[0]
-        message = choice.get("message", {})
-        usage = response.get("usage", {})
-        text = str(message.get("content") or message.get("reasoning_content") or "")
-        value, _raw = _extract_json(text)
-        if not isinstance(value, dict):
-            raise Qwen35ObservationError(f"Qwen3.5 returned no usable observation for asset_{index}", raw_json=text)
-        kind = str(value.get("kind", "")).strip().lower()
-        features = _qwen35_intrinsic_features(value.get("observable_features", value.get("description", "")))
-        if kind not in {"character", "scene", "prop"} or not features:
-            raise Qwen35ObservationError(f"Qwen3.5 returned an incomplete observation for asset_{index}", raw_json=text)
-        crop = value.get("primary_view_crop", [0.0, 0.0, 1.0, 1.0])
-        if not isinstance(crop, (list, tuple)) or len(crop) != 4:
-            raise Qwen35ObservationError(f"Qwen3.5 returned an invalid primary-view crop for asset_{index}", raw_json=text)
-        try:
-            x0, y0, x1, y1 = (float(item) for item in crop)
-        except (TypeError, ValueError) as error:
-            raise Qwen35ObservationError(f"Qwen3.5 returned an invalid primary-view crop for asset_{index}", raw_json=text) from error
-        if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
-            raise Qwen35ObservationError(f"Qwen3.5 returned an invalid primary-view crop for asset_{index}", raw_json=text)
-        observations.append({
-            "asset_id": f"asset_{index}", "kind": kind, "observable_features": features,
-            "primary_view_crop": [x0, y0, x1, y1] if kind == "character" else [0.0, 0.0, 1.0, 1.0],
-        })
-        print(
-            f"[MINIMAX_H3_WORKER] asset_{index} analyzed kind={kind} chars={len(features)} "
-            f"finish={choice.get('finish_reason', 'unknown')} "
-            f"prompt_tokens={usage.get('prompt_tokens', 'unknown')} "
-            f"completion_tokens={usage.get('completion_tokens', 'unknown')} "
-            f"elapsed={time.monotonic()-started:.1f}s total={time.monotonic()-t0:.1f}s",
-            flush=True,
-        )
-    return observations
-
-
-_QWEN35_PRESENTATION_FEATURE = re.compile(
-    r"\b(?:four[- ]?view|multi[- ]?view|multiple views?|turnaround|reference sheet|character sheet|character card|"
-    r"split screen|panels?|collage|white (?:studio )?background|white backdrop|studio backdrop|plain white background|"
-    r"front view|rear view|back view|side view|profile view|reference image)\b",
-    re.IGNORECASE,
-)
-
-
-def _qwen35_intrinsic_features(value: Any) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
-    parts = re.split(r"(?<=[.!?;])\s+|\s*[|]\s*", text)
-    intrinsic = [part.strip(" ,;.") for part in parts if part.strip() and not _QWEN35_PRESENTATION_FEATURE.search(part)]
-    return "; ".join(dict.fromkeys(part for part in intrinsic if part))
-
-
-def _validate_qwen35_compiled_scene_prompt(prompt: str) -> None:
-    polluted = _QWEN35_PRESENTATION_FEATURE.search(str(prompt))
-    if polluted:
-        raise Qwen35ObservationError(
-            f"Qwen3.5 compiled prompt still contains reference-presentation artifact {polluted.group(0)!r}"
-        )
-
-
-def _qwen35_ground_prompt_skill_scenes(value: dict[str, Any], observations: Sequence[dict[str, str]]) -> dict[str, Any]:
-    scene_ids = tuple(item["asset_id"] for item in observations if item.get("kind") == "scene")
-    if not scene_ids:
-        return value
-    observation_by_id = {str(item["asset_id"]): item for item in observations}
-    result = dict(value)
-    subjects = []
-    for source_subject in value.get("image_subjects", ()):
-        if not isinstance(source_subject, dict):
-            subjects.append(source_subject)
-            continue
-        subject = dict(source_subject)
-        entity_id = str(subject.get("entity_id", "")).strip()
-        observation = observation_by_id.get(entity_id)
-        if observation is not None:
-            subject["kind"] = observation["kind"]
-            subject["observable_features"] = observation["observable_features"]
-            subject["primary_view_crop"] = observation.get("primary_view_crop", [0.0, 0.0, 1.0, 1.0])
-        subjects.append(subject)
-    result["image_subjects"] = subjects
-    shots = []
-    for index, source_shot in enumerate(value.get("shots", ()), 1):
-        if not isinstance(source_shot, dict):
-            shots.append(source_shot)
-            continue
-        shot = dict(source_shot)
-        pictures = [str(item).strip() for item in shot.get("pictures", ())]
-        active_scenes = [entity_id for entity_id in pictures if entity_id in scene_ids]
-        if not active_scenes:
-            if len(scene_ids) != 1:
-                raise Qwen35ObservationError(
-                    f"Qwen3.5 prompt plan shot {index} does not select a scene asset from {list(scene_ids)}"
-                )
-            pictures.insert(0, scene_ids[0])
-        active_scenes = [entity_id for entity_id in pictures if entity_id in scene_ids]
-        shot["pictures"] = list(dict.fromkeys(pictures))
-        scene_anchor = ", ".join(f"<Entity {entity_id}>" for entity_id in active_scenes)
-        opening = str(shot.get("start_state", "")).strip()
-        anchor = (
-            f"The shot takes place inside the environment shown by {scene_anchor}; its architecture, spatial layout, "
-            "composition, lighting, color palette, and background remain the positive visual ground"
-        )
-        shot["start_state"] = f"{anchor}. {opening}".strip()
-        shot["forbidden_replays"] = [
-            str(item).strip() for item in shot.get("forbidden_replays", ())
-            if str(item).strip() and re.fullmatch(r"S\d+\.[VD]\d+", str(item).strip(), re.IGNORECASE) is None
-        ]
-        shots.append(shot)
-    result["shots"] = shots
-    return result
-
-
 def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     t0 = time.monotonic()
     try:
-        import llama_cpp
         from llama_cpp import Llama
-        from llama_cpp.llama_chat_format import Qwen35ChatHandler
+        from llama_cpp.llama_chat_format import MTMDChatHandler
     except ImportError as error:
         raise Qwen35DependencyError("Qwen3.5 requires llama-cpp-python with MTMD support") from error
 
-    runtime_version = str(getattr(llama_cpp, "__version__", "unknown"))
     operation = request["operation"]
     if operation not in {"timing_plan", "chunk", "storyboard", "jzl_storyboard", "external_video_continuation", "prompt_skill_compile"}:
         raise Qwen35ObservationError(f"Unknown Qwen operation: {operation}")
@@ -1056,31 +897,25 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
     jzl_storyboard = operation == "jzl_storyboard"
     external = operation == "external_video_continuation"
     prompt_skill = operation == "prompt_skill_compile"
-    handler = None if timing else Qwen35ChatHandler(
+    handler = None if timing else MTMDChatHandler(
         clip_model_path=request["director_mmproj_path"],
-        enable_thinking=False,
         image_min_tokens=QWEN35_IMAGE_MIN_TOKENS,
         image_max_tokens=QWEN35_IMAGE_MAX_TOKENS,
+        batch_max_tokens=QWEN35_BATCH_SIZE,
         verbose=False,
+        use_gpu=True,
     )
-    print(
-        f"[MINIMAX_H3_WORKER] Qwen35ChatHandler done enable_thinking=false t={time.monotonic()-t0:.1f}s",
-        flush=True,
-    )
+    print(f"[MINIMAX_H3_WORKER] MTMDChatHandler(mmgrpo) done t={time.monotonic()-t0:.1f}s", flush=True)
     print(f"[MINIMAX_H3_WORKER] loading GGUF t={time.monotonic()-t0:.1f}s", flush=True)
     context_tokens = int(request.get("director_n_ctx", QWEN35_CONTEXT_TOKENS))
     if context_tokens < QWEN35_CONTEXT_TOKENS or context_tokens > 262144:
         raise Qwen35ObservationError("Qwen3.5 context must be between 65536 and 262144 tokens")
     llm = Llama(
-        request["director_model_path"], chat_handler=handler, n_gpu_layers=-1,
-        n_ctx=context_tokens, verbose=False,
+        model_path=request["director_model_path"], chat_handler=handler, n_gpu_layers=-1,
+        n_ctx=context_tokens, n_batch=QWEN35_BATCH_SIZE, n_ubatch=QWEN35_UBATCH_SIZE,
+        flash_attn=True, type_k=8, type_v=8, swa_full=False, verbose=False,
     )
-    print(
-        f"[MINIMAX_H3_WORKER] GGUF loaded model={Path(request['director_model_path']).name} "
-        f"runtime=llama-cpp-python-{runtime_version} n_ctx={context_tokens} "
-        f"elapsed={time.monotonic()-t0:.1f}s",
-        flush=True,
-    )
+    print(f"[MINIMAX_H3_WORKER] GGUF loaded t={time.monotonic()-t0:.1f}s", flush=True)
     try:
         if timing:
             system, prompt = _timing_messages(request)
@@ -1094,49 +929,11 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             system, prompt = prompt_skill_messages(request)
         else:
             system, prompt = _chunk_messages(request)
-        image_urls = request.get("image_urls", ())
-        observations: list[dict[str, str]] = []
         content: Any = prompt
-        if prompt_skill and image_urls:
-            visual_started = time.monotonic()
-            print(
-                f"[MINIMAX_H3_WORKER] sequential visual analysis starting assets={len(image_urls)} "
-                f"t={visual_started-t0:.1f}s",
-                flush=True,
-            )
-            observations = _qwen35_analyze_prompt_skill_images(llm, image_urls, t0)
-            print(
-                f"[MINIMAX_H3_WORKER] sequential visual analysis done assets={len(observations)} "
-                f"elapsed={time.monotonic()-visual_started:.1f}s total={time.monotonic()-t0:.1f}s",
-                flush=True,
-            )
-            prompt += "\n\nAuthoritative per-asset visual observations from sequential single-image analysis:\n" + json.dumps(
-                observations, ensure_ascii=False, indent=2
-            )
-            prompt += (
-                "\n\nQwen3.5 reference rendering contract:\n"
-                "- A character image is identity-and-clothing evidence only, never a target frame or background.\n"
-                "- Every shot must select a scene asset in pictures when scene observations are available.\n"
-                "- Ground environment, composition, lighting, and background in that scene asset.\n"
-                "- Never render a turnaround, four-view layout, reference sheet, split screen, panel, collage, "
-                "character card, white studio background, or any reference image itself.\n"
-                "- Render one continuous cinematic scene only."
-            )
-            content = prompt
-        elif not timing:
-            content = [{"type": "image_url", "image_url": {"url": url}} for url in image_urls]
+        if not timing:
+            content = [{"type": "image_url", "image_url": {"url": url}} for url in request.get("image_urls", ())]
             content.append({"type": "text", "text": prompt})
-        print(
-            f"[MINIMAX_H3_WORKER] starting final LLM op={operation} "
-            f"media_images={0 if prompt_skill else len(image_urls)} analyzed_assets={len(image_urls) if prompt_skill else 0} "
-            f"image_info={_image_url_diagnostics(image_urls)} system_chars={len(system)} prompt_chars={len(prompt)} "
-            f"n_ctx={context_tokens} batching=runtime-defaults "
-            f"runtime=llama-cpp-python-{runtime_version} "
-            f"model={Path(request['director_model_path']).name} mmproj={Path(request['director_mmproj_path']).name} "
-            f"t={time.monotonic()-t0:.1f}s",
-            flush=True,
-        )
-        inference_started = time.monotonic()
+        print(f"[MINIMAX_H3_WORKER] starting LLM streaming op={operation} images={len(request.get('image_urls',[]))} t={time.monotonic()-t0:.1f}s", flush=True)
         response = llm.create_chat_completion(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
             response_format=None if jzl_storyboard else {"type": "json_object"},
@@ -1148,15 +945,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
         )
         message = response["choices"][0]["message"]
         text = str(message.get("content") or message.get("reasoning_content") or "")
-        choice = response.get("choices", [{}])[0]
-        usage = response.get("usage", {})
-        print(
-            f"[MINIMAX_H3_WORKER] LLM done inference={time.monotonic()-inference_started:.1f}s "
-            f"chars={len(text)} finish={choice.get('finish_reason', 'unknown')} "
-            f"prompt_tokens={usage.get('prompt_tokens', 'unknown')} completion_tokens={usage.get('completion_tokens', 'unknown')} "
-            f"total={time.monotonic()-t0:.1f}s",
-            flush=True,
-        )
+        print(f"[MINIMAX_H3_WORKER] streaming done chars={len(text)} t={time.monotonic()-t0:.1f}s", flush=True)
         if jzl_storyboard:
             return {"jzl_storyboard": text}
         value, raw = _extract_json(text)
@@ -1176,12 +965,7 @@ def _complete_qwen35(request: dict[str, Any]) -> dict[str, Any]:
             return {"external_continuation": _payload(_external_result(value, raw, system, prompt))}
         if prompt_skill:
             try:
-                plan_value = _qwen35_ground_prompt_skill_scenes(_prompt_skill_result_object(value), observations)
-                request["qwen35_scene_entity_ids"] = [
-                    item["asset_id"] for item in observations if item.get("kind") == "scene"
-                ]
-                compiled = compile_prompt_skill(plan_value, request)
-                _validate_qwen35_compiled_scene_prompt(compiled["prompt"])
+                compiled = compile_prompt_skill(_prompt_skill_result_object(value), request)
             except ValueError as error:
                 raise Qwen35ObservationError(str(error), raw_json=json.dumps(value, ensure_ascii=False)) from error
             return {"prompt_skill_compile": compiled}
@@ -1364,68 +1148,12 @@ def _from_payload(value: dict[str, Any], timing: bool, external: bool = False):
     return QwenShotTimingPlan(value["confidence"], value["analysis"], shots, table, value["raw_json"], value.get("system_prompt", ""), value.get("planning_prompt", ""))
 
 
-def _stream_prompt_skill_worker(command, payload_text, *, cwd, env, timeout):
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env,
-    )
-    started = time.monotonic()
-    next_heartbeat = started + 30.0
-    input_text = payload_text
-    stdout = ""
-    stderr = ""
-    while True:
-        remaining = timeout - (time.monotonic() - started)
-        if remaining <= 0:
-            process.kill()
-            final_stdout, final_stderr = process.communicate()
-            stdout = final_stdout or stdout
-            stderr = final_stderr or stderr
-            progress = [line.strip() for line in stdout.splitlines() if line.strip()]
-            stage = progress[-1] if progress else "worker produced no progress output"
-            detail = [line.strip() for line in stderr.splitlines() if line.strip()]
-            if detail:
-                stage += f"; stderr: {detail[-1]}"
-            raise DirectorWorkerError(
-                f"Qwen worker timed out after {timeout}s (op=prompt_skill_compile); last progress: {stage}"
-            )
-        try:
-            stdout, stderr = process.communicate(input=input_text, timeout=min(2.0, remaining))
-            break
-        except subprocess.TimeoutExpired as error:
-            input_text = None
-            if error.output is not None:
-                stdout = error.output.decode("utf-8", errors="replace") if isinstance(error.output, bytes) else error.output
-            if error.stderr is not None:
-                stderr = error.stderr.decode("utf-8", errors="replace") if isinstance(error.stderr, bytes) else error.stderr
-            now = time.monotonic()
-            if now >= next_heartbeat:
-                progress = [line.strip() for line in stdout.splitlines() if line.strip()]
-                stage = progress[-1] if progress else "worker startup"
-                print(
-                    f"[MINIMAX_H3_WORKER] heartbeat pid={process.pid} elapsed={now-started:.0f}s "
-                    f"op=prompt_skill_compile stage={stage}",
-                    flush=True,
-                )
-                next_heartbeat = now + 30.0
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-
-
-def _worker_path_for_payload(module_path: Path, payload: dict[str, Any]) -> Path:
-    if payload.get("director_backend") in {"qwen3.6", "qwen3.8"}:
-        return module_path.with_name("qwen38_worker.py")
-    if payload.get("operation") == "prompt_skill_compile":
-        return module_path.with_name("qwen35_worker_entry.py")
-    return module_path
-
-
 def _run_worker_once(payload: dict[str, Any], *, timeout: int | None = None) -> tuple[subprocess.CompletedProcess, dict[str, Any] | None]:
     if timeout is None:
         timeout = 600 if payload.get("operation") == "chunk" else 300
     print(f"[MINIMAX_H3_WORKER] launching worker timeout={timeout}s op={payload.get('operation')}", flush=True)
     module_path = Path(__file__).resolve()
-    worker_path = _worker_path_for_payload(module_path, payload)
+    worker_path = module_path.with_name("qwen38_worker.py") if payload.get("director_backend") in {"qwen3.6", "qwen3.8"} else module_path
     worker_directory = str(module_path.parent)
     python_path = os.environ.get("PYTHONPATH", "")
     worker_env = {
@@ -1433,23 +1161,16 @@ def _run_worker_once(payload: dict[str, Any], *, timeout: int | None = None) -> 
         "PYTHONIOENCODING": "utf-8",
         "PYTHONPATH": worker_directory + (os.pathsep + python_path if python_path else ""),
     }
-    command = [sys.executable, "-u", str(worker_path), "--worker"]
     try:
-        if payload.get("operation") == "prompt_skill_compile":
-            process = _stream_prompt_skill_worker(
-                command, json.dumps(payload, ensure_ascii=False),
-                cwd=worker_directory, env=worker_env, timeout=timeout,
-            )
-        else:
-            process = subprocess.run(
-                command,
-                input=json.dumps(payload, ensure_ascii=False),
-                text=True, encoding="utf-8", errors="replace",
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=worker_directory,
-                env=worker_env,
-                timeout=timeout,
-            )
+        process = subprocess.run(
+            [sys.executable, "-u", str(worker_path), "--worker"],
+            input=json.dumps(payload, ensure_ascii=False),
+            text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=worker_directory,
+            env=worker_env,
+            timeout=timeout,
+        )
     except subprocess.TimeoutExpired as error:
         stdout = error.stdout or ""
         stderr = error.stderr or ""
@@ -1565,21 +1286,6 @@ def _run_worker(request: dict[str, Any], timing: bool):
     return _from_payload(value["timing_plan" if timing else "chunk_prompt"], timing)
 
 
-def _raise_prompt_skill_mtmd_error(process, value: dict[str, Any]) -> None:
-    if "find_slot: non-consecutive token position" not in str(getattr(process, "stderr", "")):
-        return
-    if process.returncode == 0 and value.get("ok"):
-        logging.warning(
-            "Qwen3.5 MTMD reported a non-consecutive token position, but the worker completed and the prompt plan passed deterministic validation."
-        )
-        return
-    raise DirectorWorkerError(
-        "Qwen3.5 MTMD produced non-consecutive token positions and did not produce a valid prompt plan",
-        returncode=process.returncode,
-        raw_json=str(value.get("raw_json", "")),
-    )
-
-
 def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(request, ensure_ascii=False))
     payload["operation"] = "prompt_skill_compile"
@@ -1595,27 +1301,14 @@ def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
             f"Qwen prompt skill worker exited with status {process.returncode} without a result",
             returncode=process.returncode,
         )
-    _raise_prompt_skill_mtmd_error(process, value)
-    repair_attempt = 0
-    while (not value.get("ok")
+    if (not value.get("ok")
             and value.get("error_type") in {"Qwen35ObservationError", "ValueError"}
             and str(value.get("raw_json", "")).strip()):
-        message = str(value.get("message", "invalid prompt skill structure"))
-        missing_plan = (
-            message.startswith("storyboard response needs image_subjects and shots")
-            or message.startswith("Qwen Prompt Skill returned an empty JSON object")
-        )
-        max_repairs = 2 if missing_plan else 1
-        if repair_attempt >= max_repairs:
-            break
-        repair_attempt += 1
-        payload["prompt_skill_structure_repair"] = repair_attempt
-        payload["prompt_skill_missing_plan_retry"] = missing_plan
-        payload["prompt_skill_validation_error"] = message
+        payload["prompt_skill_structure_repair"] = True
+        payload["prompt_skill_validation_error"] = str(value.get("message", "invalid prompt skill structure"))
         payload["prompt_skill_previous_response"] = str(value["raw_json"])
-        logging.info(
-            "HR H3 Prompt Skill Compiler is correcting incomplete Qwen JSON %d/%d with the original reference images and MTMD analysis: %s",
-            repair_attempt, max_repairs, message,
+        logging.warning(
+            "HR H3 Prompt Skill Compiler rejected Qwen structure; requesting one corrected JSON object with the original reference images and MTMD analysis."
         )
         process, value = _run_worker_once(payload, timeout=600)
         if value is None:
@@ -1623,7 +1316,6 @@ def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
                 f"Qwen prompt skill repair worker exited with status {process.returncode} without a result",
                 returncode=process.returncode,
             )
-        _raise_prompt_skill_mtmd_error(process, value)
     if not value.get("ok"):
         raise Qwen35ObservationError(
             str(value.get("message", "Qwen prompt skill worker failed")),
@@ -1823,20 +1515,10 @@ class Qwen35ContinuityDirector:
 def _worker_main() -> int:
     import time as _time
     _t0 = _time.monotonic()
-    print(
-        f"[MINIMAX_H3_WORKER] START pid={os.getpid()} python={sys.version.split()[0]} "
-        f"module={Path(__file__).name} t={_time.monotonic()-_t0:.1f}s",
-        flush=True,
-    )
+    print(f"[MINIMAX_H3_WORKER] START pid={os.getpid()} t={_time.monotonic()-_t0:.1f}s", flush=True)
     try:
         print(f"[MINIMAX_H3_WORKER] loading request t={_time.monotonic()-_t0:.1f}s", flush=True)
         req = json.load(sys.stdin)
-        print(
-            f"[MINIMAX_H3_WORKER] request loaded op={req.get('operation')} "
-            f"images={len(req.get('image_urls', ())) if isinstance(req.get('image_urls', ()), list) else 'invalid'} "
-            f"payload_chars={len(json.dumps(req, ensure_ascii=False))} t={_time.monotonic()-_t0:.1f}s",
-            flush=True,
-        )
         print(f"[MINIMAX_H3_WORKER] calling _complete op={req.get('operation')} t={_time.monotonic()-_t0:.1f}s", flush=True)
         result = {"ok": True, **_complete(req)}
     except Exception as error:

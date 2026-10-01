@@ -220,23 +220,12 @@ def validate_storyboard_plan(value: Any, *, image_count: int, total_frames: int)
         picture = _positive_int(picture_value, f"image_subjects[{index}].picture")
         if picture < 1 or picture > image_count:
             raise ValueError(f"Picture {picture} is outside the {image_count} connected images")
-        crop = item.get("primary_view_crop", [0.0, 0.0, 1.0, 1.0])
-        if not isinstance(crop, (list, tuple)) or len(crop) != 4:
-            raise ValueError(f"image_subjects[{index}].primary_view_crop must contain four normalized coordinates")
-        try:
-            crop = [float(value) for value in crop]
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"image_subjects[{index}].primary_view_crop must contain numeric coordinates") from error
-        if not (0.0 <= crop[0] < crop[2] <= 1.0 and 0.0 <= crop[1] < crop[3] <= 1.0):
-            raise ValueError(f"image_subjects[{index}].primary_view_crop is outside normalized image bounds")
         normalized_subjects.append({
             "entity_id": str(item.get("entity_id", f"asset_{picture}")).strip(),
             "picture": picture,
             "subject": picture,
             "name": str(item.get("name", "")).strip(),
-            "kind": str(item.get("kind", "")).strip().lower(),
             "observable_features": str(item.get("observable_features", item.get("description", ""))).strip(),
-            "primary_view_crop": crop,
         })
     normalized_shots = []
     previous_end = 0
@@ -262,15 +251,7 @@ def validate_storyboard_plan(value: Any, *, image_count: int, total_frames: int)
 
 
 def compile_h3_prompt(plan: dict[str, Any], *, fps: float) -> str:
-    qwen35_scene_contract = bool(plan.get("qwen35_scene_contract", False))
-    subjects = [
-        (
-            f"<Picture {item['picture']}> defines the scene environment: {item['observable_features']}."
-            if qwen35_scene_contract and str(item.get("kind", "")).lower() == "scene" else
-            f"<Subject {item['subject']}> is {item['name']} from <Picture {item['picture']}>: {item['observable_features']}."
-        )
-        for item in plan["image_subjects"]
-    ]
+    subjects = [f"<Subject {item['subject']}> is {item['name']} from <Picture {item['picture']}>: {item['observable_features']}." for item in plan["image_subjects"]]
     shots = []
     for item in plan["shots"]:
         marker = f"[Shot {item['shot']}]"

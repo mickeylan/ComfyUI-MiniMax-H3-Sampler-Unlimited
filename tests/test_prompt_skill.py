@@ -55,13 +55,6 @@ class PromptSkillTests(unittest.TestCase):
             "warnings": [],
         }
 
-    def test_incomplete_qwen_timeline_is_not_stretched_to_target(self):
-        request = self.request()
-        value = self.result()
-        value["shots"] = [value["shots"][0]]
-        with self.assertRaisesRegex(ValueError, "complete target"):
-            prompt_skill.compile_prompt_skill(value, request)
-
     def test_source_asset_names_use_ascii_alphanumeric_only(self):
         request = prompt_skill.build_prompt_skill_request(
             "<Picture 1> is Luxury Bedroom!; <Picture 2> is 豪华寝宫。",
@@ -610,50 +603,6 @@ class PromptSkillTests(unittest.TestCase):
                 compiled = prompt_skill.compile_prompt_skill(value, request)
                 self.assertEqual(compiled["shot_plan"]["shots"][0]["dialogues"][0]["kind"], expected)
 
-    def test_speaking_event_interval_follows_later_speaker_dialogue(self):
-        value = self.result()
-        value["image_subjects"].append({
-            "entity_id": "asset_2", "kind": "character", "name": "Partner", "observable_features": "red coat",
-        })
-        value["shots"][1].update(
-            end_frame=240,
-            pictures=["asset_1", "asset_2"],
-            events=[
-                {"id": "S2.V1", "actor": "asset_2", "action": "replies calmly", "phase": "start"},
-                {"id": "S2.V2", "actor": "asset_1", "action": "holds position", "phase": "start"},
-                {"id": "S2.V3", "actor": "asset_1", "action": "maintains eye contact", "phase": "start"},
-            ],
-            dialogues=[
-                {"id": "S2.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
-                 "language": "English", "text": "This deliberately long opening line occupies the first part.", "delivery": "calmly"},
-                {"id": "S2.D2", "kind": "dialogue", "speaker": "asset_2", "speaker_id": "S2",
-                 "language": "English", "text": "Reply now.", "delivery": "calmly"},
-            ],
-        )
-        request = {
-            **self.request(), "total_frames": 240, "duration_seconds": 10.0,
-            "image_count": 2,
-            "source_image_contract": [
-                {"entity_id": "asset_1", "picture": 1, "name": "Hero", "kind": "character"},
-                {"entity_id": "asset_2", "picture": 2, "name": "Partner", "kind": "character"},
-            ],
-            "required_spoken_lines": [
-                "This deliberately long opening line occupies the first part.", "Reply now.",
-            ],
-            "required_spoken_subjects": ["<Subject 1>", "<Subject 2>"],
-            "required_speaker_subjects": {"S1": "<Subject 1>", "S2": "<Subject 2>"},
-        }
-        compiled = prompt_skill.compile_prompt_skill(value, request)
-        shot = compiled["shot_plan"]["shots"][1]
-        reply = next(event for event in shot["events"] if event["id"] == "S2.V1")
-        partner_dialogue = next(item for item in shot["dialogues"] if item["speaker_id"] == "S2")
-        self.assertEqual(
-            (reply["start_frame"], reply["end_frame"]),
-            (partner_dialogue["start_frame"], partner_dialogue["end_frame"]),
-        )
-        typed = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
-        prompt_skill.normalize_prompt_plan(typed, fps=24.0, total_frames=240)
-
     def test_rejects_unknown_dialogue_kind_with_actual_value(self):
         value = self.result()
         value["shots"][0]["dialogues"] = [{
@@ -675,27 +624,6 @@ class PromptSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dialogue speaker asset_1 is not a character"):
             prompt_skill.compile_prompt_skill(value, request)
 
-    def test_source_bound_speaker_overrides_qwen_scene_classification(self):
-        value = self.result()
-        value["image_subjects"][0]["kind"] = "scene"
-        value["shots"][1]["dialogues"] = [{
-            "id": "S2.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1",
-            "language": "Chinese", "text": "继续说话。", "delivery": "calmly",
-        }]
-        request = {
-            **self.request(),
-            "required_spoken_lines": ["继续说话。"],
-            "required_spoken_subjects": ["<Subject 1>"],
-            "required_speaker_subjects": {"S1": "<Subject 1>"},
-        }
-        compiled = prompt_skill.compile_prompt_skill(value, request)
-        subject = compiled["shot_plan"]["image_subjects"][0]
-        self.assertEqual(subject["kind"], "character")
-        self.assertTrue(any(
-            "source-bound speaker asset_1" in warning and "kind=character" in warning
-            for warning in compiled["warnings"]
-        ))
-
     def test_empty_audio_is_normalized_without_inventing_sound(self):
         value = self.result()
         value["shots"][1]["audio"] = ""
@@ -703,22 +631,6 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(compiled["shot_plan"]["shots"][1]["audio"], "N/A")
         self.assertTrue(any("Normalized empty shots[2].audio to N/A" in warning
                             for warning in compiled["warnings"]))
-
-    def test_restores_missing_speaker_from_matching_source_line(self):
-        value = self.result()
-        value["shots"][1]["dialogues"] = [{
-            "speaker_id": "S1", "text": "后半句。", "language": "Chinese", "delivery": "calmly",
-        }]
-        request = {
-            **self.request(),
-            "required_spoken_lines": ["前半句，后半句。"],
-            "required_spoken_subjects": ["<Subject 1>"],
-            "required_speaker_subjects": {},
-        }
-        compiled = prompt_skill.compile_prompt_skill(value, request)
-        dialogue = compiled["shot_plan"]["shots"][1]["dialogues"][0]
-        self.assertEqual(dialogue["speaker"], "<Subject 1>")
-        self.assertTrue(any("fields: id, kind, speaker" in warning for warning in compiled["warnings"]))
 
     def test_fills_deterministic_dialogue_metadata(self):
         value = self.result()
@@ -1574,57 +1486,6 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("<Subject 3> approaches <Subject 4>", normalized)
         self.assertIn("<d>[English] Keep Asset3 exactly as spoken.</d>", normalized)
         self.assertIn("asset_9", normalized)
-
-    def test_qwen35_scene_references_remain_picture_labels_in_chunks(self):
-        plan = {
-            "qwen35_scene_contract": True,
-            "shots": [{"start_frame": 0, "end_frame": 80, "pictures": [2, 3], "dialogues": []}],
-            "image_subjects": [
-                {"entity_id": "asset_2", "picture": 2, "subject": 2, "kind": "scene"},
-                {"entity_id": "asset_3", "picture": 3, "subject": 3, "kind": "character"},
-            ],
-        }
-        normalized = prompt_skill.normalize_h3_chunk_references("asset_2 surrounds asset_3", plan)
-        self.assertEqual(normalized, "<Picture 2> surrounds <Subject 3>")
-        prompt = (
-            "subject_definitions:\nNone.\n\nsummary:\nsummary.\n\nretention_analysis:\nstale.\n\n"
-            "detailed_description:\n[Shot 1] Continue.\n\noverall_soundscape:\nWind.\n\nnon_diegetic_music:\nN/A"
-        )
-        normalized = prompt_skill.normalize_h3_chunk_retention(prompt, plan, frame_start=0, frame_end=40)
-        retention = normalized.split("retention_analysis:\n", 1)[1].split("\n\ndetailed_description:", 1)[0]
-        self.assertIn("<Picture 2>: fully_preserved", retention)
-        self.assertNotIn("<Subject 2>", retention)
-        self.assertIn("<Subject 3>: fully_preserved", retention)
-
-    def test_final_physical_chunk_removes_false_dialogue_continuation_claim(self):
-        plan = {
-            "shots": [{
-                "start_frame": 0, "end_frame": 107,
-                "dialogues": [{"start_frame": 51, "end_frame": 107, "text": "最后一句。"}],
-            }],
-        }
-        prompt = (
-            "<Subject 3> (S1) says: <d>[Chinese] 最后一句。</d> with synchronized visible lip movement "
-            "while the same utterance continues into the next chunk without a pause or restart."
-        )
-        normalized = prompt_skill.normalize_h3_chunk_dialogue_continuation(
-            prompt, plan, frame_start=51, frame_end=107,
-        )
-        self.assertIn("<d>[Chinese] 最后一句。</d>", normalized)
-        self.assertNotIn("continues into the next chunk", normalized)
-
-    def test_nonfinal_physical_chunk_keeps_dialogue_continuation_claim(self):
-        plan = {
-            "shots": [{
-                "start_frame": 0, "end_frame": 160,
-                "dialogues": [{"start_frame": 0, "end_frame": 160, "text": "仍在继续。"}],
-            }],
-        }
-        prompt = "<d>[Chinese] 仍在继续。</d> while the same utterance continues into the next chunk without a pause or restart."
-        normalized = prompt_skill.normalize_h3_chunk_dialogue_continuation(
-            prompt, plan, frame_start=51, frame_end=107,
-        )
-        self.assertEqual(normalized, prompt)
 
     def test_chunk_transition_normalization_removes_false_scene_transition(self):
         plan = {

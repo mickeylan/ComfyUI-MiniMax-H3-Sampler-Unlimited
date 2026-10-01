@@ -40,13 +40,12 @@ from .gemma4 import (
 from .preview import begin_preview_execution
 from .prompt_skill import (
     active_prompt_plan_pictures, filter_prompt_plan_events, filter_prompt_plan_picture_items,
-    localize_prompt_from_plan, normalize_h3_chunk_dialogue, normalize_h3_chunk_dialogue_continuation,
-    normalize_h3_chunk_references, normalize_h3_chunk_retention,
+    localize_prompt_from_plan, normalize_h3_chunk_dialogue, normalize_h3_chunk_references, normalize_h3_chunk_retention,
     normalize_h3_chunk_transitions,
     normalize_prompt_plan, project_prompt_plan_interval,
     prompt_plan_dialogue_complete, prompt_plan_shots, prompt_plan_speakers,
     validate_h3_chunk_dialogue_contract, validate_h3_chunk_prompt,
-    validate_h3_identity_contract,
+    validate_h3_director_speaker_subset, validate_h3_identity_contract,
 )
 from .qwen35 import Qwen35ContinuityDirector
 from .reference_set import HRReferenceSet, reference_images, reference_presentation_items
@@ -1368,46 +1367,6 @@ def _source_images(images, source_images):
             return int(match.group(1)) if match else -1
         return [image[:1] for _, image in sorted(source_images.items(), key=index) if image is not None]
     return [] if images is None else [images[index:index + 1] for index in range(images.shape[0])]
-
-
-def _qwen35_primary_view_images(images, prompt_plan):
-    if not prompt_plan or not prompt_plan.get("qwen35_scene_contract"):
-        return list(images), False
-    subjects = {
-        int(item.get("picture", 0)): item
-        for item in prompt_plan.get("image_subjects", ())
-        if isinstance(item, dict) and int(item.get("picture", 0) or 0) > 0
-    }
-    result = []
-    changed = False
-    for picture, image in enumerate(images, 1):
-        item = subjects.get(picture, {})
-        crop = item.get("primary_view_crop", [0.0, 0.0, 1.0, 1.0])
-        if str(item.get("kind", "")).lower() != "character" or not isinstance(crop, (list, tuple)) or len(crop) != 4:
-            result.append(image)
-            continue
-        x0, y0, x1, y1 = (float(value) for value in crop)
-        if (x0, y0, x1, y1) == (0.0, 0.0, 1.0, 1.0):
-            result.append(image)
-            continue
-        height, width = image.shape[1:3]
-        left = max(0, min(width - 1, round(x0 * width)))
-        top = max(0, min(height - 1, round(y0 * height)))
-        right = max(left + 1, min(width, round(x1 * width)))
-        bottom = max(top + 1, min(height, round(y1 * height)))
-        result.append(image[:, top:bottom, left:right, :].clone())
-        changed = True
-    return result, changed
-
-
-def _replace_image_reference_blocks(positive, image_refs):
-    result = []
-    for metadata in positive:
-        local = dict(metadata)
-        non_images = [ref for ref in metadata.get("minimax_refs", ()) if ref.get("kind") != "image"]
-        local["minimax_refs"] = [*image_refs, *non_images]
-        result.append(local)
-    return result
 
 
 def _reference_video_canvas(width, height):
@@ -3363,26 +3322,15 @@ class HREndlessSampler(SamplerCustomAdvanced):
         if reference_set is not None and (images is not None or source_images) and continuation_state is None and not external_active:
             raise ValueError("Connect reference_set or legacy images/source_images, not both")
         image_list = list(reference_images(reference_set)) if reference_set is not None else _source_images(images, source_images)
-        image_list, cropped_primary_views = _qwen35_primary_view_images(image_list, typed_prompt_plan)
-        presentation_reference_set = reference_set
-        if cropped_primary_views and reference_set is not None:
-            presentation_reference_set = {**reference_set, "images": image_list}
-        base_reference_items = reference_presentation_items(presentation_reference_set, width, height) if presentation_reference_set is not None else None
-        if image_list and (not ref2va or cropped_primary_views):
+        base_reference_items = reference_presentation_items(reference_set, width, height) if reference_set is not None else None
+        if image_list and not ref2va:
             if vae is None:
                 raise ValueError("Reference images require the MiniMax H3 video VAE")
             image_refs = _image_reference_blocks(vae, image_list, width, height)
-            positive = (
-                _replace_image_reference_blocks(positive, image_refs)
-                if cropped_primary_views else
-                [[item[0], {**item[1], "minimax_refs": image_refs}] for item in positive]
-            )
+            positive = [[item[0], {**item[1], "minimax_refs": image_refs}] for item in positive]
             original_conds = {**original_conds, "positive": positive}
             ref2va = True
-            logging.info(
-                "HR Endless Sampler encoded %d image references%s.", len(image_refs),
-                " after applying Qwen3.5 primary-view character crops" if cropped_primary_views else " from its images input",
-            )
+            logging.info("HR Endless Sampler automatically encoded %d image references from its images input.", len(image_refs))
         if len(active_plan) > 1 and (use_video_continuation or qwen_full_history) and not ref2va:
             raise ValueError("Chunk continuation requires reference images or MiniMax H3 Ref2VA conditioning")
         original_refs = positive[0].get("minimax_refs", ())
@@ -4577,12 +4525,17 @@ class HREndlessSampler(SamplerCustomAdvanced):
                         chunk_prompt, typed_prompt_plan,
                         frame_start=content_start, frame_end=chunk["frame_end"],
                     )
-                    chunk_prompt = normalize_h3_chunk_dialogue(chunk_prompt, planned_prompts[index][0])
-                    validate_h3_chunk_dialogue_contract(chunk_prompt, planned_prompts[index][0])
-                    chunk_prompt = normalize_h3_chunk_dialogue_continuation(
-                        chunk_prompt, typed_prompt_plan,
-                        frame_start=content_start, frame_end=chunk["frame_end"],
+                    chunk_speakers = prompt_plan_speakers(
+                        typed_prompt_plan, content_start, chunk["frame_end"]
                     )
+                    if gemma_director is not None and len(chunk_speakers) > 1:
+                        validate_h3_director_speaker_subset(
+                            chunk_prompt, typed_prompt_plan,
+                            frame_start=content_start, frame_end=chunk["frame_end"],
+                        )
+                    else:
+                        chunk_prompt = normalize_h3_chunk_dialogue(chunk_prompt, planned_prompts[index][0])
+                        validate_h3_chunk_dialogue_contract(chunk_prompt, planned_prompts[index][0])
                     validate_h3_chunk_prompt(
                         chunk_prompt, typed_prompt_plan,
                         frame_start=content_start, frame_end=chunk["frame_end"],

@@ -1,6 +1,5 @@
 import base64
 import importlib.util
-import inspect
 import json
 import os
 import struct
@@ -497,20 +496,6 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["cwd"], plugin_directory)
         self.assertEqual(run.call_args.kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0], plugin_directory)
 
-    def test_qwen35_prompt_skill_uses_preimport_bootstrap(self):
-        module_path = Path(qwen35.__file__).resolve()
-        worker_path = qwen35._worker_path_for_payload(module_path, {
-            "operation": "prompt_skill_compile", "director_backend": "qwen3.5",
-        })
-        self.assertEqual(worker_path.name, "qwen35_worker_entry.py")
-        self.assertTrue(worker_path.is_file())
-        self.assertEqual(
-            qwen35._worker_path_for_payload(module_path, {
-                "operation": "prompt_skill_compile", "director_backend": "qwen3.8",
-            }).name,
-            "qwen38_worker.py",
-        )
-
     def test_worker_timeout_reports_last_completed_stage(self):
         timeout = qwen35.subprocess.TimeoutExpired(
             ["python", "qwen35.py", "--worker"],
@@ -527,7 +512,7 @@ class Qwen35Tests(unittest.TestCase):
                 "starting LLM streaming op=prompt_skill_compile images=4.*stderr: llama progress",
             ):
                 qwen35._run_worker_once(
-                    {"operation": "chunk", "director_backend": "qwen3.5"}, timeout=600
+                    {"operation": "prompt_skill_compile", "director_backend": "qwen3.5"}, timeout=600
                 )
 
     def test_worker_timeout_without_output_reports_missing_progress(self):
@@ -535,7 +520,7 @@ class Qwen35Tests(unittest.TestCase):
         with patch.object(qwen35.subprocess, "run", side_effect=timeout):
             with self.assertRaisesRegex(qwen35.DirectorWorkerError, "worker produced no progress output"):
                 qwen35._run_worker_once(
-                    {"operation": "chunk", "director_backend": "qwen3.5"}, timeout=600
+                    {"operation": "prompt_skill_compile", "director_backend": "qwen3.5"}, timeout=600
                 )
 
     def test_chunk_worker_allows_slow_multimodal_generation(self):
@@ -696,97 +681,13 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(result.detailed_description, "[Shot 1] Continue.")
         self.assertEqual(worker.call_args_list[1].args[0]["missing_prompt_repair"], 1)
 
-    def test_qwen35_prompt_skill_analyzes_images_one_at_a_time(self):
-        class FakeLlama:
-            def __init__(self):
-                self.messages = []
-
-            def create_chat_completion(self, **kwargs):
-                self.messages.append(kwargs["messages"])
-                index = len(self.messages)
-                return {
-                    "choices": [{"message": {"content": json.dumps({
-                        "asset_id": f"asset_{index}",
-                        "kind": "character" if index == 1 else "scene",
-                        "observable_features": f"features {index}",
-                        "primary_view_crop": [0.0, 0.0, 0.5, 1.0] if index == 1 else [0.0, 0.0, 1.0, 1.0],
-                    })}}]
-                }
-
-        llama = FakeLlama()
-        observations = qwen35._qwen35_analyze_prompt_skill_images(
-            llama, ("data:image/jpeg;base64,", "data:image/jpeg;base64,"), 0.0
-        )
-        self.assertEqual([item["asset_id"] for item in observations], ["asset_1", "asset_2"])
-        self.assertEqual(observations[0]["primary_view_crop"], [0.0, 0.0, 0.5, 1.0])
-        self.assertEqual(observations[1]["primary_view_crop"], [0.0, 0.0, 1.0, 1.0])
-        self.assertEqual(len(llama.messages), 2)
-        self.assertTrue(all(
-            sum(item.get("type") == "image_url" for item in messages[0]["content"]) == 1
-            for messages in llama.messages
-        ))
-
-    def test_qwen35_prompt_skill_grounds_shots_in_single_scene_asset(self):
-        plan = {
-            "image_subjects": [
-                {"entity_id": "asset_1", "kind": "character", "observable_features": "four-view character sheet on white background"},
-                {"entity_id": "asset_2", "kind": "scene", "observable_features": "wrong generic room"},
-            ],
-            "shots": [{
-                "pictures": ["asset_1"],
-                "start_state": "the character stands still",
-                "forbidden_replays": ["S1.V1", "S1.D1"],
-            }]
-        }
-        observations = [
-            {"asset_id": "asset_1", "kind": "character", "observable_features": "long black hair; blue robe"},
-            {"asset_id": "asset_2", "kind": "scene", "observable_features": "temple interior; warm candlelight"},
-        ]
-        grounded = qwen35._qwen35_ground_prompt_skill_scenes(plan, observations)
-        self.assertEqual(grounded["shots"][0]["pictures"], ["asset_2", "asset_1"])
-        self.assertIn("<Entity asset_2>", grounded["shots"][0]["start_state"])
-        self.assertIn("architecture, spatial layout, composition, lighting", grounded["shots"][0]["start_state"])
-        self.assertEqual(grounded["image_subjects"][0]["observable_features"], "long black hair; blue robe")
-        self.assertEqual(grounded["image_subjects"][1]["observable_features"], "temple interior; warm candlelight")
-        self.assertEqual(grounded["shots"][0]["forbidden_replays"], [])
-        self.assertEqual(plan["shots"][0]["pictures"], ["asset_1"])
-
-    def test_qwen35_removes_reference_presentation_from_intrinsic_features(self):
-        features = qwen35._qwen35_intrinsic_features(
-            "Four-view character sheet on a white background. Long black hair and a blue silk robe. "
-            "Front view and side view are shown in panels."
-        )
-        self.assertEqual(features, "Long black hair and a blue silk robe")
-        self.assertNotRegex(features.lower(), r"four|white background|front view|panel")
-
-    def test_qwen35_rejects_presentation_artifacts_in_compiled_prompt(self):
-        with self.assertRaisesRegex(qwen35.Qwen35ObservationError, "reference-presentation artifact"):
-            qwen35._validate_qwen35_compiled_scene_prompt(
-                "subject_definitions:\n<Subject 1> appears as a four-view character sheet."
-            )
-        qwen35._validate_qwen35_compiled_scene_prompt(
-            "subject_definitions:\n<Subject 1> has long black hair.\n\n"
-            "detailed_description:\nThe shot takes place in a candlelit temple interior."
-        )
-
-    def test_qwen35_prompt_skill_requires_scene_choice_when_multiple_exist(self):
-        plan = {"shots": [{"pictures": ["asset_1"], "forbidden_replays": []}]}
-        observations = [
-            {"asset_id": "asset_1", "kind": "character", "observable_features": "character"},
-            {"asset_id": "asset_2", "kind": "scene", "observable_features": "interior"},
-            {"asset_id": "asset_3", "kind": "scene", "observable_features": "street"},
-        ]
-        with self.assertRaisesRegex(qwen35.Qwen35ObservationError, "does not select a scene asset"):
-            qwen35._qwen35_ground_prompt_skill_scenes(plan, observations)
-
     def test_prompt_skill_has_large_deterministic_response_budget(self):
         self.assertEqual(qwen35.QWEN35_PROMPT_SKILL_RESPONSE_TOKENS, 32768)
 
-    def test_qwen35_uses_dedicated_chat_handler(self):
-        source = inspect.getsource(qwen35._complete_qwen35)
-        self.assertIn("Qwen35ChatHandler", source)
-        self.assertIn("enable_thinking=False", source)
-        self.assertNotIn("MTMDChatHandler", source)
+    def test_qwen35_multimodal_batch_contains_one_complete_image_embedding(self):
+        self.assertGreaterEqual(qwen35.QWEN35_BATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
+        self.assertGreaterEqual(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_IMAGE_MAX_TOKENS)
+        self.assertLessEqual(qwen35.QWEN35_UBATCH_SIZE, qwen35.QWEN35_BATCH_SIZE)
 
     def test_prompt_skill_unwraps_known_result_containers(self):
         plan = {"image_subjects": [], "shots": []}
@@ -803,33 +704,6 @@ class Qwen35Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "returned top-level keys: analysis, summary"):
             qwen35._prompt_skill_result_object({"analysis": "done", "summary": "text"})
 
-    def test_prompt_skill_find_slot_failure_is_not_retried(self):
-        process = types.SimpleNamespace(
-            returncode=1,
-            stderr="find_slot: non-consecutive token position 1170 after 1169 for sequence 0 with 256 new tokens",
-        )
-        failure = {
-            "ok": False, "error_type": "Qwen35ObservationError",
-            "message": "Qwen Prompt Skill returned an empty JSON object", "raw_json": "{}",
-        }
-        with patch.object(qwen35, "_run_worker_once", return_value=(process, failure)) as worker:
-            with self.assertRaisesRegex(qwen35.DirectorWorkerError, "did not produce a valid prompt plan"):
-                qwen35._run_prompt_skill_worker({"director_mtp": False, "image_urls": ["image"]})
-        worker.assert_called_once()
-
-    def test_prompt_skill_accepts_valid_result_despite_nonfatal_find_slot_log(self):
-        process = types.SimpleNamespace(
-            returncode=0,
-            stderr="find_slot: non-consecutive token position 1170 after 1169 for sequence 0 with 256 new tokens",
-        )
-        success = {"ok": True, "prompt_skill_compile": {"prompt": "valid", "shot_plan": {}}}
-        with patch.object(qwen35, "_run_worker_once", return_value=(process, success)) as worker:
-            with self.assertLogs(level="WARNING") as logs:
-                result = qwen35._run_prompt_skill_worker({"director_mtp": False})
-        self.assertEqual(result["prompt"], "valid")
-        self.assertIn("passed deterministic validation", "\n".join(logs.output))
-        worker.assert_called_once()
-
     def test_prompt_skill_repair_reuses_images_when_visual_plan_is_missing(self):
         failure = {
             "ok": False, "error_type": "Qwen35ObservationError",
@@ -841,58 +715,6 @@ class Qwen35Tests(unittest.TestCase):
                 (types.SimpleNamespace(returncode=0), success)]) as worker:
             qwen35._run_prompt_skill_worker({"director_mtp": False, "total_frames": 634, "image_urls": ["image"]})
         self.assertEqual(worker.call_args_list[1].args[0]["image_urls"], ["image"])
-
-    def test_prompt_skill_empty_object_gets_final_focused_retry(self):
-        empty = {
-            "ok": False, "error_type": "Qwen35ObservationError",
-            "message": "Qwen Prompt Skill returned an empty JSON object (finish_reason=stop, prompt_tokens=2607, completion_tokens=2)",
-            "raw_json": "{}",
-        }
-        success = {"ok": True, "prompt_skill_compile": {"prompt": "fixed", "shot_plan": {}}}
-        with patch.object(qwen35, "_run_worker_once", side_effect=[
-                (types.SimpleNamespace(returncode=1), empty),
-                (types.SimpleNamespace(returncode=1), empty),
-                (types.SimpleNamespace(returncode=0), success)]) as worker:
-            result = qwen35._run_prompt_skill_worker({
-                "director_mtp": False, "total_frames": 634, "image_urls": ["image"]
-            })
-        self.assertEqual(result["prompt"], "fixed")
-        final = worker.call_args_list[2].args[0]
-        self.assertEqual(final["prompt_skill_structure_repair"], 2)
-        self.assertTrue(final["prompt_skill_missing_plan_retry"])
-        self.assertEqual(final["image_urls"], ["image"])
-
-    def test_prompt_skill_missing_plan_gets_one_final_focused_retry(self):
-        first = {
-            "ok": False, "error_type": "Qwen35ObservationError",
-            "message": "storyboard response needs image_subjects and shots; returned top-level keys: image_subjects, summary",
-            "raw_json": '{"image_subjects":[],"summary":"partial"}',
-        }
-        second = {**first, "raw_json": '{"image_subjects":[{"entity_id":"asset_1"}],"summary":"partial again"}'}
-        success = {"ok": True, "prompt_skill_compile": {"prompt": "fixed", "shot_plan": {}}}
-        with patch.object(qwen35, "_run_worker_once", side_effect=[
-                (types.SimpleNamespace(returncode=1), first),
-                (types.SimpleNamespace(returncode=1), second),
-                (types.SimpleNamespace(returncode=0), success)]) as worker:
-            result = qwen35._run_prompt_skill_worker({
-                "director_mtp": False, "total_frames": 634, "image_urls": ["image"]
-            })
-        self.assertEqual(result["prompt"], "fixed")
-        final = worker.call_args_list[2].args[0]
-        self.assertEqual(final["prompt_skill_structure_repair"], 2)
-        self.assertTrue(final["prompt_skill_missing_plan_retry"])
-        self.assertEqual(final["image_urls"], ["image"])
-
-    def test_final_missing_plan_prompt_does_not_repeat_partial_json(self):
-        _system, prompt = qwen35.prompt_skill_messages({
-            "story": "A speaks.", "total_frames": 40, "fps": 24.0,
-            "prompt_skill_structure_repair": 2, "prompt_skill_missing_plan_retry": True,
-            "prompt_skill_validation_error": "missing shots",
-            "prompt_skill_previous_response": '{"image_subjects":[],"summary":"partial"}',
-        })
-        self.assertIn("Begin the JSON object with a non-empty shots array", prompt)
-        self.assertIn("Do not imitate the previous partial response", prompt)
-        self.assertNotIn('{"image_subjects":[],"summary":"partial"}', prompt)
 
     def test_prompt_skill_invalid_intervals_get_one_complete_structure_repair(self):
         failure = {

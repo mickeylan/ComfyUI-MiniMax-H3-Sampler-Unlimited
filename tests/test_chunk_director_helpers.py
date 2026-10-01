@@ -165,32 +165,6 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertEqual(payload["shots"][0]["events"][0]["id"], "S3.V1")
         self.assertEqual(payload["shots"][0]["dialogues"][0]["text"], "完整对白")
 
-    def test_qwen35_primary_view_crop_changes_character_pixels_only(self):
-        scene = torch.arange(1 * 8 * 12 * 3, dtype=torch.float32).reshape(1, 8, 12, 3)
-        character = torch.arange(1 * 10 * 20 * 3, dtype=torch.float32).reshape(1, 10, 20, 3)
-        plan = {
-            "qwen35_scene_contract": True,
-            "image_subjects": [
-                {"picture": 1, "kind": "scene", "primary_view_crop": [0.0, 0.0, 0.5, 1.0]},
-                {"picture": 2, "kind": "character", "primary_view_crop": [0.25, 0.2, 0.75, 0.8]},
-            ],
-        }
-        images, changed = nodes._qwen35_primary_view_images([scene, character], plan)
-        self.assertTrue(changed)
-        self.assertIs(images[0], scene)
-        self.assertEqual(tuple(images[1].shape), (1, 6, 10, 3))
-        self.assertTrue(torch.equal(images[1], character[:, 2:8, 5:15, :]))
-
-    def test_qwen35_primary_view_blocks_replace_only_image_references(self):
-        image_refs = [{"kind": "image", "id": "crop1"}, {"kind": "image", "id": "crop2"}]
-        positive = [{"minimax_refs": [
-            {"kind": "image", "id": "old1"}, {"kind": "image", "id": "old2"},
-            {"kind": "video", "id": "video"}, {"kind": "audio", "id": "audio"},
-        ]}]
-        replaced = nodes._replace_image_reference_blocks(positive, image_refs)
-        self.assertEqual([item["id"] for item in replaced[0]["minimax_refs"]], ["crop1", "crop2", "video", "audio"])
-        self.assertEqual(positive[0]["minimax_refs"][0]["id"], "old1")
-
     def test_prompt_plan_filters_internal_conditioning_metadata_dicts(self):
         cross_attn = torch.zeros((1, 2, 3))
         positive = [{
