@@ -61,6 +61,15 @@ class AudioSeamAssembleTests(unittest.TestCase):
         self.assertGreater(assembled[0, 2000], 0.13)
         self.assertAlmostEqual(assembled[0, -1], 0.1)
 
+    def test_observed_twelve_point_six_ms_grid_offset_is_aligned(self):
+        first = np.ones((2, 2000))
+        second = np.ones((2, 1200))
+        result = {"mean_correlation": 0.76, "mean_lag_ms": 12.6}
+        with patch.object(audio_seam_assemble, "analyze_audio_seam", return_value=result):
+            _assembled, seams = assemble_audio_chunks([first, second], [10, 6], [0, 1], 20.0, 4000)
+        self.assertTrue(seams[0]["aligned"])
+        self.assertEqual(seams[0]["cut_samples"], 250)
+
     def test_large_lag_is_not_applied_even_with_high_correlation(self):
         first = np.ones((2, 2000))
         second = np.ones((2, 1200))

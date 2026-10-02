@@ -2038,6 +2038,31 @@ def _remove_chunk_silence_constraints(text: str) -> str:
     return re.sub(r"[ \t]+", " ", value).strip()
 
 
+def _chunk_dialogue_continuity_instruction(text: str) -> str:
+    speakers = []
+    for dialogue in _DIALOGUE_TAG.finditer(str(text)):
+        declarations = list(_SPEAKER_SUBJECT.finditer(str(text), 0, dialogue.start()))
+        if declarations:
+            speakers.append((declarations[-1].group(1), declarations[-1].group(2)))
+    if len(speakers) < 2:
+        return ""
+    ordered = list(dict.fromkeys(speakers))
+    if len(ordered) == 1:
+        subject, speaker_id = ordered[0]
+        return (
+            f"The adjacent <d> blocks for {subject} ({speaker_id}) are consecutive text fragments of one "
+            "uninterrupted utterance, not separate speaking turns. Preserve their exact order and continue the "
+            "same phoneme stream, breath, timbre, pitch, cadence, emotion, and loudness across the internal shot "
+            "cut without restarting, repeating, pausing, or taking a new breath."
+        )
+    sequence = " then ".join(f"{subject} ({speaker_id})" for subject, speaker_id in ordered)
+    return (
+        f"Speaker handoff order is {sequence}. Each speaker must finish their complete assigned <d> text before "
+        "the next speaker begins. Voices and lip movement must never overlap, and no character may speak another "
+        "speaker's text."
+    )
+
+
 def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_end: int, fps: float,
                                 active_events: tuple[dict[str, Any], ...],
                                 subjects_by_entity: dict[str, dict[str, Any]],
@@ -2258,6 +2283,9 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
     local_description = "\n".join(local_shots)
     if _DIALOGUE_TAG.search(local_description):
         local_description = _remove_chunk_silence_constraints(local_description)
+        continuity_instruction = _chunk_dialogue_continuity_instruction(local_description)
+        if continuity_instruction:
+            local_description += "\n" + continuity_instruction
     chunk_speakers = {
         match.group(1)
         for description in localized_descriptions

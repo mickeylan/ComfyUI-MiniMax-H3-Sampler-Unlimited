@@ -1406,6 +1406,26 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("No character vocalizes", normalized)
         self.assertNotIn("no dialogue, voiceover", normalized)
 
+    def test_same_speaker_fragments_are_declared_one_uninterrupted_utterance(self):
+        text = (
+            "[Shot 1] <Subject 3> (S1) says: <d>[Chinese] 比试之后，</d>\n"
+            "[Shot 2] <Subject 3> (S1) carries over: <d>[Chinese] 这十年你都</d>"
+        )
+        instruction = prompt_skill._chunk_dialogue_continuity_instruction(text)
+        self.assertIn("one uninterrupted utterance", instruction)
+        self.assertIn("same phoneme stream", instruction)
+        self.assertIn("without restarting, repeating, pausing", instruction)
+
+    def test_different_speaker_fragments_require_ordered_nonoverlapping_handoff(self):
+        text = (
+            "<Subject 3> (S1) says: <d>[Chinese] 来得及吗？</d>\n"
+            "<Subject 4> (S2) says: <d>[Chinese] 我现在回答。</d>"
+        )
+        instruction = prompt_skill._chunk_dialogue_continuity_instruction(text)
+        self.assertIn("<Subject 3> (S1) then <Subject 4> (S2)", instruction)
+        self.assertIn("must never overlap", instruction)
+        self.assertIn("no character may speak another speaker's text", instruction)
+
     def test_prompt_plan_localization_deduplicates_reference_definitions(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)

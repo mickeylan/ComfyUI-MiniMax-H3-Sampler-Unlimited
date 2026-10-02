@@ -17,7 +17,7 @@ except ImportError:  # Direct test execution.
 
 HREndlessTimeline = io.Custom("HRENDLESS_TIMELINE")
 ALIGN_CORRELATION = 0.75
-ALIGN_MAX_LAG_MS = 12.0
+ALIGN_MAX_LAG_MS = 13.0
 GAIN_LIMIT_DB = 3.0
 GAIN_RELEASE_MS = 150.0
 
