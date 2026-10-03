@@ -31,7 +31,7 @@ _NAMED_SPOKEN_QUOTE = re.compile(
     re.DOTALL,
 )
 _VERBAL_SOUND = re.compile(
-    r"\b(?:dialogue|speech|spoken|speaking|says?|asks?|replies?|whispers?|shouts?|voice(?:over)?|vocal(?:ization)?|words?|conversation|singing|lyrics?)\b",
+    r"\b(?:dialogue|speech|spoken|speaks?|speaking|says?|asks?|answers?|responds?|responding|response|replies?|whispers?|shouts?|voice(?:over)?|vocal(?:ization)?|words?|conversation|singing|lyrics?)\b",
     re.IGNORECASE,
 )
 _MUSIC_SOUND = re.compile(
@@ -497,6 +497,37 @@ def _extend_shot_intervals(shots: list[dict[str, Any]], normalized_shots: list[d
     return delta
 
 
+def _speaker_visual_lead_frames(shots: list[dict[str, Any]], shot_index: int, subject: str,
+                                request: dict[str, Any]) -> int:
+    match = re.fullmatch(r"<Subject\s+(\d+)>", subject, re.IGNORECASE)
+    if match is None or not (0 <= shot_index < len(shots)):
+        return 0
+    picture = int(match.group(1))
+    source = next((
+        item for item in request.get("source_image_contract", ())
+        if isinstance(item, dict) and int(item.get("picture", 0) or 0) == picture
+    ), None)
+    if source is None:
+        return 0
+    shot = shots[shot_index]
+    entity_id = str(source.get("entity_id", "")).strip()
+    start_state = str(shot.get("start_state", ""))
+    subject_label = rf"<Subject\s+{picture}>"
+    entering = re.search(
+        rf"(?:{subject_label}|(?<!\w){re.escape(entity_id)}(?!\w)).*\b(?:enter|enters|entering|walks?\s+into|arriv(?:e|es|ing))\b",
+        start_state,
+        re.IGNORECASE,
+    )
+    if entering is None:
+        return 0
+    events = [item for item in shot.get("events", ()) if isinstance(item, dict)]
+    for index, event in enumerate(events):
+        if str(event.get("actor", "")).strip().casefold() == entity_id.casefold():
+            shot_frames = int(shot["end_frame"]) - int(shot["start_frame"])
+            return round(shot_frames * (index + 1) / max(1, len(events)))
+    return 0
+
+
 def _first_visible_shot(shots: list[dict[str, Any]], subject: str, request: dict[str, Any]) -> int:
     match = re.fullmatch(r"<Subject\s+(\d+)>", subject, re.IGNORECASE)
     if match is None:
@@ -569,6 +600,14 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     for _original_shot, dialogue in dialogues:
         if str(dialogue.get("kind", "dialogue")).strip().lower() != "voiceover":
             current_shot = max(current_shot, _first_visible_shot(shots, str(dialogue.get("speaker", "")), request))
+            visual_lead = _speaker_visual_lead_frames(
+                shots, current_shot, str(dialogue.get("speaker", "")), request,
+            )
+            used[current_shot] = max(used[current_shot], visual_lead)
+            if visual_lead:
+                normalized_shots[current_shot]["dialogue_lead_frames"] = max(
+                    int(normalized_shots[current_shot].get("dialogue_lead_frames", 0)), visual_lead,
+                )
         remaining = str(dialogue["text"]).strip()
         required_line_frames = math.ceil(_line_spoken_duration_seconds(remaining) * fps)
         available_line_frames = sum(
@@ -1230,10 +1269,11 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
             if event_id not in event_owner:
                 event_owner[event_id] = index
                 event_actions[event_id] = action
-                ledger_pending.append({"id": event_id, "summary": action, "owner_shot": index})
+                ledger_pending.append({"id": event_id, "summary": _visual_state(action), "owner_shot": index})
             normalized_events.append({
                 "id": event_id, "actor": str(event.get("actor", "")).strip(),
                 "action": action, "phase": phase,
+                "speech_cue": bool(_VERBAL_SOUND.search(action) or re.search(r"\b(?:responds?|responding|replies?)\b", action, re.IGNORECASE)),
             })
         normalized_dialogues = []
         for dialogue_index, dialogue in enumerate(dialogues, 1):
@@ -1338,7 +1378,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         for event_index, event in enumerate(normalized_events):
             event["start_frame"] = shot_start + round(shot_frames * event_index / event_count)
             event["end_frame"] = shot_start + round(shot_frames * (event_index + 1) / event_count)
-        dialogue_cursor = shot_start
+        dialogue_cursor = shot_start + int(raw.get("dialogue_lead_frames", 0) or 0)
         for item in normalized_dialogues:
             item["start_frame"] = dialogue_cursor
             item["end_frame"] = min(
@@ -1353,11 +1393,12 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 item["speaker"] != actor_subject and item["start_frame"] == shot_start
                 for item in normalized_dialogues
             )
-            if actor_dialogues and earlier_speaker and re.search(
-                r"\b(?:speak|speaks|speaking|say|says|reply|replies|answer|answers)\b|(?:说话|说道|回答)",
-                event["action"], re.IGNORECASE,
-            ):
+            if actor_dialogues and earlier_speaker and event.get("speech_cue"):
                 event["start_frame"] = min(item["start_frame"] for item in actor_dialogues)
+            if event.get("speech_cue"):
+                event["action"] = _visual_state(event["action"])
+                warnings.append(f"Removed duplicate speech semantics from visual event {event['id']} in shot {index}.")
+            event.pop("speech_cue", None)
         dialogue_frames = sum(item["end_frame"] - item["start_frame"] for item in normalized_dialogues)
         if float(request.get("minimum_spoken_duration_seconds", 0.0)) > 0.0 and dialogue_frames > shot_frames:
             raise ValueError(
@@ -1376,17 +1417,27 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
         for raw_event, event in zip(events, normalized_events):
             actor_label = entity_labels.get(str(raw_event.get("actor", "")).strip(), "")
             event_descriptions.append(" ".join(filter(None, (actor_label + ":" if actor_label else "", event["action"]))))
+        start_state = _visual_state(raw["start_state"])
+        end_state = _visual_state(raw["end_state"])
+        clean_forbidden = [
+            str(item).strip() for item in forbidden
+            if str(item).strip() and _VERBAL_SOUND.search(str(item)) is None
+            and re.search(r"\b(?:responds?|responding|replies?)\b", str(item), re.IGNORECASE) is None
+        ]
+        if len(clean_forbidden) != len([item for item in forbidden if str(item).strip()]):
+            warnings.append(f"Removed dialogue-owned speech semantics from shot {index} forbidden_replays.")
+        audio = _nonverbal_soundscape(audio) or "N/A"
         visual_description = " ".join(filter(None, (
             f"Camera: {camera}.",
-            f"Opening state: {str(raw['start_state']).strip()}.",
+            f"Opening state: {start_state}.",
             *event_descriptions,
-            f"Required ending state: {str(raw['end_state']).strip()}.",
-            "Forbidden replay: " + "; ".join(str(item).strip() for item in forbidden if str(item).strip()) + "." if forbidden else "",
+            f"Required ending state: {end_state}.",
+            "Forbidden replay: " + "; ".join(clean_forbidden) + "." if clean_forbidden else "",
         )))
         normalized.update(
             camera=camera,
-            start_state=str(raw["start_state"]).strip(),
-            end_state=str(raw["end_state"]).strip(),
+            start_state=start_state,
+            end_state=end_state,
             events=normalized_events,
             dialogues=normalized_dialogues,
             visual_description=visual_description,
@@ -1394,7 +1445,7 @@ def validate_prompt_skill_result(value: Any, request: dict[str, Any]) -> dict[st
                 visual_description,
                 *(_dialogue_description(item) for item in normalized_dialogues),
             ))),
-            forbidden_replays=[str(item).strip() for item in forbidden if str(item).strip()],
+            forbidden_replays=clean_forbidden,
             audio=audio,
         )
     _close_dialogue_timeline_gaps(plan["shots"])

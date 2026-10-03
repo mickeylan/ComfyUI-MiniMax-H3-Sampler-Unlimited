@@ -128,6 +128,7 @@ class PromptSkillTests(unittest.TestCase):
         normalized, _warnings = prompt_skill._redistribute_dialogues(value, request)
         self.assertEqual(normalized["shots"][0]["dialogues"], [])
         self.assertEqual(normalized["shots"][1]["dialogues"][0]["text"], "现在开始说话。")
+        self.assertGreater(normalized["shots"][1]["dialogue_lead_frames"], 0)
 
     def test_timeline_extends_when_visible_lead_reduces_dialogue_capacity(self):
         story = '<Subject 1> (S1) says: <d>[Chinese] 这是一句需要完整自然说完而且不能提前开始的对白。</d>'
@@ -153,6 +154,33 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(compiled["planned_frames"], request["total_frames"])
         self.assertEqual("".join(item["text"] for shot in plan["shots"] for item in shot["dialogues"]), request["required_spoken_lines"][0])
         self.assertTrue(any("Extended the H3 timeline" in warning for warning in compiled["warnings"]))
+
+    def test_compiler_keeps_speech_only_in_dialogue_contract(self):
+        story = '<Subject 1> (S1) says: <d>[English] I will answer now.</d>'
+        request = prompt_skill.build_prompt_skill_request(
+            story, duration_seconds=4.0, fps=24.0, image_count=1, style="cinematic",
+            shot_density="medium", continuity_mode="balanced", prompt_lang="en",
+        )
+        value = self.result()
+        value["shots"] = [{
+            "start_frame": 0, "end_frame": request["total_frames"], "pictures": ["asset_1"],
+            "camera": "medium shot", "start_state": "asset_1 pauses before responding",
+            "end_state": "asset_1 has finished speaking",
+            "events": [{"id": "S1.V1", "actor": "asset_1", "action": "asset_1 speaks with confidence", "phase": "start"}],
+            "dialogues": [{"id": "S1.D1", "kind": "dialogue", "speaker": "asset_1", "speaker_id": "S1", "language": "English", "text": "I will answer now.", "delivery": "calmly"}],
+            "forbidden_replays": ["Repeating the dialogue delivery", "Repeating the hand movement"],
+            "audio": "Dialogue is primary, wind through leaves",
+            "description": "asset_1 responds aloud",
+        }]
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        shot = compiled["shot_plan"]["shots"][0]
+        self.assertNotRegex(shot["events"][0]["action"], r"\b(?:speak|respond|reply|dialogue)\w*\b")
+        self.assertNotRegex(shot["start_state"], r"\b(?:speak|respond|reply|dialogue)\w*\b")
+        self.assertNotRegex(shot["end_state"], r"\b(?:speak|respond|reply|dialogue)\w*\b")
+        self.assertEqual(shot["forbidden_replays"], ["Repeating the hand movement"])
+        self.assertEqual(shot["audio"], "wind through leaves")
+        self.assertEqual(shot["dialogues"][0]["text"], "I will answer now.")
+        self.assertTrue(any("Removed duplicate speech semantics" in warning for warning in compiled["warnings"]))
 
     def test_semantic_dialogue_cut_prefers_nearby_punctuation(self):
         text = "再闭关苦修已是无用。与其毫无头绪的闭关，不如继续。"
