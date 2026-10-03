@@ -1686,25 +1686,14 @@ def _prompt_dialogue_text(prompt):
     return "".join(parts)
 
 
-def _prompt_has_dialogue(prompt):
-    return bool(re.search(r"<d>.*?</d>", str(prompt), re.IGNORECASE | re.DOTALL))
-
-
-def _prompt_continues_dialogue(prompt):
-    return bool(re.search(
-        r"continues the same uninterrupted utterance from the previous chunk",
-        str(prompt), re.IGNORECASE,
-    ))
-
-
 def _suppress_previous_audio_context(previous_prompt, current_prompt):
-    previous_has = _prompt_has_dialogue(previous_prompt)
-    current_has = _prompt_has_dialogue(current_prompt)
-    if previous_has != current_has:
+    previous_speakers = prompt_output_speakers(previous_prompt)
+    current_speakers = prompt_output_speakers(current_prompt)
+    if not previous_speakers and not current_speakers:
+        return False
+    if not previous_speakers or not current_speakers:
         return True
-    if previous_has and current_has and not _prompt_continues_dialogue(current_prompt):
-        return True
-    return False
+    return previous_speakers[-1] != current_speakers[0]
 
 
 def _validate_h3_audio_conditioning(conds):

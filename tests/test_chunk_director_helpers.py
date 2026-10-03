@@ -1074,6 +1074,11 @@ class ChunkDirectorHelperTest(unittest.TestCase):
         self.assertTrue(nodes._suppress_previous_audio_context(speaking, silent))
         self.assertTrue(nodes._suppress_previous_audio_context(silent, new_speaker))
         self.assertTrue(nodes._suppress_previous_audio_context(speaking, new_speaker))
+        same_speaker_new_shot = "detailed_description:\n<Subject 1> (S1) carries the same voice over from the previous shot: <d>[English] world</d>"
+        self.assertFalse(nodes._suppress_previous_audio_context(speaking, same_speaker_new_shot))
+        handoff = "detailed_description:\n<Subject 1> (S1) says: <d>[English] done</d> <Subject 2> (S2) says: <d>[English] reply</d>"
+        speaker_two = "detailed_description:\n<Subject 2> (S2) says: <d>[English] continued</d>"
+        self.assertFalse(nodes._suppress_previous_audio_context(handoff, speaker_two))
         self.assertFalse(nodes._suppress_previous_audio_context(silent, silent))
 
     def test_timeline_audio_context_compensates_signed_overhang_before_grid_snap(self):
