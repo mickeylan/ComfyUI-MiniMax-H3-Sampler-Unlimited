@@ -1911,6 +1911,18 @@ def rebase_prompt_plan_edit(original: dict[str, Any], edited: dict[str, Any]) ->
 
 
 def validate_prompt_plan_edit(original: dict[str, Any], edited: dict[str, Any]) -> None:
+    fps = float(edited.get("fps", 24.0))
+    _MAX_SHOT_FRAMES = int(fps * 12)
+    for index, item in enumerate(edited.get("shots", []), 1):
+        start = item.get("start_frame", 0)
+        end = item.get("end_frame", start + 1)
+        shot_frames = int(end) - int(start)
+        if shot_frames > _MAX_SHOT_FRAMES:
+            raise ValueError(
+                f"Shot {index} is {shot_frames} frames ({shot_frames / fps:.1f}s), "
+                f"exceeding maximum {_MAX_SHOT_FRAMES} frames ({_MAX_SHOT_FRAMES / fps:.1f}s). "
+                f"The source must be split into more shots."
+            )
     original_subjects = {
         int(item["picture"]): (
             int(item["subject"]), str(item.get("entity_id", "")), str(item.get("kind", "")), str(item.get("name", "")),

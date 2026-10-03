@@ -99,6 +99,33 @@ detailed_description: second
         with self.assertRaisesRegex(ValueError, "contiguous"):
             story_format.validate_storyboard_plan(broken, image_count=1, total_frames=124)
 
+    def test_compile_h3_prompt_adds_music_ban_when_non_diegetic_music_is_N_A(self):
+        plan = {
+            "image_subjects": [{"picture": 1, "subject": 1, "name": "Asset1", "kind": "scene", "entity_id": "asset_1", "observable_features": "A room."}],
+            "shots": [{"start_frame": 0, "end_frame": 48, "pictures": [1], "description": "She enters."}],
+            "summary": "[reference generation] Entry.",
+            "retention_analysis": "<Subject 1>: fully_preserved.",
+            "non_diegetic_music": "N/A",
+            "overall_soundscape": "Wind rustling, footsteps.",
+        }
+        validated = story_format.validate_storyboard_plan(plan, image_count=1, total_frames=48)
+        prompt = story_format.compile_h3_prompt(validated, fps=24.0)
+        self.assertIn("Background music is prohibited", prompt)
+        self.assertIn("Do not add any background music", prompt)
+
+    def test_compile_h3_prompt_suppresses_music_ban_when_music_is_requested(self):
+        plan = {
+            "image_subjects": [{"picture": 1, "subject": 1, "name": "Asset1", "kind": "scene", "entity_id": "asset_1", "observable_features": "A room."}],
+            "shots": [{"start_frame": 0, "end_frame": 48, "pictures": [1], "description": "She enters."}],
+            "summary": "[reference generation] Entry.",
+            "retention_analysis": "<Subject 1>: fully_preserved.",
+            "non_diegetic_music": "Ambient string quartet.",
+            "overall_soundscape": "String quartet playing softly.",
+        }
+        validated = story_format.validate_storyboard_plan(plan, image_count=1, total_frames=48)
+        prompt = story_format.compile_h3_prompt(validated, fps=24.0)
+        self.assertNotIn("Background music is prohibited", prompt)
+
     def test_compile_h3_prompt_owns_markers_and_preserves_dialogue(self):
         plan = story_format.validate_storyboard_plan(
             {
