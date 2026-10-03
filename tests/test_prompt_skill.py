@@ -1748,9 +1748,48 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("<Subject 2> (S2) says", prompt)
         self.assertNotIn("continues the same uninterrupted utterance from the previous chunk", prompt)
 
+    def test_first_actual_fragment_does_not_claim_silent_previous_chunk(self):
+        shot = {
+            "start_frame": 0, "end_frame": 80, "start_state": "the speaker is visible",
+            "end_state": "the question continues", "dialogues": [{
+                "speaker": "<Subject 1>", "speaker_id": "S1", "kind": "dialogue",
+                "language": "English", "text": "This begins after a silent chunk.", "delivery": "calmly",
+                "start_frame": 20, "end_frame": 80,
+            }],
+        }
+        prompt = prompt_skill._localized_shot_description(
+            shot, 40, 60, 24.0, (), {}, previous_chunk_speakers=(), next_chunk_speakers=("<Subject 1>",),
+        )
+        self.assertIn("<Subject 1> (S1) says", prompt)
+        self.assertNotIn("from the previous chunk", prompt)
+        self.assertIn("continues into the next chunk", prompt)
+
+    def test_last_fragment_does_not_continue_into_different_speaker_chunk(self):
+        shot = {
+            "start_frame": 0, "end_frame": 80, "start_state": "the speaker is visible",
+            "end_state": "the question ends", "dialogues": [{
+                "speaker": "<Subject 1>", "speaker_id": "S1", "kind": "dialogue",
+                "language": "English", "text": "Does this end here?", "delivery": "calmly",
+                "start_frame": 0, "end_frame": 80,
+            }],
+        }
+        prompt = prompt_skill._localized_shot_description(
+            shot, 40, 79, 24.0, (), {},
+            previous_chunk_speakers=("<Subject 1>",), next_chunk_speakers=("<Subject 2>",),
+        )
+        self.assertIn("from the previous chunk", prompt)
+        self.assertNotIn("continues into the next chunk", prompt)
+
+    def test_prompt_output_speakers_uses_only_emitted_dialogue_tags(self):
+        prompt = (
+            "<Subject 1> (S1) appears silently. "
+            "<Subject 2> (S2) says: <d>[English] Hello.</d>"
+        )
+        self.assertEqual(prompt_skill.prompt_output_speakers(prompt), ("<Subject 2>",))
+
     def test_visual_state_removes_noncanonical_speaking_words(self):
-        state = prompt_skill._visual_state("Subject 3 finishes her speech while Subject 4 answers calmly")
-        self.assertNotRegex(state, r"\b(?:speech|speaking|answers)\b")
+        state = prompt_skill._visual_state("Subject 3 finishes her speech while Subject 4 responds calmly")
+        self.assertNotRegex(state, r"\b(?:speech|speaking|responds)\b")
         self.assertIn("maintains eye contact", state)
 
     def test_non_speaker_physical_action_waits_during_current_dialogue(self):

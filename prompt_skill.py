@@ -2013,7 +2013,7 @@ def _subject_text(text: Any, subjects_by_entity: dict[str, dict[str, Any]]) -> s
 def _visual_state(text: Any, subjects_by_entity: dict[str, dict[str, Any]] | None = None) -> str:
     value = _subject_text(text, subjects_by_entity or {})
     value = re.sub(
-        r"\b(?:finishes?\s+(?:speaking|her speech|his speech|the speech|her sentence|his sentence|the sentence)|speaks?|speaking|says?|saying|answers?|answering|replies?|replying|speech|sentence|vocal(?:izes?|izing|ization)?)\b",
+        r"\b(?:finishes?\s+(?:speaking|her speech|his speech|the speech|her sentence|his sentence|the sentence)|speaks?|speaking|says?|saying|answers?|answering|replies?|replying|responds?|responding|response|speech|sentence|vocal(?:izes?|izing|ization)?)\b",
         "maintains eye contact",
         value,
         flags=re.IGNORECASE,
@@ -2067,7 +2067,8 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
                                 active_events: tuple[dict[str, Any], ...],
                                 subjects_by_entity: dict[str, dict[str, Any]],
                                 scripted_dialogue_complete: bool = False,
-                                previous_chunk_speakers: tuple[str, ...] | None = None) -> str:
+                                previous_chunk_speakers: tuple[str, ...] | None = None,
+                                next_chunk_speakers: tuple[str, ...] | None = None) -> str:
     dialogue_fragments = []
     active_speakers = []
     for dialogue in shot.get("dialogues", ()):
@@ -2089,9 +2090,11 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
             local_dialogue["continues_to_next"] = False
         speaker = str(dialogue["speaker"])
         continues_from_previous_chunk = previous_chunk_speakers is None or speaker in previous_chunk_speakers
+        continues_to_next_chunk = next_chunk_speakers is None or speaker in next_chunk_speakers
         fragment = slice_dialogue_for_interval(
             _dialogue_description(local_dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end,
             continues_from_previous_chunk=continues_from_previous_chunk,
+            continues_to_next_chunk=continues_to_next_chunk,
         )
         if not fragment:
             continue
@@ -2211,8 +2214,20 @@ def prompt_plan_speakers(plan: dict[str, Any], frame_start: int, frame_end: int)
     return tuple(dict.fromkeys(speaker for speaker in speakers if speaker))
 
 
+def prompt_output_speakers(prompt: str) -> tuple[str, ...]:
+    text = str(prompt)
+    declarations = list(_SPEAKER_SUBJECT.finditer(text))
+    speakers = []
+    for dialogue in _DIALOGUE_TAG.finditer(text):
+        declaration = next((item for item in reversed(declarations) if item.end() <= dialogue.start()), None)
+        if declaration is not None:
+            speakers.append(re.sub(r"\s+", " ", declaration.group(1)))
+    return tuple(dict.fromkeys(speakers))
+
+
 def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start: int, frame_end: int,
-                              previous_chunk_speakers: tuple[str, ...] | None = None) -> str:
+                              previous_chunk_speakers: tuple[str, ...] | None = None,
+                              next_chunk_speakers: tuple[str, ...] | None = None) -> str:
     projection = project_prompt_plan_interval(plan, frame_start=frame_start, frame_end=frame_end)
     active = projection["shots"]
     scripted_dialogue_complete = prompt_plan_dialogue_complete(plan, frame_start)
@@ -2264,6 +2279,7 @@ def localize_prompt_from_plan(prompt: str, plan: dict[str, Any], *, frame_start:
             shot, frame_start, frame_end, float(plan["fps"]), shot_events, subjects_by_entity,
             scripted_dialogue_complete=scripted_dialogue_complete,
             previous_chunk_speakers=previous_chunk_speakers,
+            next_chunk_speakers=next_chunk_speakers,
         )
         referenced_subjects = {int(number) for number in re.findall(r"<Subject\s+(\d+)>", description, re.IGNORECASE)}
         active_subjects = {

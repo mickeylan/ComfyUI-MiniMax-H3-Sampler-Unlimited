@@ -106,6 +106,14 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertNotIn("<scenetrans>", part)
         self.assertIn("continues into the next chunk without a pause or restart", part)
 
+    def test_fragment_does_not_claim_next_chunk_when_next_actual_speaker_differs(self):
+        source = "<Subject 1> (S1) says: <d>[Chinese] 这样真的来得及吗？</d>"
+        part = slice_dialogue_for_interval(
+            source, 0, 20, 0, 19, continues_to_next_chunk=False,
+        )
+        self.assertIn("<d>[Chinese] 这样真的来得及吗？</d>", part)
+        self.assertNotIn("continues into the next chunk", part)
+
     def test_adjacent_chunks_share_boundary_when_scene_marker_is_stripped_from_continuation(self):
         text = "还有不到四十年，太运宗就会派更强的弟子，这样真的来得及吗？"
         first_source = f"<Subject 3> (S1) carries over: <d>[Chinese] <scenetrans> {text}</d>"

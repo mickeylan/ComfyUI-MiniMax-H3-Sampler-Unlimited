@@ -66,7 +66,8 @@ def dialogue_frame_count(content: str, fps: float) -> int:
 
 def slice_dialogue_for_interval(content: str, source_start: int, source_end: int,
                                 overlap_start: int, overlap_end: int,
-                                continues_from_previous_chunk: bool = True) -> str:
+                                continues_from_previous_chunk: bool = True,
+                                continues_to_next_chunk: bool = True) -> str:
     match = _DIALOGUE.search(content)
     duration = source_end - source_start
     if match is None or duration <= 0 or overlap_start <= source_start and overlap_end >= source_end:
@@ -106,5 +107,6 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     if overlap_end < source_end:
         after = re.sub(r"^\s*with synchronized visible lip movement\.?", "", after, flags=re.IGNORECASE)
         after = re.sub(r"^\s*<scenetrans>\s*", "", after, flags=re.IGNORECASE)
-        after = " while the same utterance continues into the next chunk without a pause or restart." + after
+        if continues_to_next_chunk:
+            after = " while the same utterance continues into the next chunk without a pause or restart." + after
     return (before + f"<d>{prefix}{fragment}</d>" + after).strip()

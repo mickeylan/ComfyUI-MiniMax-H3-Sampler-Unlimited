@@ -43,7 +43,7 @@ from .prompt_skill import (
     localize_prompt_from_plan, normalize_h3_chunk_dialogue, normalize_h3_chunk_references, normalize_h3_chunk_retention,
     normalize_h3_chunk_transitions,
     normalize_prompt_plan, project_prompt_plan_interval,
-    prompt_plan_dialogue_complete, prompt_plan_shots, prompt_plan_speakers,
+    prompt_output_speakers, prompt_plan_dialogue_complete, prompt_plan_shots,
     validate_h3_chunk_dialogue_contract, validate_h3_chunk_prompt, validate_h3_identity_contract,
 )
 from .qwen35 import Qwen35ContinuityDirector
@@ -3360,23 +3360,32 @@ class HREndlessSampler(SamplerCustomAdvanced):
             audio_number,
         )
         if typed_prompt_plan is not None:
+            content_ranges = [
+                (chunk["frame_start"] + chunk.get("output_trim_frames", 0), chunk["frame_end"])
+                for chunk in active_plan
+            ]
+            provisional = [
+                localize_prompt_from_plan(
+                    chunk_prompt, typed_prompt_plan, frame_start=content_start, frame_end=frame_end,
+                )
+                for (chunk_prompt, _debug_prompt), (content_start, frame_end) in zip(planned_prompts, content_ranges)
+            ]
+            output_speakers = [prompt_output_speakers(item) for item in provisional]
             localized_prompts = []
-            previous_chunk_speakers = ()
-            for index, (chunk, (chunk_prompt, _debug_prompt)) in enumerate(zip(active_plan, planned_prompts)):
-                content_start = chunk["frame_start"] + chunk.get("output_trim_frames", 0)
+            for index, ((chunk_prompt, _debug_prompt), chunk, (content_start, frame_end)) in enumerate(
+                zip(planned_prompts, active_plan, content_ranges)
+            ):
                 localized = localize_prompt_from_plan(
                     chunk_prompt, typed_prompt_plan,
-                    frame_start=content_start, frame_end=chunk["frame_end"],
-                    previous_chunk_speakers=previous_chunk_speakers,
+                    frame_start=content_start, frame_end=frame_end,
+                    previous_chunk_speakers=output_speakers[index - 1] if index else (),
+                    next_chunk_speakers=output_speakers[index + 1] if index + 1 < len(output_speakers) else (),
                 )
                 validate_h3_chunk_prompt(
                     localized, typed_prompt_plan,
-                    frame_start=content_start, frame_end=chunk["frame_end"],
+                    frame_start=content_start, frame_end=frame_end,
                 )
                 localized_prompts.append((localized, _debug_chunk_prompt(index, chunk, content_start, localized)))
-                previous_chunk_speakers = prompt_plan_speakers(
-                    typed_prompt_plan, content_start, chunk["frame_end"]
-                )
             expected_dialogue = _prompt_dialogue_text(semantic_prompt)
             projected_dialogue = "".join(_prompt_dialogue_text(item[0]) for item in localized_prompts)
             if projected_dialogue != expected_dialogue:
