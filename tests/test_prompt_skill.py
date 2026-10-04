@@ -189,6 +189,12 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(text[:cut], "再闭关苦修已是无用。")
         self.assertTrue(text[cut:].startswith("与其毫无头绪"))
 
+    def test_semantic_dialogue_cut_defers_when_only_forward_punctuation_is_safe(self):
+        text = "功力已经达到顶峰，再闭关苦修。"
+        raw_cut = text.index("峰")
+        cut = prompt_skill._dialogue_semantic_cut(text, raw_cut)
+        self.assertEqual(cut, 0)
+
     def test_extended_timeline_spreads_frames_across_remaining_shots(self):
         shots = [
             {"start_frame": 0, "end_frame": 100},

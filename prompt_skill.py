@@ -472,7 +472,11 @@ def _dialogue_prefix_for_frames(text: str, available_frames: int, fps: float) ->
 def _dialogue_semantic_cut(text: str, cut: int) -> int:
     candidates = [match.end() for match in re.finditer(r"[。！？!?；;，,]", text[:cut])]
     useful = [index for index in candidates if index >= max(3, cut // 2)]
-    return useful[-1] if useful else cut
+    if useful:
+        return useful[-1]
+    if re.search(r"[。！？!?；;，,]", text[cut:cut + 3]) is not None:
+        return 0
+    return cut
 
 
 def _extend_shot_intervals(shots: list[dict[str, Any]], normalized_shots: list[dict[str, Any]],
