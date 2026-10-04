@@ -1776,23 +1776,6 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("<Subject 2> (S2) says", prompt)
         self.assertNotIn("continues the same uninterrupted utterance from the previous chunk", prompt)
 
-    def test_same_speaker_cross_shot_fragment_keeps_physical_chunk_continuity(self):
-        shot = {
-            "start_frame": 40, "end_frame": 80, "start_state": "the speaker remains visible",
-            "end_state": "the statement continues", "dialogues": [{
-                "speaker": "<Subject 2>", "speaker_id": "S2", "kind": "dialogue",
-                "language": "English", "text": "The same answer continues.", "delivery": "calmly",
-                "continues_from_previous": True, "continues_to_next": True,
-                "start_frame": 40, "end_frame": 80,
-            }],
-        }
-        prompt = prompt_skill._localized_shot_description(
-            shot, 40, 70, 24.0, (), {},
-            previous_chunk_speakers=("<Subject 2>",), next_chunk_speakers=("<Subject 2>",),
-        )
-        self.assertIn("continues the same uninterrupted utterance from the previous chunk", prompt)
-        self.assertIn("continues into the next chunk without a pause or restart", prompt)
-
     def test_first_actual_fragment_does_not_claim_silent_previous_chunk(self):
         shot = {
             "start_frame": 0, "end_frame": 80, "start_state": "the speaker is visible",
@@ -1836,15 +1819,6 @@ class PromptSkillTests(unittest.TestCase):
         state = prompt_skill._visual_state("Subject 3 finishes her speech while Subject 4 responds calmly")
         self.assertNotRegex(state, r"\b(?:speech|speaking|responds)\b")
         self.assertIn("maintains eye contact", state)
-
-    def test_visual_state_removes_chinese_speaking_words(self):
-        state = prompt_skill._visual_state("<Subject 3>说完话，<Subject 4>嘴唇翕动说话并回应")
-        self.assertNotRegex(state, r"(?:说完话|嘴唇翕动|说话|回应)")
-        self.assertIn("maintains eye contact", state)
-
-    def test_nonverbal_soundscape_removes_chinese_dialogue_fragments(self):
-        soundscape = prompt_skill._nonverbal_soundscape("对白是主要音频，树叶沙沙声，温柔人声")
-        self.assertEqual(soundscape, "树叶沙沙声")
 
     def test_non_speaker_physical_action_waits_during_current_dialogue(self):
         shot = {

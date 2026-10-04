@@ -31,7 +31,7 @@ _NAMED_SPOKEN_QUOTE = re.compile(
     re.DOTALL,
 )
 _VERBAL_SOUND = re.compile(
-    r"\b(?:dialogue|speech|spoken|speaks?|speaking|says?|asks?|answers?|responds?|responding|response|replies?|whispers?|shouts?|voice(?:over)?|vocal(?:ization)?|words?|conversation|singing|lyrics?)\b|(?:对白|对话|说话|说完话|开口|回应|答话|回答|旁白|独白|人声|语音|嗓音|歌词|歌声|嘴唇翕动)",
+    r"\b(?:dialogue|speech|spoken|speaks?|speaking|says?|asks?|answers?|responds?|responding|response|replies?|whispers?|shouts?|voice(?:over)?|vocal(?:ization)?|words?|conversation|singing|lyrics?)\b",
     re.IGNORECASE,
 )
 _MUSIC_SOUND = re.compile(
@@ -47,7 +47,7 @@ _MUSIC_INTENT = re.compile(
 def _nonverbal_soundscape(*values: Any) -> str:
     parts = []
     for value in values:
-        for part in re.split(r"(?<=[.!?。！？])\s+|\s*[,，;；]\s*", str(value or "").strip()):
+        for part in re.split(r"(?<=[.!?])\s+|\s*[,;]\s*", str(value or "").strip()):
             part = part.strip()
             if part and part.upper() != "N/A" and _VERBAL_SOUND.search(part) is None and _MUSIC_SOUND.search(part) is None:
                 parts.append(part)
@@ -2064,7 +2064,7 @@ def _subject_text(text: Any, subjects_by_entity: dict[str, dict[str, Any]]) -> s
 def _visual_state(text: Any, subjects_by_entity: dict[str, dict[str, Any]] | None = None) -> str:
     value = _subject_text(text, subjects_by_entity or {})
     value = re.sub(
-        r"\b(?:finishes?\s+(?:speaking|her speech|his speech|the speech|her sentence|his sentence|the sentence)|speaks?|speaking|says?|saying|answers?|answering|replies?|replying|responds?|responding|response|speech|sentence|vocal(?:izes?|izing|ization)?)\b|(?:嘴唇翕动(?:说话)?|说完话|开始说话|开口|回应|答话|回答|说道|说话)",
+        r"\b(?:finishes?\s+(?:speaking|her speech|his speech|the speech|her sentence|his sentence|the sentence)|speaks?|speaking|says?|saying|answers?|answering|replies?|replying|responds?|responding|response|speech|sentence|vocal(?:izes?|izing|ization)?)\b",
         "maintains eye contact",
         value,
         flags=re.IGNORECASE,
