@@ -99,14 +99,14 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     if overlap_start > source_start and continues_from_previous_chunk:
         before = re.sub(
             r"(?is)^(.+?\(S\d+\))\s+.*:\s*$",
-            r"\1 continues the same uninterrupted utterance from the previous chunk: ",
+            r"At 0.000 seconds, \1 continues the same uninterrupted utterance from the previous chunk immediately from the carried audio with no lead-in silence and no new breath: ",
             before,
         )
         if before == content[:match.start()]:
-            before = before.rstrip() + " continues the same uninterrupted utterance from the previous chunk: "
+            before = "At 0.000 seconds, " + before.rstrip() + " continues the same uninterrupted utterance from the previous chunk immediately from the carried audio with no lead-in silence and no new breath: "
     if overlap_end < source_end:
         after = re.sub(r"^\s*with synchronized visible lip movement\.?", "", after, flags=re.IGNORECASE)
         after = re.sub(r"^\s*<scenetrans>\s*", "", after, flags=re.IGNORECASE)
         if continues_to_next_chunk:
-            after = " while the same utterance continues into the next chunk without a pause or restart." + after
+            after = " while the same utterance continues into the next chunk without a pause or restart; do not close the sentence cadence at this fragment boundary." + after
     return (before + f"<d>{prefix}{fragment}</d>" + after).strip()

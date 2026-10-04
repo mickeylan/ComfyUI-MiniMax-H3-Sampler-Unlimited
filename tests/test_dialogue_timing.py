@@ -106,6 +106,14 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertNotIn("<scenetrans>", part)
         self.assertIn("continues into the next chunk without a pause or restart", part)
 
+    def test_continuation_fragment_resumes_at_chunk_start_without_lead_in(self):
+        source = "<Subject 1> (S1) says: <d>[Chinese] 这是一句不能中途停顿的连续对白</d>"
+        part = slice_dialogue_for_interval(source, 0, 30, 10, 20)
+        self.assertIn("At 0.000 seconds", part)
+        self.assertIn("no lead-in silence", part)
+        self.assertIn("no new breath", part)
+        self.assertIn("do not close the sentence cadence", part)
+
     def test_fragment_does_not_claim_next_chunk_when_next_actual_speaker_differs(self):
         source = "<Subject 1> (S1) says: <d>[Chinese] 这样真的来得及吗？</d>"
         part = slice_dialogue_for_interval(
