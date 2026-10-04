@@ -845,6 +845,37 @@ class PromptSkillTests(unittest.TestCase):
         )
         self.assertTrue(any("Ignored Qwen name output for immutable asset_1" in item for item in compiled["warnings"]))
 
+    def test_named_story_dialogue_allows_action_between_name_and_speech_verb(self):
+        story = (
+            "<Picture 1>是玉霄峰宫；<Picture 2>是梵心桃花林；"
+            "<Picture 3>是上官若彤四视图；<Picture 4>是上官若琳四视图；\n"
+            "上官若彤面对上官若琳说：“姐姐，自从你跟太运宗使者比试之后，这样真的来得及吗？”\n"
+            "上官若琳略一沉吟，走上前拉住上官若彤的手，然后说道：“我现在功力已经达到顶峰，再闭关苦修已是无用。”"
+        )
+        request = prompt_skill.build_prompt_skill_request(
+            story, duration_seconds=30.0, fps=24.0, image_count=4, style="cinematic",
+            shot_density="medium", continuity_mode="balanced", prompt_lang="zh",
+        )
+        self.assertEqual(request["required_spoken_subjects"], ["<Subject 3>", "<Subject 4>"])
+        self.assertEqual(request["required_speaker_subjects"], {"S1": "<Subject 3>", "S2": "<Subject 4>"})
+
+        value = self.result()
+        value["shots"][0]["dialogues"] = [
+            {
+                "id": "S1.D1", "kind": "dialogue", "speaker": "asset_3", "speaker_id": "S1",
+                "language": "Chinese", "text": request["required_spoken_lines"][0], "delivery": "自然地",
+            },
+            {
+                "id": "S1.D2", "kind": "dialogue", "speaker": "asset_3", "speaker_id": "S1",
+                "language": "Chinese", "text": request["required_spoken_lines"][1], "delivery": "自然地",
+            },
+        ]
+        value["shots"][1]["dialogues"] = []
+        compiled = prompt_skill.compile_prompt_skill(value, request)
+        dialogues = [item for shot in compiled["shot_plan"]["shots"] for item in shot["dialogues"]]
+        self.assertEqual([item["speaker"] for item in dialogues], ["<Subject 3>", "<Subject 4>"])
+        self.assertEqual([item["speaker_id"] for item in dialogues], ["S1", "S2"])
+
     def test_restores_missing_canonical_marker_for_unique_source_name_without_retry(self):
         request = {
             **self.request(), "image_count": 2,

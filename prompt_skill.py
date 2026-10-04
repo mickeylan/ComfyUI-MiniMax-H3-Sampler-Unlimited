@@ -113,10 +113,20 @@ def _picture_declarations(story: str) -> dict[int, str]:
 def _named_spoken_subjects(story: str) -> tuple[tuple[str, str, str], ...]:
     declarations = _picture_declarations(story)
     result = []
-    for match in _NAMED_SPOKEN_QUOTE.finditer(story):
-        name, text = match.group(1).strip(), match.group(2).strip()
-        picture = next((number for number, declared in declarations.items() if declared.casefold().startswith(name.casefold())), None)
-        if picture is not None and text:
+    for match in _SPOKEN_QUOTE.finditer(story):
+        text = match.group(1).strip()
+        clause_start = max(story.rfind(separator, 0, match.start()) for separator in "\r\n。！？!?；;") + 1
+        clause = story[clause_start:match.start()]
+        candidates = []
+        for picture, declared in declarations.items():
+            for length in range(len(declared), 1, -1):
+                name = declared[:length].strip()
+                position = clause.find(name)
+                if position >= 0:
+                    candidates.append((position, -length, picture, name))
+                    break
+        if candidates and text:
+            _position, _length, picture, name = min(candidates)
             result.append((text, f"<Subject {picture}>", name))
     return tuple(result)
 
