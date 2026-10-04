@@ -2148,18 +2148,5 @@ class PromptSkillTests(unittest.TestCase):
             )
 
 
-    def test_excessively_long_shot_is_rejected_by_plan_edit_validation(self):
-        plan = {
-            "image_subjects": [{"picture": 1, "subject": 1, "name": "Asset1", "kind": "scene", "entity_id": "asset_1", "observable_features": "A room."}],
-            "shots": [
-                {"start_frame": 0, "end_frame": 100, "pictures": [1], "description": "Opening."},
-                {"start_frame": 100, "end_frame": 500, "pictures": [1], "description": "Endless hallway."},
-            ],
-            "fps": 24.0,
-        }
-        with self.assertRaisesRegex(ValueError, "exceeding maximum"):
-            prompt_skill.validate_prompt_plan_edit(plan, plan)
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -261,18 +261,11 @@ def compile_h3_prompt(plan: dict[str, Any], *, fps: float) -> str:
             seconds, milliseconds = divmod(remainder, 1000)
             marker += f" At {minutes:02d}:{seconds:02d}.{milliseconds:03d},"
         shots.append(f"{marker} {item['description']}")
-    music = str(plan.get("non_diegetic_music", "")).strip()
-    music_ban = (
-        "Background music is prohibited for this production (non_diegetic_music: N/A). Do not add any background music, soundtrack, or ambient melody. "
-        if music.upper() in {"N/A", "NONE", ""}
-        else ""
-    )
     return "\n\n".join((
         "subject_definitions:\n" + "\n".join(subjects),
         "summary:\n" + str(plan.get("summary", "")),
         "retention_analysis:\n" + str(plan.get("retention_analysis", "")),
         "detailed_description:\n" + "\n".join(shots),
         "overall_soundscape:\n" + str(plan.get("overall_soundscape", "")),
-        "non_diegetic_music:\n" + music,
-        ("## CRITICAL PRODUCTION CONSTRAINT\n" + music_ban + "\n") if music_ban else "",
+        "non_diegetic_music:\n" + str(plan.get("non_diegetic_music", "")),
     ))
