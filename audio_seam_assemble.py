@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 import numpy as np
 import torch
@@ -18,8 +19,34 @@ except ImportError:  # Direct test execution.
 HREndlessTimeline = io.Custom("HRENDLESS_TIMELINE")
 ALIGN_CORRELATION = 0.75
 ALIGN_MAX_LAG_MS = 13.0
-GAIN_LIMIT_DB = 3.0
+CONTINUATION_CORRELATION = 0.85
+CONTINUATION_MAX_LAG_MS = 32.0
+GAIN_LIMIT_DB = 1.5
 GAIN_RELEASE_MS = 150.0
+_DIALOGUE = re.compile(r"<d>.*?</d>", re.IGNORECASE | re.DOTALL)
+_SPEAKER = re.compile(r"(<Subject\s+\d+>)\s*\((S\d+)\)", re.IGNORECASE)
+
+
+def _prompt_speakers(prompt):
+    text = str(prompt)
+    declarations = list(_SPEAKER.finditer(text))
+    speakers = []
+    for dialogue in _DIALOGUE.finditer(text):
+        declaration = next((item for item in reversed(declarations) if item.end() <= dialogue.start()), None)
+        if declaration is not None:
+            speakers.append((re.sub(r"\s+", " ", declaration.group(1)).casefold(), declaration.group(2).upper()))
+    return tuple(speakers)
+
+
+def _seam_mode(previous_prompt, current_prompt):
+    previous = _prompt_speakers(previous_prompt)
+    current = _prompt_speakers(current_prompt)
+    if previous and current and previous[-1] == current[0] and re.search(
+        r"continues the same uninterrupted utterance from the previous chunk",
+        str(current_prompt), re.IGNORECASE,
+    ):
+        return "same_speaker_continuation"
+    return "default"
 
 
 def _decoded_channels(audio_vae, latent):
@@ -58,9 +85,13 @@ def _rms_gain_envelope(previous, current, sample_rate, credible):
     return gain, envelope
 
 
-def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate):
+def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate, seam_modes=None):
     if len(decoded) != len(frame_counts) or len(decoded) != len(trim_frames):
         raise ValueError("HR Endless Audio Assemble received inconsistent chunk metadata")
+    if seam_modes is None:
+        seam_modes = ["default"] * max(0, len(decoded) - 1)
+    if len(seam_modes) != max(0, len(decoded) - 1):
+        raise ValueError("HR Endless Audio Assemble received inconsistent seam modes")
     first_length = round(frame_counts[0] / fps * sample_rate)
     assembled = _fit_length(decoded[0], first_length).copy()
     seams = []
@@ -72,11 +103,19 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate):
         previous_mono = _fit_length(decoded[index - 1], previous_length).mean(axis=0)
         current_mono = current.mean(axis=0)
         result = analyze_audio_seam(previous_mono, current_mono, sample_rate, overlap)
-        credible = (
+        mode = seam_modes[index - 1]
+        normal_alignment = (
             result["mean_correlation"] >= ALIGN_CORRELATION
             and result["mean_lag_ms"] is not None
             and abs(result["mean_lag_ms"]) <= ALIGN_MAX_LAG_MS
         )
+        continuation_alignment = (
+            mode == "same_speaker_continuation"
+            and result["mean_correlation"] >= CONTINUATION_CORRELATION
+            and result["mean_lag_ms"] is not None
+            and abs(result["mean_lag_ms"]) <= CONTINUATION_MAX_LAG_MS
+        )
+        credible = normal_alignment or continuation_alignment
         lag_samples = round(result["mean_lag_ms"] / 1000.0 * sample_rate) if credible else 0
         cut = max(0, min(current.shape[-1], overlap + lag_samples))
         fade = round((0.03 if credible else 0.01) * sample_rate)
@@ -107,7 +146,11 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate):
             "gain_match_db": 20.0 * np.log10(gain),
             "gain_release_samples": 0 if envelope is None else int(np.count_nonzero(envelope != 1.0)),
             "aligned": credible,
-            "alignment_reason": "high_correlation_bounded_lag" if credible else "unaligned_short_fade",
+            "alignment_reason": (
+                "same_speaker_high_correlation_bounded_lag" if continuation_alignment and not normal_alignment
+                else "high_correlation_bounded_lag" if credible
+                else "unaligned_short_fade"
+            ),
         })
     return assembled, seams
 
@@ -142,6 +185,7 @@ class HREndlessAudioSeamAssemble(io.ComfyNode):
         decoded = []
         frame_counts = []
         trims = []
+        prompts = []
         for record in records:
             number = int(record["chunk"])
             state = _replay_load_tensor_file(root / "chunks" / f"chunk_{number:04d}.pt")
@@ -149,7 +193,11 @@ class HREndlessAudioSeamAssemble(io.ComfyNode):
             frame_counts.append(int(state["previous_frame_count"]))
             metadata = json.loads((root / record["metadata_path"]).read_text(encoding="utf-8"))
             trims.append(int(metadata.get("output_trim_frames", 0)))
-        waveform, seams = assemble_audio_chunks(decoded, frame_counts, trims, float(fps), sample_rate)
+            prompts.append(str(metadata.get("effective_h3_prompt", "")))
+        seam_modes = [_seam_mode(previous, current) for previous, current in zip(prompts, prompts[1:])]
+        waveform, seams = assemble_audio_chunks(
+            decoded, frame_counts, trims, float(fps), sample_rate, seam_modes=seam_modes,
+        )
         audio = torch.from_numpy(waveform.astype(np.float32, copy=False)).unsqueeze(0)
         std = torch.std(audio, dim=[1, 2], keepdim=True) * 5.0
         std[std < 1.0] = 1.0

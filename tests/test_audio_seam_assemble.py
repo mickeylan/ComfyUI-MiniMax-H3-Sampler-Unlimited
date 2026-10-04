@@ -13,6 +13,13 @@ from audio_seam_assemble import assemble_audio_chunks
 
 
 class AudioSeamAssembleTests(unittest.TestCase):
+    def test_seam_mode_requires_same_speaker_and_explicit_chunk_continuation(self):
+        previous = "<Subject 3> (S1) says: <d>[Chinese] 前半句</d>"
+        continued = "At 0.000 seconds, <Subject 3> (S1) continues the same uninterrupted utterance from the previous chunk: <d>[Chinese] 后半句</d>"
+        handoff = "<Subject 4> (S2) says: <d>[Chinese] 回答</d>"
+        self.assertEqual(audio_seam_assemble._seam_mode(previous, continued), "same_speaker_continuation")
+        self.assertEqual(audio_seam_assemble._seam_mode(previous, handoff), "default")
+
     def test_assembly_preserves_exact_frame_duration(self):
         sample_rate = 4000
         fps = 20.0
@@ -51,14 +58,14 @@ class AudioSeamAssembleTests(unittest.TestCase):
         self.assertTrue(np.all(calls[0][0] == 1.0))
         self.assertTrue(np.all(calls[1][0] == 2.0))
 
-    def test_credible_seam_uses_three_db_limited_gain_release(self):
+    def test_credible_seam_uses_one_point_five_db_limited_gain_release(self):
         first = np.ones((2, 2000))
         second = np.full((2, 1200), 0.1)
         result = {"mean_correlation": 0.95, "mean_lag_ms": 0.0}
         with patch.object(audio_seam_assemble, "analyze_audio_seam", return_value=result):
             assembled, seams = assemble_audio_chunks([first, second], [10, 6], [0, 1], 20.0, 4000)
-        self.assertAlmostEqual(seams[0]["gain_match_db"], 3.0)
-        self.assertGreater(assembled[0, 2000], 0.13)
+        self.assertAlmostEqual(seams[0]["gain_match_db"], 1.5)
+        self.assertGreater(assembled[0, 2000], 0.115)
         self.assertAlmostEqual(assembled[0, -1], 0.1)
 
     def test_observed_twelve_point_six_ms_grid_offset_is_aligned(self):
@@ -70,7 +77,7 @@ class AudioSeamAssembleTests(unittest.TestCase):
         self.assertTrue(seams[0]["aligned"])
         self.assertEqual(seams[0]["cut_samples"], 250)
 
-    def test_large_lag_is_not_applied_even_with_high_correlation(self):
+    def test_large_lag_is_not_applied_without_same_speaker_continuation(self):
         first = np.ones((2, 2000))
         second = np.ones((2, 1200))
         result = {"mean_correlation": 0.95, "mean_lag_ms": -20.0}
@@ -79,6 +86,19 @@ class AudioSeamAssembleTests(unittest.TestCase):
         self.assertFalse(seams[0]["aligned"])
         self.assertEqual(seams[0]["cut_samples"], 200)
         self.assertEqual(seams[0]["fade_samples"], 40)
+
+    def test_high_correlation_same_speaker_continuation_allows_bounded_large_lag(self):
+        first = np.ones((2, 2000))
+        second = np.ones((2, 1200))
+        result = {"mean_correlation": 0.89, "mean_lag_ms": 25.8}
+        with patch.object(audio_seam_assemble, "analyze_audio_seam", return_value=result):
+            _assembled, seams = assemble_audio_chunks(
+                [first, second], [10, 6], [0, 1], 20.0, 4000,
+                seam_modes=["same_speaker_continuation"],
+            )
+        self.assertTrue(seams[0]["aligned"])
+        self.assertEqual(seams[0]["alignment_reason"], "same_speaker_high_correlation_bounded_lag")
+        self.assertEqual(seams[0]["cut_samples"], 303)
 
 
 if __name__ == "__main__":
