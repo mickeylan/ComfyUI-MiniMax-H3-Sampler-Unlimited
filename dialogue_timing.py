@@ -7,6 +7,7 @@ import re
 _DIALOGUE = re.compile(r"<d>(.*?)</d>", re.IGNORECASE | re.DOTALL)
 _LANGUAGE = re.compile(r"^(\s*\[[^\]]+\]\s*)(.*)$", re.DOTALL)
 _TRAILING_PUNCTUATION = "，,。！？!?；;：:、"
+_PROTECTED_CJK_PAIRS = ("更强", "毫无", "来得", "反复")
 
 
 def _dialogue_split_index(text: str, position: int) -> int:
@@ -38,6 +39,8 @@ def _dialogue_split_index(text: str, position: int) -> int:
                 position = run_end - 2
             elif (position - run_start) % 2 == 0:
                 position -= 1
+    if 0 < position < len(text) and text[position - 1:position + 1] in _PROTECTED_CJK_PAIRS:
+        position -= 1
     if position <= 2:
         return 0
     if position >= len(text) - 1:

@@ -52,6 +52,24 @@ class DialogueTimingTests(unittest.TestCase):
         self.assertFalse(second_text.startswith("复"))
         self.assertEqual(first_text + second_text, "不如将舒寒当年传授给我的武学反复磨练")
 
+    def test_high_confidence_chinese_pairs_are_not_split(self):
+        cases = (
+            ("太运宗就会派更强的弟子", "更强"),
+            ("与其毫无头绪的闭关", "毫无"),
+            ("反复磨练磨练来得有意思", "来得"),
+            ("传授给我的武学反复磨练", "反复"),
+        )
+        for text, protected in cases:
+            boundary = text.index(protected) + 1
+            source = f"<Subject 1> (S1) says: <d>[Chinese] {text}</d>"
+            first = slice_dialogue_for_interval(source, 0, len(text), 0, boundary)
+            second = slice_dialogue_for_interval(source, 0, len(text), boundary, len(text))
+            first_text = first.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0] if first else ""
+            second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0]
+            self.assertFalse(first_text.endswith(protected[0]))
+            self.assertFalse(second_text.startswith(protected[1]))
+            self.assertEqual(first_text + second_text, text)
+
     def test_chunk_boundary_keeps_leading_punctuation_with_previous_fragment(self):
         source = "<Subject 1> (S1) says: <d>[Chinese] 无用。与其</d>"
         first = slice_dialogue_for_interval(source, 0, 10, 0, 4)
