@@ -80,7 +80,7 @@ def _line_spoken_duration_seconds(line: str) -> float:
         0.4 if character in "。！？!?；;" else 0.2
         for character in text if character in "，,。！？!?；;：:"
     )
-    return cjk_count / 4.0 + word_count / 2.5 + punctuation_pause
+    return cjk_count / 5.0 + word_count / 2.5 + punctuation_pause
 
 
 def _spoken_duration_seconds(lines: tuple[str, ...]) -> float:

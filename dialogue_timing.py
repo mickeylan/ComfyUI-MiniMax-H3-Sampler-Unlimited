@@ -57,7 +57,7 @@ def dialogue_duration_seconds(content: str) -> float:
         0.4 if character in "。！？!?；;" else 0.2
         for character in text if character in "，,。！？!?；;：:"
     )
-    return max(0.5, cjk_count / 4.0 + word_count / 2.5 + pauses)
+    return max(0.5, cjk_count / 5.0 + word_count / 2.5 + pauses)
 
 
 def dialogue_frame_count(content: str, fps: float) -> int:
