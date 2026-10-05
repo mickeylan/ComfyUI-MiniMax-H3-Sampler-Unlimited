@@ -78,6 +78,18 @@ class DialogueTimingTests(unittest.TestCase):
         second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0].replace("<scenetrans>", "")
         self.assertEqual(second_text, "已经达到顶峰")
 
+    def test_new_utterance_short_chunk_start_is_deferred_without_loss(self):
+        source = "<Subject 4> (S2) says: <d>[Chinese] 我现在功力已经达到顶峰</d>"
+        first = slice_dialogue_for_interval(
+            source, 0, 24, 0, 5, defer_short_initial_fragment=True,
+        )
+        second = slice_dialogue_for_interval(
+            source, 0, 24, 5, 24, defer_short_initial_fragment=True,
+        )
+        self.assertEqual(first, "")
+        second_text = second.split("<d>[Chinese] ", 1)[1].split("</d>", 1)[0]
+        self.assertEqual(second_text, "我现在功力已经达到顶峰")
+
     def test_one_character_tail_moves_to_a_two_character_final_fragment_without_loss(self):
         source = "<Subject 1> (S1) says: <d>[Chinese] 已经达到顶峰</d>"
         first = slice_dialogue_for_interval(source, 0, 10, 0, 9)

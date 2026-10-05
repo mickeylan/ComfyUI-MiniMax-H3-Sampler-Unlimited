@@ -67,7 +67,8 @@ def dialogue_frame_count(content: str, fps: float) -> int:
 def slice_dialogue_for_interval(content: str, source_start: int, source_end: int,
                                 overlap_start: int, overlap_end: int,
                                 continues_from_previous_chunk: bool = True,
-                                continues_to_next_chunk: bool = True) -> str:
+                                continues_to_next_chunk: bool = True,
+                                defer_short_initial_fragment: bool = False) -> str:
     match = _DIALOGUE.search(content)
     duration = source_end - source_start
     if match is None or duration <= 0 or overlap_start <= source_start and overlap_end >= source_end:
@@ -84,6 +85,16 @@ def slice_dialogue_for_interval(content: str, source_start: int, source_end: int
     first = _dialogue_split_index(text, raw_first) if overlap_start > source_start else raw_first
     last = _dialogue_split_index(text, raw_last) if overlap_end < source_end else length
     last = max(first, last)
+    if defer_short_initial_fragment:
+        initial_end = _dialogue_split_index(text, raw_first if overlap_start > source_start else raw_last)
+        initial_text = text[:initial_end]
+        initial_spoken = re.sub(r"[，,。！？!?；;：:\s]", "", initial_text)
+        if len(initial_spoken) < 6 and not any(character in _TRAILING_PUNCTUATION for character in initial_text):
+            if overlap_start <= source_start and overlap_end < source_end:
+                return ""
+            if overlap_start > source_start:
+                first = 0
+                last = max(first, last)
     if overlap_start <= source_start and last <= 2 and overlap_end < source_end:
         return ""
     fragment = text[first:last]

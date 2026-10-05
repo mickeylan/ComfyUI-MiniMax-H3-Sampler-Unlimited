@@ -249,6 +249,31 @@ class PromptSkillTests(unittest.TestCase):
         self.assertEqual(normalized["shots"][0]["dialogues"], [])
         self.assertEqual(normalized["shots"][1]["dialogues"][0]["text"], "达到顶峰。")
 
+    def test_redistribution_starts_new_speaker_in_next_semantic_shot(self):
+        request = {
+            "minimum_spoken_duration_seconds": 1.0,
+            "fps": 24.0,
+            "total_frames": 480,
+            "duration_seconds": 20.0,
+            "required_spoken_lines": ["第一位说话人的问题。", "第二位说话人的回答。"],
+            "required_spoken_subjects": ["<Subject 3>", "<Subject 4>"],
+            "required_speaker_subjects": {"S1": "<Subject 3>", "S2": "<Subject 4>"},
+        }
+        value = {
+            "shots": [
+                {
+                    "start_frame": 0, "end_frame": 240, "dialogues": [
+                        {"id": "S1.D1", "kind": "dialogue", "speaker": "<Subject 3>", "speaker_id": "S1", "language": "Chinese", "text": "第一位说话人的问题。", "delivery": "自然地"},
+                        {"id": "S1.D2", "kind": "dialogue", "speaker": "<Subject 3>", "speaker_id": "S1", "language": "Chinese", "text": "第二位说话人的回答。", "delivery": "自然地"},
+                    ],
+                },
+                {"start_frame": 240, "end_frame": 480, "dialogues": []},
+            ],
+        }
+        normalized, _warnings = prompt_skill._redistribute_dialogues(value, request)
+        self.assertEqual([item["speaker"] for item in normalized["shots"][0]["dialogues"]], ["<Subject 3>"])
+        self.assertEqual([item["speaker"] for item in normalized["shots"][1]["dialogues"]], ["<Subject 4>"])
+
     def test_redistributes_two_long_lines_out_of_one_overloaded_shot(self):
         required = [
             "姐姐，自从你跟太运宗使者比试之后，这十年你都没有怎么好好闭关修炼过。还有不到四十年，太运宗就会派更强的弟子，这样真的来得及吗？",
@@ -1812,6 +1837,25 @@ class PromptSkillTests(unittest.TestCase):
         )
         self.assertIn("<Subject 2> (S2) says", prompt)
         self.assertNotIn("continues the same uninterrupted utterance from the previous chunk", prompt)
+
+    def test_new_speaker_short_first_fragment_is_deferred_to_next_chunk(self):
+        shot = {
+            "start_frame": 0, "end_frame": 80, "start_state": "both women face each other",
+            "end_state": "the reply continues", "dialogues": [{
+                "speaker": "<Subject 2>", "speaker_id": "S2", "kind": "dialogue",
+                "language": "Chinese", "text": "我现在功力已经达到顶峰", "delivery": "平静地",
+                "start_frame": 20, "end_frame": 80, "continues_from_previous": False,
+            }],
+        }
+        first = prompt_skill._localized_shot_description(
+            shot, 0, 25, 24.0, (), {}, previous_chunk_speakers=("<Subject 1>",),
+            next_chunk_speakers=("<Subject 2>",),
+        )
+        second = prompt_skill._localized_shot_description(
+            shot, 25, 80, 24.0, (), {}, previous_chunk_speakers=("<Subject 2>",),
+        )
+        self.assertNotIn("<d>", first)
+        self.assertIn("<d>[Chinese] 我现在功力已经达到顶峰</d>", second)
 
     def test_first_actual_fragment_does_not_claim_silent_previous_chunk(self):
         shot = {

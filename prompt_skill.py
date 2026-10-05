@@ -611,7 +611,12 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
     current_shot = 0
     split_count = 0
     extended_frames = 0
+    previous_speaker = None
     for _original_shot, dialogue in dialogues:
+        speaker = str(dialogue.get("speaker", "")).strip()
+        if previous_speaker is not None and speaker != previous_speaker and current_shot < len(shots) - 1:
+            if normalized_shots[current_shot]["dialogues"]:
+                current_shot += 1
         if str(dialogue.get("kind", "dialogue")).strip().lower() != "voiceover":
             current_shot = max(current_shot, _first_visible_shot(shots, str(dialogue.get("speaker", "")), request))
             visual_lead = _speaker_visual_lead_frames(
@@ -685,6 +690,7 @@ def _redistribute_dialogues(value: Any, request: dict[str, Any]) -> tuple[Any, l
             fragment_index += 1
             if remaining:
                 current_shot += 1
+        previous_speaker = speaker
     returned = "".join(
         str(item.get("text", ""))
         for shot in normalized_shots for item in shot["dialogues"]
@@ -2160,6 +2166,7 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
             _dialogue_description(local_dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end,
             continues_from_previous_chunk=continues_from_previous_chunk,
             continues_to_next_chunk=continues_to_next_chunk,
+            defer_short_initial_fragment=dialogue_start > 0 and not bool(dialogue.get("continues_from_previous")),
         )
         if not fragment:
             continue
