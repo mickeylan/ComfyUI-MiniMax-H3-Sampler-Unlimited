@@ -54,6 +54,9 @@ class DialogueTimingTests(unittest.TestCase):
 
     def test_high_confidence_chinese_pairs_are_not_split(self):
         cases = (
+            ("姐姐，自从你回来以后", "自从"),
+            ("还有不到四十年", "不到"),
+            ("与其毫无头绪的闭关", "头绪"),
             ("太运宗就会派更强的弟子", "更强"),
             ("与其毫无头绪的闭关", "毫无"),
             ("反复磨练磨练来得有意思", "来得"),
