@@ -1861,6 +1861,21 @@ class PromptSkillTests(unittest.TestCase):
         self.assertNotIn("<d>", first)
         self.assertIn("<d>[Chinese] 我现在功力已经达到顶峰</d>", second)
 
+    def test_opening_speaker_short_fragment_is_not_deferred_after_silence(self):
+        shot = {
+            "start_frame": 0, "end_frame": 80, "start_state": "the speaker is visible",
+            "end_state": "the line continues", "dialogues": [{
+                "speaker": "<Subject 1>", "speaker_id": "S1", "kind": "dialogue",
+                "language": "Chinese", "text": "自从你跟太运宗使者比试之后", "delivery": "自然地",
+                "start_frame": 20, "end_frame": 80, "continues_from_previous": False,
+            }],
+        }
+        prompt = prompt_skill._localized_shot_description(
+            shot, 0, 35, 24.0, (), {}, previous_chunk_speakers=(),
+            next_chunk_speakers=("<Subject 1>",),
+        )
+        self.assertIn("<d>[Chinese] 自从你", prompt)
+
     def test_first_actual_fragment_does_not_claim_silent_previous_chunk(self):
         shot = {
             "start_frame": 0, "end_frame": 80, "start_state": "the speaker is visible",
