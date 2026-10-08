@@ -57,6 +57,7 @@ class DialogueTimingTests(unittest.TestCase):
             ("太运宗就会派更强的弟子", "更强"),
             ("与其毫无头绪的闭关", "毫无"),
             ("反复磨练磨练来得有意思", "来得"),
+            ("传授给我的武学反复磨练", "武学"),
             ("传授给我的武学反复磨练", "反复"),
         )
         for text, protected in cases:
