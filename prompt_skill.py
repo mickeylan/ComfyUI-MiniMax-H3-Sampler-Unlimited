@@ -2166,12 +2166,6 @@ def _localized_shot_description(shot: dict[str, Any], frame_start: int, frame_en
             _dialogue_description(local_dialogue), dialogue_start, dialogue_end, overlap_start, overlap_end,
             continues_from_previous_chunk=continues_from_previous_chunk,
             continues_to_next_chunk=continues_to_next_chunk,
-            defer_short_initial_fragment=(
-                dialogue_start > 0
-                and bool(previous_chunk_speakers)
-                and speaker not in previous_chunk_speakers
-                and not bool(dialogue.get("continues_from_previous"))
-            ),
         )
         if not fragment:
             continue

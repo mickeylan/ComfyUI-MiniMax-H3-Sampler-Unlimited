@@ -1842,24 +1842,29 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("<Subject 2> (S2) says", prompt)
         self.assertNotIn("continues the same uninterrupted utterance from the previous chunk", prompt)
 
-    def test_new_speaker_short_first_fragment_is_deferred_to_next_chunk(self):
+    def test_new_speaker_short_first_fragment_is_preserved_across_chunks(self):
+        text = "我现在功力已经达到顶峰"
         shot = {
             "start_frame": 0, "end_frame": 80, "start_state": "both women face each other",
             "end_state": "the reply continues", "dialogues": [{
                 "speaker": "<Subject 2>", "speaker_id": "S2", "kind": "dialogue",
-                "language": "Chinese", "text": "我现在功力已经达到顶峰", "delivery": "平静地",
+                "language": "Chinese", "text": text, "delivery": "平静地",
                 "start_frame": 20, "end_frame": 80, "continues_from_previous": False,
             }],
         }
         first = prompt_skill._localized_shot_description(
-            shot, 0, 25, 24.0, (), {}, previous_chunk_speakers=("<Subject 1>",),
+            shot, 0, 45, 24.0, (), {}, previous_chunk_speakers=("<Subject 1>",),
             next_chunk_speakers=("<Subject 2>",),
         )
         second = prompt_skill._localized_shot_description(
-            shot, 25, 80, 24.0, (), {}, previous_chunk_speakers=("<Subject 2>",),
+            shot, 45, 80, 24.0, (), {}, previous_chunk_speakers=("<Subject 2>",),
         )
-        self.assertNotIn("<d>", first)
-        self.assertIn("<d>[Chinese] 我现在功力已经达到顶峰</d>", second)
+        fragments = [
+            match.group(1).replace("<scenetrans>", "").strip()
+            for prompt in (first, second)
+            for match in re.finditer(r"<d>\[Chinese\]\s*(.*?)</d>", prompt)
+        ]
+        self.assertEqual("".join(fragments), text)
 
     def test_opening_speaker_short_fragment_is_not_deferred_after_silence(self):
         shot = {
