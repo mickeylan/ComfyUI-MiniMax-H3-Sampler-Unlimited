@@ -1329,6 +1329,23 @@ class PromptSkillTests(unittest.TestCase):
                 typed, fps=24.0, total_frames=typed["total_frames"], chunk_frames=39
             )
 
+    def test_prompt_plan_rehomes_event_wholly_owned_by_next_shot(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        typed = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        event = dict(typed["shots"][0]["events"][0], start_frame=28, end_frame=56)
+        typed["shots"][0]["events"] = [event]
+        typed["shots"][1]["events"] = []
+        normalized = prompt_skill.normalize_prompt_plan(typed, fps=24.0, total_frames=56)
+        self.assertEqual(normalized["shots"][0]["events"], [])
+        self.assertEqual(normalized["shots"][1]["events"], [event])
+
+    def test_prompt_plan_still_rejects_event_crossing_shot_boundaries(self):
+        compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
+        typed = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)
+        typed["shots"][0]["events"] = [dict(typed["shots"][0]["events"][0], start_frame=20, end_frame=40)]
+        with self.assertRaisesRegex(ValueError, "invalid interval"):
+            prompt_skill.normalize_prompt_plan(typed, fps=24.0, total_frames=56)
+
     def test_builds_versioned_typed_plan_without_changing_legacy_outputs(self):
         compiled = prompt_skill.compile_prompt_skill(self.result(), self.request())
         typed_plan = prompt_skill.build_typed_prompt_plan(compiled, fps=24.0)

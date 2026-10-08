@@ -1785,6 +1785,35 @@ def normalize_prompt_plan(value: Any, *, fps: float, total_frames: int,
     declared_pictures = {
         int(item.get("picture", 0)) for item in subjects if isinstance(item, dict) and int(item.get("picture", 0) or 0) > 0
     }
+    shots = [dict(shot) if isinstance(shot, dict) else shot for shot in shots]
+    for shot in shots:
+        if isinstance(shot, dict) and isinstance(shot.get("events", ()), (list, tuple)):
+            shot["events"] = [dict(item) if isinstance(item, dict) else item for item in shot.get("events", ())]
+    for owner_index, shot in enumerate(shots):
+        if not isinstance(shot, dict) or not isinstance(shot.get("events", ()), list):
+            continue
+        owner_start, owner_end = int(shot.get("start_frame", -1)), int(shot.get("end_frame", -1))
+        retained_events = []
+        for event in shot["events"]:
+            if not isinstance(event, dict):
+                retained_events.append(event)
+                continue
+            event_start = int(event.get("start_frame", owner_start))
+            event_end = int(event.get("end_frame", owner_end))
+            if owner_start <= event_start < event_end <= owner_end:
+                retained_events.append(event)
+                continue
+            destinations = [
+                candidate_index for candidate_index, candidate in enumerate(shots)
+                if isinstance(candidate, dict)
+                and int(candidate.get("start_frame", -1)) <= event_start < event_end <= int(candidate.get("end_frame", -1))
+            ]
+            if len(destinations) == 1 and destinations[0] != owner_index:
+                shots[destinations[0]]["events"].append(event)
+            else:
+                retained_events.append(event)
+        shot["events"] = retained_events
+
     normalized_shots, previous_end = [], 0
     for index, shot in enumerate(shots, 1):
         if not isinstance(shot, dict):
