@@ -72,6 +72,9 @@ def _spoken_lines(story: str) -> tuple[str, ...]:
     return tuple(text for _start, _pattern_order, text in sorted(matches))
 
 
+_CJK_CHARACTERS_PER_SECOND = 4.0
+
+
 def _line_spoken_duration_seconds(line: str) -> float:
     text = re.sub(r"^\s*\[[^\]]+\]\s*", "", line).strip()
     cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
@@ -80,7 +83,7 @@ def _line_spoken_duration_seconds(line: str) -> float:
         0.4 if character in "。！？!?；;" else 0.2
         for character in text if character in "，,。！？!?；;：:"
     )
-    return cjk_count / 5.0 + word_count / 2.5 + punctuation_pause
+    return cjk_count / _CJK_CHARACTERS_PER_SECOND + word_count / 2.5 + punctuation_pause
 
 
 def _spoken_duration_seconds(lines: tuple[str, ...]) -> float:

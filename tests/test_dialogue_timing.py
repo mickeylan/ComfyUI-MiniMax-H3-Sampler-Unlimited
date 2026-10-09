@@ -12,9 +12,9 @@ class DialogueTimingTests(unittest.TestCase):
     def test_punctuation_adds_pause_but_not_spoken_units(self):
         plain = "<d>[Chinese] 你好世界</d>"
         punctuated = "<d>[Chinese] 你好，世界！</d>"
-        self.assertAlmostEqual(dialogue_duration_seconds(plain), 0.8)
-        self.assertAlmostEqual(dialogue_duration_seconds(punctuated), 1.4)
-        self.assertEqual(dialogue_frame_count(punctuated, 24.0), 34)
+        self.assertAlmostEqual(dialogue_duration_seconds(plain), 1.0)
+        self.assertAlmostEqual(dialogue_duration_seconds(punctuated), 1.6)
+        self.assertEqual(dialogue_frame_count(punctuated, 24.0), 39)
 
     def test_long_dialogue_is_split_by_retained_frame_interval(self):
         source = "<Subject 3> (S1) says warmly: <d>[Chinese] 姐姐自从比试之后这十年都没有闭关修炼这样真的来得及吗</d> with synchronized visible lip movement."

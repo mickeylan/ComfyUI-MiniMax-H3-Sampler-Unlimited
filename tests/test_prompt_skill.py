@@ -343,9 +343,9 @@ class PromptSkillTests(unittest.TestCase):
         self.assertIn("continues seamlessly across the cut", description)
         self.assertNotIn(" says,", description)
 
-    def test_chinese_dialogue_timing_uses_calibrated_five_characters_per_second(self):
-        self.assertAlmostEqual(prompt_skill._line_spoken_duration_seconds("你好世界和平"), 1.2)
-        self.assertAlmostEqual(prompt_skill._line_spoken_duration_seconds("你好，世界！"), 1.4)
+    def test_chinese_dialogue_timing_uses_natural_four_characters_per_second(self):
+        self.assertAlmostEqual(prompt_skill._line_spoken_duration_seconds("你好世界和平"), 1.5)
+        self.assertAlmostEqual(prompt_skill._line_spoken_duration_seconds("你好，世界！"), 1.6)
 
     def test_long_chinese_dialogue_extends_short_requested_duration(self):
         story = (
@@ -726,7 +726,7 @@ class PromptSkillTests(unittest.TestCase):
             {"id": "S2.D1", "kind": "dialogue", "speaker": "<Subject 1>", "speaker_id": "S1",
              "language": "Chinese", "text": "继续说话。", "delivery": "自然清晰地"},
         )
-        self.assertEqual((dialogue["start_frame"], dialogue["end_frame"]), (22, 51))
+        self.assertEqual((dialogue["start_frame"], dialogue["end_frame"]), (22, 56))
         self.assertTrue(any("fields: id, kind, language, delivery" in warning for warning in compiled["warnings"]))
 
     def test_incomplete_dialogue_reports_unrecoverable_fields(self):

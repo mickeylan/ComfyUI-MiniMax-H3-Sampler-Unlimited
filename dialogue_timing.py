@@ -8,6 +8,7 @@ _DIALOGUE = re.compile(r"<d>(.*?)</d>", re.IGNORECASE | re.DOTALL)
 _LANGUAGE = re.compile(r"^(\s*\[[^\]]+\]\s*)(.*)$", re.DOTALL)
 _TRAILING_PUNCTUATION = "，,。！？!?；;：:、"
 _PROTECTED_CJK_PAIRS = ("自从", "不到", "头绪", "更强", "毫无", "来得", "武学", "反复")
+_CJK_CHARACTERS_PER_SECOND = 4.0
 
 
 def _dialogue_split_index(text: str, position: int) -> int:
@@ -60,7 +61,7 @@ def dialogue_duration_seconds(content: str) -> float:
         0.4 if character in "。！？!?；;" else 0.2
         for character in text if character in "，,。！？!?；;：:"
     )
-    return max(0.5, cjk_count / 5.0 + word_count / 2.5 + pauses)
+    return max(0.5, cjk_count / _CJK_CHARACTERS_PER_SECOND + word_count / 2.5 + pauses)
 
 
 def dialogue_frame_count(content: str, fps: float) -> int:
