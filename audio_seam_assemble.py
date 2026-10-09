@@ -23,6 +23,8 @@ CONTINUATION_CORRELATION = 0.85
 CONTINUATION_MAX_LAG_MS = 32.0
 GAIN_LIMIT_DB = 1.5
 GAIN_RELEASE_MS = 150.0
+UNALIGNED_FADE_MS = 10.0
+SAME_SPEAKER_UNALIGNED_FADE_MS = 30.0
 _DIALOGUE = re.compile(r"<d>.*?</d>", re.IGNORECASE | re.DOTALL)
 _SPEAKER = re.compile(r"(<Subject\s+\d+>)\s*\((S\d+)\)", re.IGNORECASE)
 
@@ -116,16 +118,24 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate, 
             and abs(result["mean_lag_ms"]) <= CONTINUATION_MAX_LAG_MS
         )
         credible = normal_alignment or continuation_alignment
+        same_speaker_fallback = mode == "same_speaker_continuation" and not credible
         lag_samples = round(result["mean_lag_ms"] / 1000.0 * sample_rate) if credible else 0
         cut = max(0, min(current.shape[-1], overlap + lag_samples))
-        fade = round((0.03 if credible else 0.01) * sample_rate)
+        fade_ms = (
+            30.0 if credible else
+            SAME_SPEAKER_UNALIGNED_FADE_MS if same_speaker_fallback else
+            UNALIGNED_FADE_MS
+        )
+        fade = round(fade_ms / 1000.0 * sample_rate)
         fade = min(fade, assembled.shape[-1], cut, current.shape[-1] - cut)
         new_frames = int(frame_counts[index]) - int(trim_frames[index])
         target_total = round((delivered_frames + new_frames) / fps * sample_rate)
         append_length = target_total - assembled.shape[-1]
         start = max(0, cut - fade)
         segment = _fit_length(current[..., start:], append_length + fade)
-        gain, envelope = _rms_gain_envelope(assembled, segment[..., fade:], sample_rate, credible)
+        gain, envelope = _rms_gain_envelope(
+            assembled, segment[..., fade:], sample_rate, credible or same_speaker_fallback,
+        )
         if envelope is not None:
             segment[..., fade:fade + len(envelope)] *= envelope
             if fade:
@@ -149,6 +159,7 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate, 
             "alignment_reason": (
                 "same_speaker_high_correlation_bounded_lag" if continuation_alignment and not normal_alignment
                 else "high_correlation_bounded_lag" if credible
+                else "same_speaker_unaligned_long_fade" if same_speaker_fallback
                 else "unaligned_short_fade"
             ),
         })

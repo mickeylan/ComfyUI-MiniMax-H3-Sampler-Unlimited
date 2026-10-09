@@ -41,6 +41,21 @@ class AudioSeamAssembleTests(unittest.TestCase):
         self.assertFalse(seams[0]["aligned"])
         self.assertEqual(seams[0]["fade_samples"], 40)
 
+    def test_low_correlation_same_speaker_continuation_uses_long_fade_and_bounded_gain(self):
+        first = np.ones((2, 2000))
+        second = np.full((2, 1200), 0.1)
+        result = {"mean_correlation": 0.2, "mean_lag_ms": None}
+        with patch.object(audio_seam_assemble, "analyze_audio_seam", return_value=result):
+            assembled, seams = assemble_audio_chunks(
+                [first, second], [10, 6], [0, 1], 20.0, 4000,
+                seam_modes=["same_speaker_continuation"],
+            )
+        self.assertEqual(assembled.shape[-1], 3000)
+        self.assertFalse(seams[0]["aligned"])
+        self.assertEqual(seams[0]["fade_samples"], 120)
+        self.assertEqual(seams[0]["alignment_reason"], "same_speaker_unaligned_long_fade")
+        self.assertAlmostEqual(seams[0]["gain_match_db"], 1.5)
+
     def test_each_alignment_uses_original_previous_chunk(self):
         chunks = [
             np.full((2, 2000), 1.0),
