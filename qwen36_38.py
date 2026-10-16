@@ -864,6 +864,70 @@ def _video_bridge_result(value: dict[str, Any], request: dict[str, Any]) -> dict
     }
 
 
+def _prompt_skill_asset_observation_prompt(asset_index: int) -> str:
+    return (
+        f"Analyze only the attached reference image for asset_{asset_index}. "
+        "Return one compact JSON object with keys asset_id, kind, and observable_features. "
+        f"asset_id must be exactly asset_{asset_index}. kind must be character, scene, or prop. "
+        "observable_features must describe only visible identity, appearance, clothing, environment, or object details in English."
+    )
+
+
+def _prompt_skill_observation_fields(value: dict[str, Any]) -> tuple[str, str]:
+    kind = str(value.get("kind", value.get("type", value.get("category", "")))).strip().lower()
+    kind = {
+        "person": "character", "human": "character", "subject": "character",
+        "environment": "scene", "background": "scene", "location": "scene", "setting": "scene",
+        "object": "prop", "item": "prop",
+    }.get(kind, kind)
+    features = str(next((
+        value.get(name) for name in ("observable_features", "visual_description", "features", "description")
+        if str(value.get(name, "")).strip()
+    ), "")).strip()
+    return kind, features
+
+
+def _analyze_prompt_skill_images(llm, image_urls: Sequence[str]) -> list[dict[str, str]]:
+    observations = []
+    for index, image_url in enumerate(image_urls, 1):
+        print(f"[MINIMAX_H3_WORKER] analyzing asset_{index}/{len(image_urls)}", flush=True)
+        text = ""
+        for attempt in range(2):
+            llm.reset()
+            prompt = _prompt_skill_asset_observation_prompt(index)
+            if attempt:
+                prompt += (
+                    "\nYour previous JSON was incomplete. Return exactly asset_id, kind, and observable_features; "
+                    "kind must be exactly character, scene, or prop. Previous JSON:\n" + text
+                )
+            response = llm.create_chat_completion(
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+                response_format={"type": "json_object"},
+                temperature=0.1, top_p=0.9, top_k=40,
+                max_tokens=1024, reasoning_budget=0,
+            )
+            message = response.get("choices", [{}])[0].get("message", {})
+            text = str(message.get("content") or message.get("reasoning_content") or "")
+            value, _raw = _extract_json(text)
+            kind, features = _prompt_skill_observation_fields(value)
+            if kind in {"character", "scene", "prop"} and features:
+                observations.append({
+                    "asset_id": f"asset_{index}", "kind": kind, "observable_features": features,
+                })
+                break
+        else:
+            raise Qwen35ObservationError(
+                f"Qwen3.6/3.8 returned an incomplete observation for asset_{index}", raw_json=text,
+            )
+    return observations
+
+
 def _complete(request: dict[str, Any]) -> dict[str, Any]:
     if request.get("director_backend") not in {"qwen3.6", "qwen3.8"}:
         raise Qwen35ObservationError("Qwen3.6/3.8 worker received an unsupported backend")
@@ -949,9 +1013,17 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             system, prompt = prompt_skill_messages(request)
         else:
             system, prompt = _chunk_messages(request)
+        image_urls = request.get("image_urls", ())
         content: Any = prompt
-        if not timing:
-            content = [{"type": "image_url", "image_url": {"url": url}} for url in request.get("image_urls", ())]
+        if prompt_skill and image_urls:
+            observations = _analyze_prompt_skill_images(llm, image_urls)
+            llm.reset()
+            prompt += "\n\nAuthoritative per-asset visual observations from sequential single-image analysis:\n" + json.dumps(
+                observations, ensure_ascii=False, indent=2,
+            )
+            content = prompt
+        elif not timing:
+            content = [{"type": "image_url", "image_url": {"url": url}} for url in image_urls]
             content.append({"type": "text", "text": prompt})
         completion_kwargs = {
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
@@ -968,6 +1040,11 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
         }
         if family == "qwen3.8":
             completion_kwargs["min_p"] = 0.0
+        print(
+            f"[MINIMAX_H3_WORKER] starting LLM completion op={operation} "
+            f"images={0 if prompt_skill and image_urls else len(image_urls)}",
+            flush=True,
+        )
         response = llm.create_chat_completion(**completion_kwargs)
         choice = response["choices"][0]
         message = choice["message"]

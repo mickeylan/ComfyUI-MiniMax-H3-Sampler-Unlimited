@@ -278,7 +278,11 @@ review date, versions/commits checked, and outcome below.
   and the operation-local non-MTP retry. Qwen3.6/3.8 text-only timing workers now
   receive a 600-second startup/generation bound and print a bootstrap stage before
   importing their isolated runtime; Qwen3.5 keeps its existing 300-second timing
-  bound.
+  bound. A later four-image Qwen3.8 Prompt Skill run reached llama.cpp's
+  `find_slot: non-consecutive token position` MTMD failure, so Qwen3.6/3.8 now
+  match the established Qwen3.5 safe path: analyze one image at a time, reset the
+  context between assets, and perform the final plan generation from the compact
+  structured observations without resubmitting the images.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at

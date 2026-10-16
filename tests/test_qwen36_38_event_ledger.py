@@ -7,6 +7,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qwen36_38 as runtime
 
 
+class _FakeImageAnalysisLlama:
+    def __init__(self):
+        self.reset_count = 0
+        self.calls = []
+
+    def reset(self):
+        self.reset_count += 1
+
+    def create_chat_completion(self, **kwargs):
+        self.calls.append(kwargs)
+        index = len(self.calls)
+        return {"choices": [{"message": {"content": json.dumps({
+            "asset_id": f"asset_{index}",
+            "kind": "character" if index == 1 else "scene",
+            "observable_features": f"features {index}",
+        })}}]}
+
+
 class QwenEventLedgerTests(unittest.TestCase):
     def request(self):
         return {
@@ -22,6 +40,17 @@ class QwenEventLedgerTests(unittest.TestCase):
                 "forbidden": [{"id": "S1.V1", "summary": "stood up"}],
             },
         }
+
+    def test_prompt_skill_images_are_analyzed_one_at_a_time_with_resets(self):
+        llm = _FakeImageAnalysisLlama()
+        observations = runtime._analyze_prompt_skill_images(llm, ["image-1", "image-2"])
+        self.assertEqual(llm.reset_count, 2)
+        self.assertEqual([item["asset_id"] for item in observations], ["asset_1", "asset_2"])
+        self.assertEqual([item["kind"] for item in observations], ["character", "scene"])
+        for call in llm.calls:
+            content = call["messages"][0]["content"]
+            images = [item for item in content if item.get("type") == "image_url"]
+            self.assertEqual(len(images), 1)
 
     def test_timing_parser_removes_zero_length_terminal_beat(self):
         request = {
