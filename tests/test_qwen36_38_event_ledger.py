@@ -60,6 +60,17 @@ class QwenEventLedgerTests(unittest.TestCase):
         self.assertTrue(runtime._operation_uses_mtp(request, "chunk"))
         self.assertFalse(runtime._operation_uses_mtp({"director_mtp": False}, "chunk"))
 
+    def test_prompt_skill_avoids_slow_json_grammar_but_other_json_operations_keep_it(self):
+        self.assertIsNone(runtime._response_format_for_operation(
+            prompt_skill=True, jzl_storyboard=False,
+        ))
+        self.assertIsNone(runtime._response_format_for_operation(
+            prompt_skill=False, jzl_storyboard=True,
+        ))
+        self.assertEqual(runtime._response_format_for_operation(
+            prompt_skill=False, jzl_storyboard=False,
+        ), {"type": "json_object"})
+
     def test_timing_parser_removes_zero_length_terminal_beat(self):
         request = {
             "fps": 24.0,

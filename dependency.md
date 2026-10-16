@@ -288,7 +288,12 @@ review date, versions/commits checked, and outcome below.
   both failed to clear it. Prompt Skill therefore uses two disposable processes:
   one multimodal image-analysis worker exits completely, then a new text-only,
   non-MTP worker generates the plan from its structured observations. Subsequent
-  timing and chunk-director operations may still use MTP.
+  timing and chunk-director operations may still use MTP. Once native position
+  errors stopped, the long non-MTP plan still exhausted the 600-second bound
+  under llama.cpp JSON grammar. Prompt Skill now uses unconstrained decoding at
+  temperature 0.2 and relies on its existing JSON parser, deterministic schema
+  validation, and correction retry; other structured Qwen operations keep their
+  JSON response constraint.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at

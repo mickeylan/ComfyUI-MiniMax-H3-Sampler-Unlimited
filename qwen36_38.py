@@ -944,6 +944,14 @@ def _close_llm_and_handler(llm: Any, handler: Any) -> None:
         close_handler()
 
 
+def _response_format_for_operation(*, prompt_skill: bool, jzl_storyboard: bool):
+    # Prompt Skill plans can be several thousand tokens long. llama.cpp's JSON
+    # grammar makes non-MTP sampling disproportionately slow and can consume the
+    # complete worker timeout. The output is already parsed, structurally
+    # validated, and retried by the parent, so use unconstrained decoding here.
+    return None if prompt_skill or jzl_storyboard else {"type": "json_object"}
+
+
 def _complete(request: dict[str, Any]) -> dict[str, Any]:
     if request.get("director_backend") not in {"qwen3.6", "qwen3.8"}:
         raise Qwen35ObservationError("Qwen3.6/3.8 worker received an unsupported backend")
@@ -1051,8 +1059,10 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             content.append({"type": "text", "text": prompt})
         completion_kwargs = {
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-            "response_format": None if jzl_storyboard else {"type": "json_object"},
-            "temperature": 0.7,
+            "response_format": _response_format_for_operation(
+                prompt_skill=prompt_skill, jzl_storyboard=jzl_storyboard,
+            ),
+            "temperature": 0.2 if prompt_skill else 0.7,
             "top_p": 0.8 if family == "qwen3.8" else 0.9,
             "top_k": 40,
             "max_tokens": QWEN_JZL_RESPONSE_TOKENS if jzl_storyboard else QWEN_PROMPT_SKILL_RESPONSE_TOKENS if prompt_skill else {
@@ -1066,7 +1076,8 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             completion_kwargs["min_p"] = 0.0
         print(
             f"[MINIMAX_H3_WORKER] starting LLM completion op={operation} "
-            f"images={0 if prompt_skill and image_urls else len(image_urls)}",
+            f"images={0 if prompt_skill and image_urls else len(image_urls)} "
+            f"json_grammar={completion_kwargs['response_format'] is not None}",
             flush=True,
         )
         response = llm.create_chat_completion(**completion_kwargs)
