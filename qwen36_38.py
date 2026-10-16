@@ -929,12 +929,23 @@ def _analyze_prompt_skill_images(llm, image_urls: Sequence[str]) -> list[dict[st
 
 
 def _operation_uses_mtp(request: dict[str, Any], operation: str) -> bool:
-    # Prompt Skill runs multiple image completions with llm.reset() before its
-    # final text-only plan. The experimental speculative token ledger can retain
-    # old physical MTMD positions across that reset and make llama.cpp reject the
-    # final logical prompt as non-consecutive. Disable MTP only for this disposable
-    # operation; the next independent director operation may use MTP again.
+    # Prompt Skill runs multiple image completions before its final text plan.
+    # Keep that disposable operation on the original decoder; later independent
+    # director operations may use MTP again.
     return bool(request.get("director_mtp", False)) and operation != "prompt_skill_compile"
+
+
+def _fresh_text_runtime_kwargs(llama_kwargs: dict[str, Any]) -> dict[str, Any]:
+    result = {**llama_kwargs, "chat_handler": None}
+    result.pop("speculative", None)
+    return result
+
+
+def _close_llm_and_handler(llm: Any, handler: Any) -> None:
+    llm.close()
+    close_handler = getattr(handler, "close", None)
+    if callable(close_handler):
+        close_handler()
 
 
 def _complete(request: dict[str, Any]) -> dict[str, Any]:
@@ -1029,7 +1040,20 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
         content: Any = prompt
         if prompt_skill and image_urls:
             observations = _analyze_prompt_skill_images(llm, image_urls)
-            llm.reset()
+            # llama.cpp MTMD can retain non-text physical positions even after
+            # llm.reset(). A final text prompt on that same context then fails
+            # with `find_slot: non-consecutive token position`. Destroy the
+            # multimodal context completely and create a clean text-only context.
+            _close_llm_and_handler(llm, handler)
+            llm = None
+            handler = None
+            print("[MINIMAX_H3_WORKER] reopening clean text-only context for prompt plan", flush=True)
+            llm = Llama(**_fresh_text_runtime_kwargs(llama_kwargs))
+            if family == "qwen3.8":
+                handler = _qwen38_text_handler(
+                    llm, Jinja2ChatFormatter, handler_factory, reasoning_effort,
+                )
+                llm.chat_handler = handler
             prompt += "\n\nAuthoritative per-asset visual observations from sequential single-image analysis:\n" + json.dumps(
                 observations, ensure_ascii=False, indent=2,
             )
@@ -1083,10 +1107,8 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             },
         }
     finally:
-        llm.close()
-        close_handler = getattr(handler, "close", None)
-        if callable(close_handler):
-            close_handler()
+        if llm is not None:
+            _close_llm_and_handler(llm, handler)
 
 
 def _payload(value: Any) -> dict[str, Any]:
