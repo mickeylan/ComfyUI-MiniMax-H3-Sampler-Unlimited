@@ -36,6 +36,7 @@ def _load_package_module(name):
 
 
 def main():
+    print("[MINIMAX_H3_WORKER] Qwen3.6/3.8 bootstrap: importing isolated runtime", flush=True)
     _load_package_module("director_errors")
     _load_package_module("story_format")
     runtime = _load_package_module("qwen36_38")

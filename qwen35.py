@@ -1237,7 +1237,9 @@ def _from_payload(value: dict[str, Any], timing: bool, external: bool = False):
 
 def _run_worker_once(payload: dict[str, Any], *, timeout: int | None = None) -> tuple[subprocess.CompletedProcess, dict[str, Any] | None]:
     if timeout is None:
-        timeout = 600 if payload.get("operation") == "chunk" else 300
+        operation = payload.get("operation")
+        newer_qwen = payload.get("director_backend") in {"qwen3.6", "qwen3.8"}
+        timeout = 600 if operation == "chunk" or operation == "timing_plan" and newer_qwen else 300
     print(f"[MINIMAX_H3_WORKER] launching worker timeout={timeout}s op={payload.get('operation')}", flush=True)
     module_path = Path(__file__).resolve()
     worker_path = module_path.with_name("qwen38_worker.py") if payload.get("director_backend") in {"qwen3.6", "qwen3.8"} else module_path

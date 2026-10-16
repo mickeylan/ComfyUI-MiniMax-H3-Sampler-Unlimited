@@ -535,12 +535,13 @@ class Qwen35Tests(unittest.TestCase):
             qwen35._run_worker_once({"operation": "timing_plan", "director_backend": "qwen3.5"})
         self.assertEqual(run.call_args.kwargs["timeout"], 300)
 
-    def test_qwen36_and_qwen38_use_their_own_worker_entrypoint(self):
+    def test_qwen36_and_qwen38_use_their_own_worker_entrypoint_and_loading_timeout(self):
         process = types.SimpleNamespace(returncode=0, stderr="", stdout='MINIMAX_H3_QWEN35_RESULT={"ok": false}')
         for backend in ("qwen3.6", "qwen3.8"):
             with self.subTest(backend=backend), patch.object(qwen35.subprocess, "run", return_value=process) as run:
                 qwen35._run_worker_once({"operation": "timing_plan", "director_backend": backend})
             self.assertTrue(run.call_args.args[0][2].endswith("qwen38_worker.py"))
+            self.assertEqual(run.call_args.kwargs["timeout"], 600)
 
     def test_native_mtp_failure_retries_timing_once_without_mtp(self):
         success = {

@@ -271,6 +271,14 @@ review date, versions/commits checked, and outcome below.
   request. PyPI still reports 0.3.35 as the latest official release; its JSON
   metadata does not identify a newer vendored llama.cpp commit containing a fix.
   Preserve disposable workers and the operation-local non-MTP retry unchanged.
+- 2026-10-16 (Qwen3.8 timing-worker startup timeout): issue #27439 was closed by
+  the stale bot as `not planned` on 2026-10-04, without a confirmed merged fix;
+  its `bug-unconfirmed` and `stale` labels remain. PyPI still reports 0.3.35 as
+  the latest official `llama-cpp-python` release. Preserve disposable workers
+  and the operation-local non-MTP retry. Qwen3.6/3.8 text-only timing workers now
+  receive a 600-second startup/generation bound and print a bootstrap stage before
+  importing their isolated runtime; Qwen3.5 keeps its existing 300-second timing
+  bound.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at
