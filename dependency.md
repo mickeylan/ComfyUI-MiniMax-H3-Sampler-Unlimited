@@ -286,10 +286,14 @@ review date, versions/commits checked, and outcome below.
   completion then exposed the same stale physical-position ledger after reset;
   disabling MTP and rebuilding a Python `Llama` object inside the same process
   both failed to clear it. Prompt Skill therefore uses two disposable processes:
-  one multimodal image-analysis worker exits completely, then a new text-only,
-  non-MTP worker generates the plan from its structured observations. Subsequent
-  timing and chunk-director operations may still use MTP. Once native position
-  errors stopped, the long non-MTP plan still exhausted the 600-second bound
+  one non-MTP multimodal image-analysis worker exits completely, then a new
+  text-only worker generates the plan from its structured observations with
+  Qwen3.8 MTP enabled when configured. A native failure retries only that plan
+  operation in a fresh non-MTP worker. The parent previously misclassified an
+  `ok: true` MTP result as a native failure because successful envelopes omit
+  `error_type`; it then discarded every successful MTP plan and reran the slow
+  non-MTP path. Native fallback now requires `ok: false`. The earlier long
+  non-MTP plan exhausted the 600-second bound
   under llama.cpp JSON grammar. Prompt Skill now uses unconstrained decoding at
   temperature 0.2 and relies on its existing JSON parser, deterministic schema
   validation, and correction retry; other structured Qwen operations keep their

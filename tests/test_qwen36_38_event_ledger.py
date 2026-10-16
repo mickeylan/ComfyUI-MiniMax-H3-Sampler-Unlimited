@@ -52,10 +52,10 @@ class QwenEventLedgerTests(unittest.TestCase):
             images = [item for item in content if item.get("type") == "image_url"]
             self.assertEqual(len(images), 1)
 
-    def test_prompt_skill_disables_mtp_only_for_its_disposable_operation(self):
+    def test_prompt_skill_uses_mtp_only_after_disposable_image_analysis(self):
         request = {"director_mtp": True}
         self.assertFalse(runtime._operation_uses_mtp(request, "prompt_skill_images"))
-        self.assertFalse(runtime._operation_uses_mtp(request, "prompt_skill_compile"))
+        self.assertTrue(runtime._operation_uses_mtp(request, "prompt_skill_compile"))
         self.assertTrue(runtime._operation_uses_mtp(request, "timing_plan"))
         self.assertTrue(runtime._operation_uses_mtp(request, "chunk"))
         self.assertFalse(runtime._operation_uses_mtp({"director_mtp": False}, "chunk"))

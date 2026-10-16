@@ -1312,11 +1312,19 @@ def _recover_zero_length_timing_plan(value: dict[str, Any] | None, payload: dict
     return _timing_plan(parsed, payload, raw, system, prompt)
 
 
+def _needs_non_mtp_retry(value: dict[str, Any] | None, semantic_error_types: set[str]) -> bool:
+    if value is None:
+        return True
+    return not bool(value.get("ok")) and value.get("error_type") not in semantic_error_types
+
+
 def _run_worker(request: dict[str, Any], timing: bool):
     payload = json.loads(json.dumps(request, ensure_ascii=False))
     payload["operation"] = "timing_plan" if timing else "chunk"
     process, value = _run_worker_once(payload)
-    native_failure = value is None or value.get("error_type") not in {"Qwen35ObservationError", "Qwen35DependencyError"}
+    native_failure = _needs_non_mtp_retry(
+        value, {"Qwen35ObservationError", "Qwen35DependencyError"},
+    )
     if payload.get("director_mtp", False) and native_failure:
         payload["director_mtp"] = False
         process, value = _run_worker_once(payload)
@@ -1396,12 +1404,11 @@ def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
             raise Qwen35ObservationError("Qwen prompt skill image worker returned incomplete observations")
         payload["prompt_skill_observations"] = observations
         payload["image_urls"] = []
-        payload["director_mtp"] = False
     payload["operation"] = "prompt_skill_compile"
     process, value = _run_worker_once(payload, timeout=600)
-    native_failure = value is None or value.get("error_type") not in {
-        "Qwen35ObservationError", "Qwen35DependencyError", "ValueError"
-    }
+    native_failure = _needs_non_mtp_retry(
+        value, {"Qwen35ObservationError", "Qwen35DependencyError", "ValueError"},
+    )
     if payload.get("director_mtp", False) and native_failure:
         payload["director_mtp"] = False
         process, value = _run_worker_once(payload, timeout=600)
@@ -1437,9 +1444,9 @@ def _run_storyboard_worker(request: dict[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(request, ensure_ascii=False))
     payload["operation"] = "storyboard"
     process, value = _run_worker_once(payload)
-    native_failure = value is None or value.get("error_type") not in {
-        "Qwen35ObservationError", "Qwen35DependencyError", "ValueError"
-    }
+    native_failure = _needs_non_mtp_retry(
+        value, {"Qwen35ObservationError", "Qwen35DependencyError", "ValueError"},
+    )
     if payload.get("director_mtp", False) and native_failure:
         payload["director_mtp"] = False
         process, value = _run_worker_once(payload)

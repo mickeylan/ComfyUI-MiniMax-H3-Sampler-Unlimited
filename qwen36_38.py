@@ -932,9 +932,7 @@ def _operation_uses_mtp(request: dict[str, Any], operation: str) -> bool:
     # Prompt Skill runs multiple image completions before its final text plan.
     # Keep that disposable operation on the original decoder; later independent
     # director operations may use MTP again.
-    return bool(request.get("director_mtp", False)) and operation not in {
-        "prompt_skill_images", "prompt_skill_compile",
-    }
+    return bool(request.get("director_mtp", False)) and operation != "prompt_skill_images"
 
 
 def _close_llm_and_handler(llm: Any, handler: Any) -> None:

@@ -570,6 +570,20 @@ class Qwen35Tests(unittest.TestCase):
         self.assertTrue(calls[0]["director_mtp"])
         self.assertFalse(calls[1]["director_mtp"])
 
+    def test_successful_mtp_worker_is_not_discarded_for_non_mtp_retry(self):
+        self.assertFalse(qwen35._needs_non_mtp_retry(
+            {"ok": True, "prompt_skill_compile": {}},
+            {"Qwen35ObservationError", "Qwen35DependencyError", "ValueError"},
+        ))
+        self.assertTrue(qwen35._needs_non_mtp_retry(
+            {"ok": False, "error_type": "RuntimeError"},
+            {"Qwen35ObservationError", "Qwen35DependencyError", "ValueError"},
+        ))
+        self.assertFalse(qwen35._needs_non_mtp_retry(
+            {"ok": False, "error_type": "Qwen35ObservationError"},
+            {"Qwen35ObservationError", "Qwen35DependencyError", "ValueError"},
+        ))
+
     def test_invalid_timing_plan_gets_one_corrected_retry(self):
         failure = {"ok": False, "error_type": "Qwen35ObservationError",
                    "message": "Qwen3.5 timing plan returned NoneType shot entries; expected 1", "raw_json": '{"shots":null}'}
@@ -806,6 +820,7 @@ class Qwen35Tests(unittest.TestCase):
         self.assertEqual(image_request["image_urls"], ["image-1", "image-2"])
         self.assertEqual(text_request["operation"], "prompt_skill_compile")
         self.assertEqual(text_request["image_urls"], [])
+        self.assertTrue(text_request["director_mtp"])
         self.assertEqual(text_request["prompt_skill_observations"], observations)
 
     def test_prompt_skill_repair_reuses_images_when_visual_plan_is_missing(self):
