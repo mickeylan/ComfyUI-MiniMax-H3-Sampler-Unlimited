@@ -282,7 +282,10 @@ review date, versions/commits checked, and outcome below.
   `find_slot: non-consecutive token position` MTMD failure, so Qwen3.6/3.8 now
   match the established Qwen3.5 safe path: analyze one image at a time, reset the
   context between assets, and perform the final plan generation from the compact
-  structured observations without resubmitting the images.
+  structured observations without resubmitting the images. The final text-only
+  completion then exposed the same stale physical-position ledger after reset;
+  Prompt Skill therefore uses the original decoder for that disposable operation.
+  This does not disable MTP for subsequent timing or chunk-director operations.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at

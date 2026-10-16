@@ -928,6 +928,15 @@ def _analyze_prompt_skill_images(llm, image_urls: Sequence[str]) -> list[dict[st
     return observations
 
 
+def _operation_uses_mtp(request: dict[str, Any], operation: str) -> bool:
+    # Prompt Skill runs multiple image completions with llm.reset() before its
+    # final text-only plan. The experimental speculative token ledger can retain
+    # old physical MTMD positions across that reset and make llama.cpp reject the
+    # final logical prompt as non-consecutive. Disable MTP only for this disposable
+    # operation; the next independent director operation may use MTP again.
+    return bool(request.get("director_mtp", False)) and operation != "prompt_skill_compile"
+
+
 def _complete(request: dict[str, Any]) -> dict[str, Any]:
     if request.get("director_backend") not in {"qwen3.6", "qwen3.8"}:
         raise Qwen35ObservationError("Qwen3.6/3.8 worker received an unsupported backend")
@@ -969,7 +978,10 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             int(llama_kwargs.get("n_cpu_moe", 0)),
         )
     mtp_supported = family in {"qwen3.6", "qwen3.8"}
-    mtp_layers = _gguf_mtp_layers(request["director_model_path"]) if mtp_supported and request.get("director_mtp", False) else 0
+    mtp_layers = (
+        _gguf_mtp_layers(request["director_model_path"])
+        if mtp_supported and _operation_uses_mtp(request, operation) else 0
+    )
     if mtp_layers and mtp_layers > 0:
         llama_kwargs["speculative"] = SpecConfig(
             spec_type=SpeculativeType.DRAFT_MTP,
