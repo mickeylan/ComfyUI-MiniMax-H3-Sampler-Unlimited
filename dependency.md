@@ -284,10 +284,11 @@ review date, versions/commits checked, and outcome below.
   context between assets, and perform the final plan generation from the compact
   structured observations without resubmitting the images. The final text-only
   completion then exposed the same stale physical-position ledger after reset;
-  disabling MTP alone did not clear it. Prompt Skill now destroys the multimodal
-  llama context and projector handler after image analysis, then opens a fresh
-  non-MTP text-only context for final planning. This does not disable MTP for
-  subsequent timing or chunk-director operations.
+  disabling MTP and rebuilding a Python `Llama` object inside the same process
+  both failed to clear it. Prompt Skill therefore uses two disposable processes:
+  one multimodal image-analysis worker exits completely, then a new text-only,
+  non-MTP worker generates the plan from its structured observations. Subsequent
+  timing and chunk-director operations may still use MTP.
 
 The runtime was compared against `llama-cpp-python` tag `0.3.35` at commit
 `3691546f1c9e0c1bf93323dff02230bd959cf562`; that package vendors llama.cpp at

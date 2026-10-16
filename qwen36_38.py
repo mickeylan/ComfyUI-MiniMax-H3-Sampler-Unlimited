@@ -932,13 +932,9 @@ def _operation_uses_mtp(request: dict[str, Any], operation: str) -> bool:
     # Prompt Skill runs multiple image completions before its final text plan.
     # Keep that disposable operation on the original decoder; later independent
     # director operations may use MTP again.
-    return bool(request.get("director_mtp", False)) and operation != "prompt_skill_compile"
-
-
-def _fresh_text_runtime_kwargs(llama_kwargs: dict[str, Any]) -> dict[str, Any]:
-    result = {**llama_kwargs, "chat_handler": None}
-    result.pop("speculative", None)
-    return result
+    return bool(request.get("director_mtp", False)) and operation not in {
+        "prompt_skill_images", "prompt_skill_compile",
+    }
 
 
 def _close_llm_and_handler(llm: Any, handler: Any) -> None:
@@ -954,15 +950,16 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
 
     Llama, MTMDChatHandler, Qwen35ChatHandler, Jinja2ChatFormatter, handler_factory, SpecConfig, SpeculativeType = _load_runtime()
     operation = request["operation"]
-    if operation not in {"timing_plan", "chunk", "storyboard", "jzl_storyboard", "video_bridge", "prompt_skill_compile"}:
+    if operation not in {"timing_plan", "chunk", "storyboard", "jzl_storyboard", "video_bridge", "prompt_skill_images", "prompt_skill_compile"}:
         raise Qwen35ObservationError(f"Unknown Qwen operation: {operation}")
     timing = operation == "timing_plan"
     storyboard = operation == "storyboard"
     jzl_storyboard = operation == "jzl_storyboard"
     video_bridge = operation == "video_bridge"
+    prompt_skill_images = operation == "prompt_skill_images"
     prompt_skill = operation == "prompt_skill_compile"
     family = _qwen_family(request["director_model_path"])
-    handler = None if timing or family == "qwen3.8" else MTMDChatHandler(
+    handler = None if timing or family == "qwen3.8" or prompt_skill and request.get("prompt_skill_observations") else MTMDChatHandler(
         clip_model_path=request["director_mmproj_path"], verbose=False, use_gpu=False,
     )
     context_tokens = {
@@ -1006,7 +1003,7 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             reasoning_effort = str(request.get("director_reasoning_effort", "xhigh"))
             if reasoning_effort not in {"xhigh", "medium", "low"}:
                 raise Qwen35ObservationError(f"Unknown Qwen3.8 reasoning effort: {reasoning_effort}")
-            if timing:
+            if timing or prompt_skill and request.get("prompt_skill_observations"):
                 handler = _qwen38_text_handler(llm, Jinja2ChatFormatter, handler_factory, reasoning_effort)
             else:
                 template = (getattr(llm, "metadata", {}) or {}).get("tokenizer.chat_template")
@@ -1024,6 +1021,12 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
                     use_gpu=True,
                 )
             llm.chat_handler = handler
+        if prompt_skill_images:
+            return {
+                "prompt_skill_observations": _analyze_prompt_skill_images(
+                    llm, request.get("image_urls", ()),
+                )
+            }
         if timing:
             system, prompt = _timing_messages(request)
         elif jzl_storyboard:
@@ -1038,24 +1041,9 @@ def _complete(request: dict[str, Any]) -> dict[str, Any]:
             system, prompt = _chunk_messages(request)
         image_urls = request.get("image_urls", ())
         content: Any = prompt
-        if prompt_skill and image_urls:
-            observations = _analyze_prompt_skill_images(llm, image_urls)
-            # llama.cpp MTMD can retain non-text physical positions even after
-            # llm.reset(). A final text prompt on that same context then fails
-            # with `find_slot: non-consecutive token position`. Destroy the
-            # multimodal context completely and create a clean text-only context.
-            _close_llm_and_handler(llm, handler)
-            llm = None
-            handler = None
-            print("[MINIMAX_H3_WORKER] reopening clean text-only context for prompt plan", flush=True)
-            llm = Llama(**_fresh_text_runtime_kwargs(llama_kwargs))
-            if family == "qwen3.8":
-                handler = _qwen38_text_handler(
-                    llm, Jinja2ChatFormatter, handler_factory, reasoning_effort,
-                )
-                llm.chat_handler = handler
-            prompt += "\n\nAuthoritative per-asset visual observations from sequential single-image analysis:\n" + json.dumps(
-                observations, ensure_ascii=False, indent=2,
+        if prompt_skill and request.get("prompt_skill_observations"):
+            prompt += "\n\nAuthoritative per-asset visual observations from a separate disposable image-analysis worker:\n" + json.dumps(
+                request["prompt_skill_observations"], ensure_ascii=False, indent=2,
             )
             content = prompt
         elif not timing:

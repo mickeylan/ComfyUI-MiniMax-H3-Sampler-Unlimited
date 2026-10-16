@@ -54,22 +54,11 @@ class QwenEventLedgerTests(unittest.TestCase):
 
     def test_prompt_skill_disables_mtp_only_for_its_disposable_operation(self):
         request = {"director_mtp": True}
+        self.assertFalse(runtime._operation_uses_mtp(request, "prompt_skill_images"))
         self.assertFalse(runtime._operation_uses_mtp(request, "prompt_skill_compile"))
         self.assertTrue(runtime._operation_uses_mtp(request, "timing_plan"))
         self.assertTrue(runtime._operation_uses_mtp(request, "chunk"))
         self.assertFalse(runtime._operation_uses_mtp({"director_mtp": False}, "chunk"))
-
-    def test_fresh_prompt_skill_text_runtime_drops_multimodal_and_speculative_state(self):
-        original = {
-            "model_path": "model.gguf", "chat_handler": object(),
-            "speculative": object(), "n_ctx": 32768,
-        }
-        fresh = runtime._fresh_text_runtime_kwargs(original)
-        self.assertIsNone(fresh["chat_handler"])
-        self.assertNotIn("speculative", fresh)
-        self.assertEqual(fresh["model_path"], "model.gguf")
-        self.assertEqual(fresh["n_ctx"], 32768)
-        self.assertIn("speculative", original)
 
     def test_timing_parser_removes_zero_length_terminal_beat(self):
         request = {

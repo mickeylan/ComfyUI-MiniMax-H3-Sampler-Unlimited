@@ -1377,6 +1377,26 @@ def _run_worker(request: dict[str, Any], timing: bool):
 
 def _run_prompt_skill_worker(request: dict[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(request, ensure_ascii=False))
+    if (payload.get("director_backend") in {"qwen3.6", "qwen3.8"}
+            and payload.get("image_urls")):
+        image_payload = {**payload, "operation": "prompt_skill_images", "director_mtp": False}
+        process, image_value = _run_worker_once(image_payload, timeout=600)
+        if image_value is None:
+            raise DirectorWorkerError(
+                f"Qwen prompt skill image worker exited with status {process.returncode} without a result",
+                returncode=process.returncode,
+            )
+        if not image_value.get("ok"):
+            raise Qwen35ObservationError(
+                str(image_value.get("message", "Qwen prompt skill image analysis failed")),
+                raw_json=str(image_value.get("raw_json", "")),
+            )
+        observations = image_value.get("prompt_skill_observations")
+        if not isinstance(observations, list) or len(observations) != len(payload["image_urls"]):
+            raise Qwen35ObservationError("Qwen prompt skill image worker returned incomplete observations")
+        payload["prompt_skill_observations"] = observations
+        payload["image_urls"] = []
+        payload["director_mtp"] = False
     payload["operation"] = "prompt_skill_compile"
     process, value = _run_worker_once(payload, timeout=600)
     native_failure = value is None or value.get("error_type") not in {

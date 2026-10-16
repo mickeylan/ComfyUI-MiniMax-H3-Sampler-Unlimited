@@ -785,6 +785,29 @@ class Qwen35Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "returned top-level keys: analysis, summary"):
             qwen35._prompt_skill_result_object({"analysis": "done", "summary": "text"})
 
+    def test_newer_qwen_prompt_skill_uses_separate_image_and_text_workers(self):
+        observations = [
+            {"asset_id": "asset_1", "kind": "character", "observable_features": "red robe"},
+            {"asset_id": "asset_2", "kind": "scene", "observable_features": "mountains"},
+        ]
+        success = {"ok": True, "prompt_skill_compile": {"prompt": "fixed", "shot_plan": {}}}
+        with patch.object(qwen35, "_run_worker_once", side_effect=[
+                (types.SimpleNamespace(returncode=0), {"ok": True, "prompt_skill_observations": observations}),
+                (types.SimpleNamespace(returncode=0), success)]) as worker:
+            result = qwen35._run_prompt_skill_worker({
+                "director_backend": "qwen3.8", "director_mtp": True,
+                "total_frames": 634, "image_urls": ["image-1", "image-2"],
+            })
+        self.assertEqual(result["prompt"], "fixed")
+        image_request = worker.call_args_list[0].args[0]
+        text_request = worker.call_args_list[1].args[0]
+        self.assertEqual(image_request["operation"], "prompt_skill_images")
+        self.assertFalse(image_request["director_mtp"])
+        self.assertEqual(image_request["image_urls"], ["image-1", "image-2"])
+        self.assertEqual(text_request["operation"], "prompt_skill_compile")
+        self.assertEqual(text_request["image_urls"], [])
+        self.assertEqual(text_request["prompt_skill_observations"], observations)
+
     def test_prompt_skill_repair_reuses_images_when_visual_plan_is_missing(self):
         failure = {
             "ok": False, "error_type": "Qwen35ObservationError",
