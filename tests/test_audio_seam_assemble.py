@@ -19,6 +19,10 @@ class AudioSeamAssembleTests(unittest.TestCase):
         handoff = "<Subject 4> (S2) says: <d>[Chinese] 回答</d>"
         self.assertEqual(audio_seam_assemble._seam_mode(previous, continued), "same_speaker_continuation")
         self.assertEqual(audio_seam_assemble._seam_mode(previous, handoff), "default")
+        self.assertEqual(
+            audio_seam_assemble._seam_mode("wind and rain", "continuing wind and rain"),
+            "no_dialogue",
+        )
 
     def test_assembly_preserves_exact_frame_duration(self):
         sample_rate = 4000
@@ -54,7 +58,20 @@ class AudioSeamAssembleTests(unittest.TestCase):
         self.assertFalse(seams[0]["aligned"])
         self.assertEqual(seams[0]["fade_samples"], 120)
         self.assertEqual(seams[0]["alignment_reason"], "same_speaker_unaligned_long_fade")
-        self.assertAlmostEqual(seams[0]["gain_match_db"], 1.5)
+        self.assertAlmostEqual(seams[0]["gain_match_db"], 0.0)
+
+    def test_low_correlation_no_dialogue_uses_long_ambient_fade(self):
+        first = np.ones((2, 2000))
+        second = np.full((2, 1200), 0.1)
+        result = {"mean_correlation": 0.2, "mean_lag_ms": None}
+        with patch.object(audio_seam_assemble, "analyze_audio_seam", return_value=result):
+            _assembled, seams = assemble_audio_chunks(
+                [first, second], [10, 6], [0, 1], 20.0, 4000,
+                seam_modes=["no_dialogue"],
+            )
+        self.assertEqual(seams[0]["fade_samples"], 200)
+        self.assertEqual(seams[0]["alignment_reason"], "no_dialogue_unaligned_ambient_fade")
+        self.assertLessEqual(seams[0]["gain_match"], 1.0)
 
     def test_each_alignment_uses_original_previous_chunk(self):
         chunks = [
@@ -79,8 +96,8 @@ class AudioSeamAssembleTests(unittest.TestCase):
         result = {"mean_correlation": 0.95, "mean_lag_ms": 0.0}
         with patch.object(audio_seam_assemble, "analyze_audio_seam", return_value=result):
             assembled, seams = assemble_audio_chunks([first, second], [10, 6], [0, 1], 20.0, 4000)
-        self.assertAlmostEqual(seams[0]["gain_match_db"], 1.5)
-        self.assertGreater(assembled[0, 2000], 0.115)
+        self.assertAlmostEqual(seams[0]["gain_match_db"], 0.0)
+        self.assertLessEqual(assembled[0, 2000], 0.1)
         self.assertAlmostEqual(assembled[0, -1], 0.1)
 
     def test_observed_twelve_point_six_ms_grid_offset_is_aligned(self):

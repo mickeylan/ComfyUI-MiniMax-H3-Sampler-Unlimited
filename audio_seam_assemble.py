@@ -24,6 +24,7 @@ CONTINUATION_MAX_LAG_MS = 32.0
 GAIN_LIMIT_DB = 1.5
 GAIN_RELEASE_MS = 150.0
 UNALIGNED_FADE_MS = 10.0
+NO_DIALOGUE_UNALIGNED_FADE_MS = 80.0
 SAME_SPEAKER_UNALIGNED_FADE_MS = 30.0
 _DIALOGUE = re.compile(r"<d>.*?</d>", re.IGNORECASE | re.DOTALL)
 _SPEAKER = re.compile(r"(<Subject\s+\d+>)\s*\((S\d+)\)", re.IGNORECASE)
@@ -48,6 +49,8 @@ def _seam_mode(previous_prompt, current_prompt):
         str(current_prompt), re.IGNORECASE,
     ):
         return "same_speaker_continuation"
+    if not previous and not current:
+        return "no_dialogue"
     return "default"
 
 
@@ -79,7 +82,10 @@ def _rms_gain_envelope(previous, current, sample_rate, credible):
     if left < 1e-4 or right < 1e-4:
         return 1.0, None
     limit = 10.0 ** (GAIN_LIMIT_DB / 20.0)
-    gain = float(np.clip(left / right, 1.0 / limit, limit))
+    # Never raise a newly generated chunk to match its predecessor: its RMS may
+    # mostly be stochastic ambience/noise. Attenuation remains useful for a
+    # genuinely louder incoming chunk without lifting its noise floor.
+    gain = float(np.clip(left / right, 1.0 / limit, 1.0))
     release = min(round(GAIN_RELEASE_MS / 1000.0 * sample_rate), current.shape[-1])
     envelope = np.ones(current.shape[-1], dtype=np.float64)
     if release:
@@ -119,11 +125,13 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate, 
         )
         credible = normal_alignment or continuation_alignment
         same_speaker_fallback = mode == "same_speaker_continuation" and not credible
+        no_dialogue_fallback = mode == "no_dialogue" and not credible
         lag_samples = round(result["mean_lag_ms"] / 1000.0 * sample_rate) if credible else 0
         cut = max(0, min(current.shape[-1], overlap + lag_samples))
         fade_ms = (
             30.0 if credible else
             SAME_SPEAKER_UNALIGNED_FADE_MS if same_speaker_fallback else
+            NO_DIALOGUE_UNALIGNED_FADE_MS if no_dialogue_fallback else
             UNALIGNED_FADE_MS
         )
         fade = round(fade_ms / 1000.0 * sample_rate)
@@ -160,6 +168,7 @@ def assemble_audio_chunks(decoded, frame_counts, trim_frames, fps, sample_rate, 
                 "same_speaker_high_correlation_bounded_lag" if continuation_alignment and not normal_alignment
                 else "high_correlation_bounded_lag" if credible
                 else "same_speaker_unaligned_long_fade" if same_speaker_fallback
+                else "no_dialogue_unaligned_ambient_fade" if no_dialogue_fallback
                 else "unaligned_short_fade"
             ),
         })
